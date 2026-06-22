@@ -126,7 +126,11 @@
 
       const api = async (path, init) => {
         const res = await fetch(path, init);
-        const body = await res.json().catch(() => ({}));
+        // Every response in this system is JSON — success and error alike — so parse
+        // unconditionally. A body that does not parse is a real fault (a proxy page, a
+        // truncated response), not an empty object to read as data: let res.json() reject
+        // and surface loudly through the caller's catch, never a silent {}.
+        const body = await res.json();
         if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
         return body;
       };

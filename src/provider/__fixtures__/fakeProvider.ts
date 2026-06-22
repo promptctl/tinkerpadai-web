@@ -1,4 +1,5 @@
 import type { Provider } from '../provider.js';
+import type { ContractProviderOptions } from '../provider.contract.js';
 import type {
   Availability,
   Brief,
@@ -9,27 +10,14 @@ import type {
 } from '../types.js';
 import { ProviderId, SessionId, TurnId } from '../types.js';
 
-// A test double that implements the Provider seam. Its existence is the proof the
-// seam asks for: that the contract is implementable and composes. It is the
-// cheapest possible body — exactly what [LAW:types-are-the-program] predicts once
-// the types are right. (The real implementation is the tmux provider, p0v.3.)
-
-export interface FakeProviderOptions {
-  readonly id: string;
-  readonly label: string;
-  // What every turn resolves to. 'success' produces html from the brief; a failure
-  // carries a surfaced reason — never a silent empty file.
-  readonly outcome: 'success' | { readonly fail: string };
-  // How many getStatus reads report `running` before the turn reaches `outcome`.
-  // Lets a test drive a real non-terminal→terminal transition so getResult's
-  // await-until-terminal contract is exercised, not just the instant case.
-  readonly runningPolls?: number;
-  readonly availability?: Availability;
-  // When true the optional iterate/remix methods are present, so capabilitiesOf
-  // reports them. When false they are OMITTED (not set to undefined), the honest
-  // shape of a one-shot provider.
-  readonly iterable?: boolean;
-}
+// A test double that implements the Provider seam directly (no driver). Its
+// existence is the proof the seam asks for: that the contract is implementable and
+// composes. It is the cheapest possible body — exactly what
+// [LAW:types-are-the-program] predicts once the types are right. The real
+// implementation is the tmux provider (tmuxProvider.ts + tmuxDriver.ts).
+//
+// It accepts the canonical ContractProviderOptions so the same knobs drive both this
+// and the scripted tmux driver through one shared contract. [LAW:one-source-of-truth]
 
 // Per-turn mutable state: which brief produced it, and how many more `running`
 // reads remain before it settles.
@@ -38,7 +26,7 @@ interface TurnState {
   runningLeft: number;
 }
 
-export const makeFakeProvider = (opts: FakeProviderOptions): Provider => {
+export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
   const providerId = ProviderId(opts.id);
   const availability: Availability = opts.availability ?? { state: 'available' };
   const turns = new Map<string, TurnState>();

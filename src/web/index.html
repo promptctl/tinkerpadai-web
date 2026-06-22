@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TinkerPad — spin up a playground</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0f1115;
+        --panel: #181b22;
+        --edge: #2a2f3a;
+        --text: #e7e9ee;
+        --muted: #9aa3b2;
+        --accent: #6ea8fe;
+        --bad: #ff8a8a;
+        --good: #7ee2a8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        display: grid;
+        place-items: start center;
+        padding: 8vh 1rem;
+      }
+      main { width: 100%; max-width: 640px; }
+      h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+      p.lede { color: var(--muted); margin: 0 0 1.5rem; }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 14px;
+        padding: 1.25rem;
+      }
+      label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0 0 0.35rem; }
+      textarea, select {
+        width: 100%;
+        background: #0f1218;
+        color: var(--text);
+        border: 1px solid var(--edge);
+        border-radius: 10px;
+        padding: 0.7rem 0.8rem;
+        font: inherit;
+      }
+      textarea { resize: vertical; min-height: 90px; }
+      .row { margin-bottom: 1rem; }
+      .controls { display: flex; gap: 0.75rem; align-items: end; }
+      .controls .row { flex: 1; margin-bottom: 0; }
+      button {
+        background: var(--accent);
+        color: #0b1020;
+        border: 0;
+        border-radius: 10px;
+        padding: 0.7rem 1.2rem;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      .note { font-size: 0.85rem; margin-top: 0.6rem; min-height: 1.2em; }
+      .note.bad { color: var(--bad); }
+      .note.muted { color: var(--muted); }
+      #status { margin-top: 1.25rem; min-height: 1.4em; }
+      #status .bad { color: var(--bad); }
+      #status .good { color: var(--good); }
+      .spinner {
+        display: inline-block; width: 0.9em; height: 0.9em; vertical-align: -1px;
+        border: 2px solid var(--edge); border-top-color: var(--accent); border-radius: 50%;
+        animation: spin 0.8s linear infinite; margin-right: 0.5rem;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>TinkerPad</h1>
+      <p class="lede">Say what you want to tinker with. Get a working playground.</p>
+
+      <!-- The form is shown only when at least one provider exists. With an empty registry
+           the script replaces this panel with a "no generation available" message — that
+           is data driving the view, not a branch sprinkled through the UI. -->
+      <form class="panel" id="create" hidden>
+        <div class="row">
+          <label for="description">Describe your playground</label>
+          <textarea
+            id="description"
+            placeholder="e.g. a color palette explorer with live hex codes"
+            required
+          ></textarea>
+        </div>
+        <div class="controls">
+          <div class="row">
+            <label for="provider">Provider</label>
+            <select id="provider"></select>
+          </div>
+          <button type="submit" id="submit">Generate</button>
+        </div>
+        <div class="note muted" id="availability"></div>
+      </form>
+
+      <div class="panel" id="empty" hidden>
+        No generation provider is available. Generation is off until one is registered.
+      </div>
+
+      <div id="status" role="status" aria-live="polite"></div>
+    </main>
+
+    <script type="module">
+      // The front-door client. It reads the generation API and renders from what it reads:
+      // the dropdown is the provider list, the submit gate is the live availability, the
+      // progress view is the poll status. Every visible state is a value from the server,
+      // never an assumption baked into the page.
+
+      const $ = (id) => document.getElementById(id);
+      const form = $('create');
+      const empty = $('empty');
+      const providerSelect = $('provider');
+      const submitBtn = $('submit');
+      const availabilityNote = $('availability');
+      const statusEl = $('status');
+
+      const api = async (path, init) => {
+        const res = await fetch(path, init);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
+        return body;
+      };
+
+      const setStatus = (html) => {
+        statusEl.innerHTML = html;
+      };
+
+      // Live availability gate. Re-read on every provider change so the button reflects the
+      // real machine state at decision time, and render the reason when unavailable.
+      const refreshAvailability = async (providerId) => {
+        availabilityNote.textContent = 'Checking availability…';
+        availabilityNote.className = 'note muted';
+        try {
+          const availability = await api(
+            `/availability?providerId=${encodeURIComponent(providerId)}`,
+          );
+          const ok = availability.state === 'available';
+          submitBtn.disabled = !ok;
+          availabilityNote.textContent = ok ? '' : `Unavailable: ${availability.reason}`;
+          availabilityNote.className = ok ? 'note muted' : 'note bad';
+        } catch (error) {
+          submitBtn.disabled = true;
+          availabilityNote.textContent = `Could not check availability: ${error.message}`;
+          availabilityNote.className = 'note bad';
+        }
+      };
+
+      // Drive one generation to a terminal state. The poll on a running turn blocks on the
+      // server (~750ms) by design, so this loop never spins and adds no sleep of its own —
+      // the provider owns the cadence.
+      const generate = async (providerId, description) => {
+        setStatus('<span class="spinner"></span>Submitting…');
+        const { handle } = await api('/generations', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ providerId, brief: { description } }),
+        });
+
+        for (;;) {
+          const status = await api('/poll', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ handle }),
+          });
+          if (status.state === 'pending' || status.state === 'running') {
+            setStatus(`<span class="spinner"></span>Generating… (${status.state})`);
+            continue;
+          }
+          if (status.state === 'ready') {
+            const href = `/play?id=${encodeURIComponent(status.playgroundId)}`;
+            setStatus(
+              `<span class="good">Playground ready.</span> ` +
+                `<a href="${href}">Open it →</a> <code>${status.playgroundId}</code>`,
+            );
+            return;
+          }
+          setStatus(`<span class="bad">Generation failed: ${status.error}</span>`);
+          return;
+        }
+      };
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        submitBtn.disabled = true;
+        try {
+          await generate($('provider').value, $('description').value.trim());
+        } catch (error) {
+          // A poll can fail loudly — e.g. the in-memory turn did not survive a server
+          // restart ("unknown turn"). Surface it; do not leave a dead spinner.
+          setStatus(`<span class="bad">${error.message}</span>`);
+        } finally {
+          submitBtn.disabled = false;
+        }
+      });
+
+      providerSelect.addEventListener('change', () => refreshAvailability(providerSelect.value));
+
+      // Boot: the provider list decides whether the front door shows a form at all.
+      (async () => {
+        try {
+          const providers = await api('/providers');
+          if (providers.length === 0) {
+            empty.hidden = false;
+            return;
+          }
+          providerSelect.innerHTML = providers
+            .map((p) => `<option value="${p.id}">${p.label}</option>`)
+            .join('');
+          form.hidden = false;
+          await refreshAvailability(providerSelect.value);
+        } catch (error) {
+          empty.hidden = false;
+          empty.textContent = `Could not load providers: ${error.message}`;
+        }
+      })();
+    </script>
+  </body>
+</html>

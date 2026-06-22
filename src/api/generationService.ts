@@ -85,10 +85,27 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     return record;
   };
 
+  // Release a settled turn's provider resources. Best-effort by contract: it runs only
+  // AFTER the turn's outcome is sealed (a durable playground, or a surfaced failure), so a
+  // disposal fault cannot unmake that outcome. The fault is surfaced loudly to stderr —
+  // never swallowed — but it never rejects the caller's promise, because rejecting would
+  // misreport a live playground as failed and, since the outcome is memoized, wedge the
+  // turn behind that lie forever. Outcome integrity has one enforcer: this service, which
+  // owns the outcome, not each disposer. [FRAMING:representation] [LAW:no-silent-failure]
+  // [LAW:single-enforcer] [LAW:decomposition]
+  const release = async (handle: SessionHandle): Promise<void> => {
+    try {
+      await disposeTurn(handle);
+    } catch (error) {
+      console.error(`tinkerpad: failed to release turn ${handle.turnId}:`, error);
+    }
+  };
+
   // The one effectful transition. Order is load-bearing: store first (the catalog
-  // references the version it returns), then catalog, then dispose — cleanup runs only
-  // once the artifact is durable. A failure of store/catalog rejects this promise and is
-  // surfaced loudly; nothing half-written is reported as success. [LAW:no-ambient-temporal-coupling]
+  // references the version it returns), then catalog — the outcome is SEALED once
+  // createPlayground returns. A failure of store/catalog rejects this promise and is
+  // surfaced loudly; nothing half-written is reported as success. Release runs last and
+  // cannot change the sealed outcome. [LAW:no-ambient-temporal-coupling]
   const finalizeSuccess = async (
     handle: SessionHandle,
     brief: Brief,
@@ -101,14 +118,14 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       version,
       lineage: null,
     });
-    await disposeTurn(handle);
+    await release(handle);
     return { state: 'ready', playgroundId: playground.id };
   };
 
   // A failed turn produces no version and no playground — the error is surfaced, never a
   // silent empty file. The turn's provider resources are still released. [LAW:no-silent-failure]
   const finalizeFailure = async (handle: SessionHandle, message: string): Promise<GenerationStatus> => {
-    await disposeTurn(handle);
+    await release(handle);
     return { state: 'failed', error: message };
   };
 

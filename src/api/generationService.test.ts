@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
@@ -23,7 +23,10 @@ interface Harness {
   readonly providerId: ProviderId;
 }
 
-const harnessFor = (opts: ContractProviderOptions): Harness => {
+const harnessFor = (
+  opts: ContractProviderOptions,
+  disposeTurn?: (handle: SessionHandle) => Promise<void>,
+): Harness => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
   const store = makeMemoryArtifactStore();
@@ -33,9 +36,11 @@ const harnessFor = (opts: ContractProviderOptions): Harness => {
     registry,
     store,
     catalog,
-    disposeTurn: async (handle) => {
-      disposed.push(handle);
-    },
+    disposeTurn:
+      disposeTurn ??
+      (async (handle) => {
+        disposed.push(handle);
+      }),
   });
   return { service, store, catalog, disposed, providerId: ProviderId(opts.id) };
 };
@@ -104,6 +109,30 @@ describe('GenerationService.poll — success persists the file as a catalogued p
     expect(a).toEqual(b);
     expect(await h.catalog.listPlaygrounds()).toHaveLength(1);
     expect(h.disposed).toEqual([handle]);
+  });
+});
+
+describe('GenerationService.poll — releasing the turn never misreports a durable success', () => {
+  it('reports ready and keeps the playground even when disposeTurn throws', async () => {
+    // A disposal fault cannot unmake a durable playground: the outcome is ready, the
+    // playground is catalogued, and the fault is surfaced loudly (not swallowed) — never
+    // a rejection that would lie about the live playground and wedge the turn forever.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, async () => {
+      throw new Error('rm failed');
+    });
+    const handle = await submit(h, 'durable despite cleanup fault');
+
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('ready');
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(1);
+
+    // Re-polling still returns the durable success, not a memoized disposal rejection.
+    expect(await h.service.poll(handle)).toEqual(status);
+
+    // The disposal fault was surfaced, not hidden. [LAW:no-silent-failure]
+    expect(errors).toHaveBeenCalledOnce();
+    errors.mockRestore();
   });
 });
 

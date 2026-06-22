@@ -33,6 +33,27 @@ describe('Provider seam contract', () => {
     await expect(provider.getResult(handle)).rejects.toThrow('skill crashed');
   });
 
+  it('getResult awaits a non-terminal turn through to success — early is not a distinct outcome', async () => {
+    // The turn reports `running` twice before it succeeds; getResult must wait it
+    // out rather than reject or return early. [LAW:types-are-the-program]
+    const provider = makeFakeProvider({ id: 'p', label: 'P', outcome: 'success', runningPolls: 2 });
+    const handle = await provider.startSession({ description: 'slow one' });
+    expect((await provider.getStatus(handle)).state).toBe('running');
+
+    const result = await provider.getResult(handle);
+    expect(result.artifact.html).toContain('slow one');
+  });
+
+  it('every handle pins its own turn — a follow-up turn gets a distinct id in the same session', async () => {
+    const provider = makeFakeProvider({ id: 'p', label: 'P', outcome: 'success', iterable: true });
+    const first = await provider.startSession({ description: 'v1' });
+    const second = await provider.continueSession!(first, { description: 'v2' });
+
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.turnId).not.toBe(first.turnId);
+    expect(second.providerId).toBe(first.providerId);
+  });
+
   it('streams progress as data flowing out of the session', async () => {
     const provider = makeFakeProvider({ id: 'p', label: 'P', outcome: 'success' });
     const handle = await provider.startSession({ description: 'x' });
@@ -52,7 +73,7 @@ describe('Provider seam contract', () => {
         case 'running':
           return 'running';
         case 'succeeded':
-          return `succeeded:${status.result.turnId}`;
+          return `succeeded:${status.result.artifact.html.length}`;
         case 'failed':
           return status.error.message;
         default: {

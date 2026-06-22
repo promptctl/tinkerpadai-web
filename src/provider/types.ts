@@ -19,12 +19,17 @@ export const ProviderId = (raw: string): ProviderId => raw as ProviderId;
 export const SessionId = (raw: string): SessionId => raw as SessionId;
 export const TurnId = (raw: string): TurnId => raw as TurnId;
 
-// A handle to one generation session. Hold it to track progress or fetch the
-// result. Carries the provider it belongs to so a handle is never used against the
-// wrong provider — another mix made unrepresentable. [LAW:types-are-the-program]
+// A handle to one in-flight turn of a session — the unit the front door polls
+// (p0v.4: "poll a turn for status/result"). startSession and continueSession each
+// return a handle pinned to the turn they kicked off, so every getStatus/getResult/
+// streamProgress call already knows WHICH turn it concerns, in every state — not
+// only on success. Carries providerId so a handle is never used against the wrong
+// provider, and so the async poller can re-resolve the provider from a stored
+// handle alone. [LAW:types-are-the-program] [LAW:one-source-of-truth]
 export interface SessionHandle {
   readonly providerId: ProviderId;
   readonly sessionId: SessionId;
+  readonly turnId: TurnId;
 }
 
 // What the user describes — "say what you want to tinker with". A struct rather
@@ -42,13 +47,13 @@ export interface Artifact {
   readonly html: string;
 }
 
-// The product of one succeeded turn: the file, plus the turn that produced it.
-// Version IDENTITY (the immutable key the artifact store/catalog assigns) is NOT
-// minted here — the catalog is the single source of truth for what versions exist
-// (p0v.2). A provider knows which turn it ran; it does not own the version space.
-// [LAW:one-source-of-truth]
+// The product of one succeeded turn: just the file. WHICH turn produced it is the
+// turnId on the SessionHandle the caller already holds, so it is not duplicated
+// here. Version IDENTITY (the immutable key the artifact store/catalog assigns) is
+// likewise NOT minted here — the catalog is the single source of truth for what
+// versions exist (p0v.2). A provider produces a file; it owns neither the turn
+// identity space nor the version space. [LAW:one-source-of-truth]
 export interface GenerationResult {
-  readonly turnId: TurnId;
   readonly artifact: Artifact;
 }
 

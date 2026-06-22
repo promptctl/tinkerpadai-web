@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Provider } from './provider.js';
 import { ProviderRegistry, capabilitiesOf } from './registry.js';
 import { ProviderId, type GenerationRequest } from './types.js';
 import { makeFakeProvider } from './__fixtures__/fakeProvider.js';
@@ -56,6 +57,14 @@ describe('ProviderRegistry', () => {
       continue: false,
       fork: false,
     });
+  });
+
+  it('treats a present-but-undefined optional method as not-supported — capability is method presence, not a flag', () => {
+    // The type forbids `continueSession: undefined` in a literal, but a runtime
+    // spread can still produce the key. capabilitiesOf must report false for it, so
+    // method-presence stays the single source of truth. [LAW:one-source-of-truth]
+    const leaky = { ...makeFakeProvider({ id: 'x', label: 'x', outcome: 'success' }), continueSession: undefined } as unknown as Provider;
+    expect(capabilitiesOf(leaky)).toEqual({ continue: false, fork: false });
   });
 
   it('availabilityOf delegates to the live provider and surfaces the reason when down', async () => {

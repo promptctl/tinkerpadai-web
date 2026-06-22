@@ -17,9 +17,13 @@ import { ProviderId, SessionId, TurnId } from '../types.js';
 export interface FakeProviderOptions {
   readonly id: string;
   readonly label: string;
-  // What every session resolves to. 'success' produces html from the brief; a
-  // failure carries a surfaced reason — never a silent empty file.
+  // What every turn resolves to. 'success' produces html from the brief; a failure
+  // carries a surfaced reason — never a silent empty file.
   readonly outcome: 'success' | { readonly fail: string };
+  // How many getStatus reads report `running` before the turn reaches `outcome`.
+  // Lets a test drive a real non-terminal→terminal transition so getResult's
+  // await-until-terminal contract is exercised, not just the instant case.
+  readonly runningPolls?: number;
   readonly availability?: Availability;
   // When true the optional iterate/remix methods are present, so capabilitiesOf
   // reports them. When false they are OMITTED (not set to undefined), the honest
@@ -27,43 +31,60 @@ export interface FakeProviderOptions {
   readonly iterable?: boolean;
 }
 
-const statusFor = (opts: FakeProviderOptions, brief: Brief): SessionStatus =>
-  opts.outcome === 'success'
-    ? {
-        state: 'succeeded',
-        result: { turnId: TurnId('turn-1'), artifact: { html: `<!-- ${brief.description} -->` } },
-      }
-    : { state: 'failed', error: { message: opts.outcome.fail } };
+// Per-turn mutable state: which brief produced it, and how many more `running`
+// reads remain before it settles.
+interface TurnState {
+  readonly brief: Brief;
+  runningLeft: number;
+}
 
 export const makeFakeProvider = (opts: FakeProviderOptions): Provider => {
-  const id = ProviderId(opts.id);
+  const providerId = ProviderId(opts.id);
   const availability: Availability = opts.availability ?? { state: 'available' };
-  // The brief is captured per session so getStatus/getResult reflect what was asked.
-  const briefs = new Map<string, Brief>();
+  const turns = new Map<string, TurnState>();
+  let minted = 0;
+
+  const beginTurn = (sessionId: SessionId, brief: Brief): SessionHandle => {
+    const turnId = TurnId(`turn-${(minted += 1)}`);
+    turns.set(turnId, { brief, runningLeft: opts.runningPolls ?? 0 });
+    return { providerId, sessionId, turnId };
+  };
+
+  const turnOf = (handle: SessionHandle): TurnState => {
+    const turn = turns.get(handle.turnId);
+    if (turn === undefined) throw new Error(`unknown turn: ${handle.turnId}`);
+    return turn;
+  };
 
   async function startSession(brief: Brief): Promise<SessionHandle> {
-    const sessionId = SessionId(`session-${briefs.size + 1}`);
-    briefs.set(sessionId, brief);
-    return { providerId: id, sessionId };
+    return beginTurn(SessionId(`session-${(minted += 1)}`), brief);
   }
 
   async function getStatus(handle: SessionHandle): Promise<SessionStatus> {
-    const brief = briefs.get(handle.sessionId);
-    if (brief === undefined) throw new Error(`unknown session: ${handle.sessionId}`);
-    return statusFor(opts, brief);
+    const turn = turnOf(handle);
+    if (turn.runningLeft > 0) {
+      turn.runningLeft -= 1;
+      return { state: 'running' };
+    }
+    return opts.outcome === 'success'
+      ? { state: 'succeeded', result: { artifact: { html: `<!-- ${turn.brief.description} -->` } } }
+      : { state: 'failed', error: { message: opts.outcome.fail } };
   }
 
   async function* streamProgress(handle: SessionHandle): AsyncIterable<ProgressEvent> {
-    if (!briefs.has(handle.sessionId)) throw new Error(`unknown session: ${handle.sessionId}`);
+    turnOf(handle);
     yield { at: 0, message: 'started' };
     yield { at: 1, message: 'finished' };
   }
 
+  // Await the turn to terminal, then resolve or reject. A `running` read is not a
+  // distinct outcome here — it just continues the loop. [LAW:no-defensive-null-guards]
   async function getResult(handle: SessionHandle): Promise<GenerationResult> {
-    const status = await getStatus(handle);
-    if (status.state === 'succeeded') return status.result;
-    if (status.state === 'failed') throw new Error(status.error.message);
-    throw new Error(`not terminal: ${status.state}`);
+    for (;;) {
+      const status = await getStatus(handle);
+      if (status.state === 'succeeded') return status.result;
+      if (status.state === 'failed') throw new Error(status.error.message);
+    }
   }
 
   async function getAvailability(): Promise<Availability> {
@@ -71,7 +92,7 @@ export const makeFakeProvider = (opts: FakeProviderOptions): Provider => {
   }
 
   const base: Provider = {
-    id,
+    id: providerId,
     label: opts.label,
     startSession,
     getStatus,
@@ -85,13 +106,10 @@ export const makeFakeProvider = (opts: FakeProviderOptions): Provider => {
   return {
     ...base,
     async continueSession(handle: SessionHandle, followUp: Brief): Promise<SessionHandle> {
-      briefs.set(handle.sessionId, followUp);
-      return handle;
+      return beginTurn(handle.sessionId, followUp);
     },
     async fork(handle: SessionHandle): Promise<SessionHandle> {
-      const sessionId = SessionId(`session-${briefs.size + 1}`);
-      briefs.set(sessionId, briefs.get(handle.sessionId) ?? { description: '' });
-      return { providerId: id, sessionId };
+      return beginTurn(SessionId(`session-${(minted += 1)}`), turnOf(handle).brief);
     },
   };
 };

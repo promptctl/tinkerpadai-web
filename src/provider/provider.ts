@@ -36,10 +36,13 @@ export interface Provider {
   // provider owns when events are emitted. [LAW:no-ambient-temporal-coupling]
   streamProgress(handle: SessionHandle): AsyncIterable<ProgressEvent>;
 
-  // Resolve to the result once the latest turn SUCCEEDS; reject loudly (carrying
-  // the surfaced GenerationError) if it FAILS. The terminal-fetch convenience the
-  // one-shot provider is built on (p0v.3: startSession + getResult). Never resolves
-  // with an empty/placeholder file on failure. [LAW:no-silent-failure]
+  // AWAIT the handle's turn to a terminal state, then resolve with the result if it
+  // SUCCEEDED or reject loudly (carrying the surfaced GenerationError) if it FAILED.
+  // Because it awaits, "not yet terminal" is never a caller-visible outcome — just an
+  // unsettled promise — so no two providers can diverge on the early-call case. This
+  // is the one-shot convenience the tmux provider is built on (p0v.3: startSession +
+  // getResult, no polling). Never resolves with an empty/placeholder file on failure.
+  // [LAW:types-are-the-program] [LAW:no-silent-failure]
   getResult(handle: SessionHandle): Promise<GenerationResult>;
 
   // Whether this provider can generate right now. Live, because availability

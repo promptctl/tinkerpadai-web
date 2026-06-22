@@ -20,13 +20,21 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
   registry.register(
     makeFakeProvider({ id: 'fake', label: 'Fake Provider', outcome: 'success', ...(availability ? { availability } : {}) }),
   );
+  // One catalog/store shared by the service (write path) and the site handler (read path):
+  // the commons reads exactly what generation wrote, through the seam, no provider involved.
+  const catalog = makeMemoryCatalog();
   const service = makeGenerationService({
     registry,
     store: makeMemoryArtifactStore(),
-    catalog: makeMemoryCatalog(),
+    catalog,
     disposeTurn: async () => undefined,
   });
-  const handler = makeSiteHandler({ page: PAGE, apiHandler: makeHttpHandler(service) });
+  const handler = makeSiteHandler({
+    page: PAGE,
+    catalog,
+    contentOrigin: 'http://content.local:9999',
+    apiHandler: makeHttpHandler(service),
+  });
   return serve({ handler, port: 0 });
 };
 

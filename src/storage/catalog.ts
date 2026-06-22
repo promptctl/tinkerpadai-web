@@ -10,6 +10,19 @@ import type {
 } from './types.js';
 import { PlaygroundId as mkPlaygroundId } from './types.js';
 
+// The TYPED not-found signal. getPlayground fails loudly on an unknown id — but a caller
+// must be able to tell "this id genuinely isn't in the commons" (a 404) apart from "the
+// catalog itself couldn't be read" (an infra/invariant failure — a 500). An untyped Error
+// conflates the two and forces callers to relabel every failure as not-found, a
+// [LAW:no-silent-failure] trap. The type is the discriminator, decided once here.
+// [LAW:types-are-the-program] [LAW:single-enforcer]
+export class PlaygroundNotFoundError extends Error {
+  constructor(public readonly id: PlaygroundId) {
+    super(`unknown playground: ${id}`);
+    this.name = 'PlaygroundNotFoundError';
+  }
+}
+
 // THE CATALOG SEAM. The single source of truth for what playgrounds exist (public by
 // default; design-docs/PROJECT.md). It records the session -> turns -> versions shape
 // and fork lineage; browsing and running read from here and never touch the provider.
@@ -78,7 +91,7 @@ export const makeCatalog = (store: CatalogStore): Catalog => {
   const find = (doc: CatalogDoc, id: PlaygroundId): Playground => {
     const playground = doc.playgrounds.find((p) => p.id === id);
     if (playground === undefined) {
-      throw new Error(`unknown playground: ${id}`);
+      throw new PlaygroundNotFoundError(id);
     }
     return playground;
   };

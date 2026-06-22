@@ -4,5 +4,10 @@
 // the generation API, never a runtime the playground depends on.
 export { makeSiteHandler } from './siteHandler.js';
 export type { SiteHandlerDeps } from './siteHandler.js';
+export { makeContentHandler } from './contentHandler.js';
+export type { ContentHandlerDeps } from './contentHandler.js';
+export { renderCommons, renderPlayer, renderNotice } from './playgroundPages.js';
+export type { PlayerView } from './playgroundPages.js';
+export { escapeHtml } from './escapeHtml.js';
 export { serve } from './server.js';
 export type { RunningServer, ServeConfig } from './server.js';

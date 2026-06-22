@@ -135,6 +135,18 @@
         return body;
       };
 
+      // The one HTML-escape enforcer. Every server-originating value interpolated into the
+      // status region's markup passes through this before it becomes innerHTML, so a string
+      // like "<img onerror=…>" renders as text, never as an element. Structured data (the
+      // provider dropdown) is built with DOM nodes instead and never comes near here.
+      const esc = (value) =>
+        String(value)
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+
       const setStatus = (html) => {
         statusEl.innerHTML = html;
       };
@@ -177,18 +189,18 @@
             body: JSON.stringify({ handle }),
           });
           if (status.state === 'pending' || status.state === 'running') {
-            setStatus(`<span class="spinner"></span>Generating… (${status.state})`);
+            setStatus(`<span class="spinner"></span>Generating… (${esc(status.state)})`);
             continue;
           }
           if (status.state === 'ready') {
             const href = `/play?id=${encodeURIComponent(status.playgroundId)}`;
             setStatus(
               `<span class="good">Playground ready.</span> ` +
-                `<a href="${href}">Open it →</a> <code>${status.playgroundId}</code>`,
+                `<a href="${href}">Open it →</a> <code>${esc(status.playgroundId)}</code>`,
             );
             return;
           }
-          setStatus(`<span class="bad">Generation failed: ${status.error}</span>`);
+          setStatus(`<span class="bad">Generation failed: ${esc(status.error)}</span>`);
           return;
         }
       };
@@ -201,7 +213,7 @@
         } catch (error) {
           // A poll can fail loudly — e.g. the in-memory turn did not survive a server
           // restart ("unknown turn"). Surface it; do not leave a dead spinner.
-          setStatus(`<span class="bad">${error.message}</span>`);
+          setStatus(`<span class="bad">${esc(error.message)}</span>`);
         } finally {
           submitBtn.disabled = false;
         }
@@ -217,9 +229,16 @@
             empty.hidden = false;
             return;
           }
-          providerSelect.innerHTML = providers
-            .map((p) => `<option value="${p.id}">${p.label}</option>`)
-            .join('');
+          providerSelect.replaceChildren(
+            ...providers.map((p) => {
+              // value/textContent as properties: the id and label stay data, never parsed
+              // as markup — no escaping to drift. [FRAMING:representation]
+              const option = document.createElement('option');
+              option.value = p.id;
+              option.textContent = p.label;
+              return option;
+            }),
+          );
           form.hidden = false;
           await refreshAvailability(providerSelect.value);
         } catch (error) {

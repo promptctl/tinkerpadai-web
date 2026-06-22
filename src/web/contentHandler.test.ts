@@ -91,6 +91,24 @@ describe('makeContentHandler — the sandbox content origin', () => {
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
   });
 
+  it('treats a catalog read failure as a 500, never a 404', async () => {
+    // A non-not-found error from the catalog (disk failure reading catalog.json, an
+    // invariant violation) is the server being broken, not a missing resource. Only the
+    // typed PlaygroundNotFoundError is a 404. [LAW:no-silent-failure] [LAW:types-are-the-program]
+    const brokenCatalog: Catalog = {
+      createPlayground: async () => {
+        throw new Error('not used');
+      },
+      getPlayground: async () => {
+        throw new Error('catalog.json is corrupt');
+      },
+      listPlaygrounds: async () => [],
+    };
+    const handler = makeContentHandler({ catalog: brokenCatalog, store: makeMemoryArtifactStore() });
+    const res = await handler(new Request('http://content.local/?id=anything'));
+    expect(res.status).toBe(500);
+  });
+
   it('rejects a request with no id as a 400', async () => {
     const { handler } = setup();
     const res = await handler(new Request('http://content.local/'));

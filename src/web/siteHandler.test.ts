@@ -113,4 +113,20 @@ describe('makeSiteHandler', () => {
     const res = await handler(new Request('http://front.local/play'));
     expect(res.status).toBe(400);
   });
+
+  it('propagates a catalog read failure loudly rather than relabeling it as a 404', async () => {
+    // Only a typed not-found is a 404 page; an infra/invariant failure is the server being
+    // wrong and must surface (serve() turns the throw into a loud 500). [LAW:no-silent-failure]
+    const brokenCatalog: Catalog = {
+      createPlayground: async () => {
+        throw new Error('not used');
+      },
+      getPlayground: async () => {
+        throw new Error('catalog.json is corrupt');
+      },
+      listPlaygrounds: async () => [],
+    };
+    const { handler } = build(brokenCatalog);
+    await expect(handler(new Request('http://front.local/play?id=anything'))).rejects.toThrow('corrupt');
+  });
 });

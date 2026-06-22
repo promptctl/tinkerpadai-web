@@ -1,5 +1,5 @@
 import type { ArtifactStore, Catalog } from '../storage/index.js';
-import { PlaygroundId, currentVersionOf } from '../storage/index.js';
+import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../storage/index.js';
 
 // THE SANDBOX ENFORCEMENT BOUNDARY — and the ONLY one. This handler is what runs on the
 // CONTENT ORIGIN: a foreign origin from the app, whose entire job is to hand a playground's
@@ -61,27 +61,24 @@ export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request
       return sealed('missing or empty query parameter: id', 400, 'text/plain; charset=utf-8');
     }
 
-    // Two failures with two MEANINGS, kept distinct. An unknown id is a genuine miss (the
-    // resource doesn't exist) -> 404. A store failure means the catalog points at bytes the
-    // store can't produce — a broken invariant between the two sources of truth, or infra
-    // failure — which is the server being wrong, not the resource being absent. Collapsing
-    // them would relabel "server is broken" as "not found", a [LAW:no-silent-failure]
-    // violation. So getPlayground's throw maps to 404; store.get's throw maps to a loud 500.
-    let playground;
+    // Two failures with two MEANINGS, discriminated by the error TYPE — not by which call
+    // threw. A genuine unknown id (PlaygroundNotFoundError) is a 404. ANYTHING else — a
+    // store that can't produce the catalogued bytes, a catalog that can't be read, an
+    // invariant violation — is the server being wrong, surfaced as a loud 500. Collapsing
+    // the two would relabel "server is broken" as "not found", a [LAW:no-silent-failure]
+    // trap. The typed not-found is what lets one catch branch on the value.
+    // [LAW:types-are-the-program] [LAW:dataflow-not-control-flow]
     try {
-      playground = await catalog.getPlayground(PlaygroundId(id));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return sealed(`playground not found: ${message}`, 404, 'text/plain; charset=utf-8');
-    }
-
-    try {
+      const playground = await catalog.getPlayground(PlaygroundId(id));
       const artifact = await store.get(currentVersionOf(playground.session));
       // The raw, UNESCAPED file: it is meant to be live code, contained by sandbox + origin
       // + this CSP. Escaping it would break the playground; that is the opposite mistake
       // from escaping app chrome. [FRAMING:representation]
       return sealed(artifact.html, 200, 'text/html; charset=utf-8');
     } catch (error) {
+      if (error instanceof PlaygroundNotFoundError) {
+        return sealed(`playground not found: ${error.message}`, 404, 'text/plain; charset=utf-8');
+      }
       // A loud 500, still sealed under the strict CSP — the handler stays total (returns a
       // Response for every input, never throws) so it behaves the same behind any runtime.
       const message = error instanceof Error ? error.message : String(error);

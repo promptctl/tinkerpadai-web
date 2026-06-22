@@ -60,18 +60,32 @@ export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request
     if (id === null || id === '') {
       return sealed('missing or empty query parameter: id', 400, 'text/plain; charset=utf-8');
     }
+
+    // Two failures with two MEANINGS, kept distinct. An unknown id is a genuine miss (the
+    // resource doesn't exist) -> 404. A store failure means the catalog points at bytes the
+    // store can't produce — a broken invariant between the two sources of truth, or infra
+    // failure — which is the server being wrong, not the resource being absent. Collapsing
+    // them would relabel "server is broken" as "not found", a [LAW:no-silent-failure]
+    // violation. So getPlayground's throw maps to 404; store.get's throw maps to a loud 500.
+    let playground;
     try {
-      // getPlayground throws loudly on an unknown id; we turn that into a 404 rather than
-      // a silent blank frame. [LAW:no-silent-failure]
-      const playground = await catalog.getPlayground(PlaygroundId(id));
+      playground = await catalog.getPlayground(PlaygroundId(id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return sealed(`playground not found: ${message}`, 404, 'text/plain; charset=utf-8');
+    }
+
+    try {
       const artifact = await store.get(currentVersionOf(playground.session));
       // The raw, UNESCAPED file: it is meant to be live code, contained by sandbox + origin
       // + this CSP. Escaping it would break the playground; that is the opposite mistake
       // from escaping app chrome. [FRAMING:representation]
       return sealed(artifact.html, 200, 'text/html; charset=utf-8');
     } catch (error) {
+      // A loud 500, still sealed under the strict CSP — the handler stays total (returns a
+      // Response for every input, never throws) so it behaves the same behind any runtime.
       const message = error instanceof Error ? error.message : String(error);
-      return sealed(`playground not found: ${message}`, 404, 'text/plain; charset=utf-8');
+      return sealed(`failed to load playground: ${message}`, 500, 'text/plain; charset=utf-8');
     }
   };
 };

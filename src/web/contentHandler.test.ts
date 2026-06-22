@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog, VersionId } from '../storage/index.js';
 import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeContentHandler } from './contentHandler.js';
@@ -64,6 +64,30 @@ describe('makeContentHandler — the sandbox content origin', () => {
     const res = await handler(new Request('http://content.local/?id=does-not-exist'));
     expect(res.status).toBe(404);
     // Even error responses stay sealed under the strict CSP.
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+  });
+
+  it('surfaces a store failure as a loud 500, never relabeled as a 404', async () => {
+    // A catalogued playground whose bytes the store cannot produce is the server being
+    // broken (corruption / infra), NOT the resource being absent. [LAW:no-silent-failure]
+    const catalog = makeMemoryCatalog();
+    const playground = await catalog.createPlayground({
+      handle: { providerId: ProviderId('p'), sessionId: SessionId('s'), turnId: TurnId('t') },
+      prompt: 'a thing',
+      version: VersionId('v1'),
+      lineage: null,
+    });
+    const failingStore: ArtifactStore = {
+      put: async () => {
+        throw new Error('should not be called');
+      },
+      get: async () => {
+        throw new Error('disk on fire');
+      },
+    };
+    const handler = makeContentHandler({ catalog, store: failingStore });
+    const res = await handler(new Request(`http://content.local/?id=${encodeURIComponent(playground.id)}`));
+    expect(res.status).toBe(500);
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
   });
 

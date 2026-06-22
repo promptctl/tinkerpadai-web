@@ -1,8 +1,10 @@
 import type {
   Artifact,
+  Availability,
   Brief,
   GenerationRequest,
   ProviderDescriptor,
+  ProviderId,
   ProviderRegistry,
   SessionHandle,
   SessionStatus,
@@ -45,6 +47,14 @@ export interface GenerationService {
   // The providers available to select from, for the front door's dropdown (p0v.5). An
   // empty registry yields an empty list — data flow, not a special case.
   listProviders(): readonly ProviderDescriptor[];
+
+  // Whether a chosen provider can generate right now, for the front door's generation
+  // toggle (p0v.5). LIVE — re-checks the provider on every call (the tmux provider shells
+  // out to confirm its binaries), so the toggle reflects real machine state each read, not
+  // a cached snapshot. `unavailable` carries the reason to render. Sits beside
+  // listProviders because both are the front door reading the registry through the one
+  // surface it depends on. [LAW:single-enforcer]
+  availabilityOf(providerId: ProviderId): Promise<Availability>;
 
   // Submit a brief against a chosen provider; resolves once the turn EXISTS, not once it
   // is done. The returned handle is what the caller polls.
@@ -132,6 +142,15 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   return {
     listProviders(): readonly ProviderDescriptor[] {
       return registry.list();
+    },
+
+    async availabilityOf(providerId: ProviderId): Promise<Availability> {
+      // Delegate by value: registry.availabilityOf fails loudly on an unknown id (it
+      // resolves the provider first), so there is no null to branch on. The provider owns
+      // the effect of checking; the service just forwards the selection. `async` so an
+      // unknown id surfaces as a rejection, never a synchronous throw — one error channel
+      // for a Promise-returning method, matching submit. [LAW:effects-at-boundaries]
+      return registry.availabilityOf(providerId);
     },
 
     async submit(request: GenerationRequest): Promise<SessionHandle> {

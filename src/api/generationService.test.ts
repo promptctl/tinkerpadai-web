@@ -181,3 +181,30 @@ describe('GenerationService.listProviders', () => {
     expect(listed.map((p) => p.id)).toEqual([h.providerId]);
   });
 });
+
+describe('GenerationService.availabilityOf — the live generation toggle', () => {
+  it('reports the chosen provider available when it is', async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    expect(await h.service.availabilityOf(h.providerId)).toEqual({ state: 'available' });
+  });
+
+  it('forwards the reason when the provider is unavailable', async () => {
+    const h = harnessFor({
+      id: 'fake',
+      label: 'Fake',
+      outcome: 'success',
+      availability: { state: 'unavailable', reason: 'tmux not found' },
+    });
+    expect(await h.service.availabilityOf(h.providerId)).toEqual({
+      state: 'unavailable',
+      reason: 'tmux not found',
+    });
+  });
+
+  it('throws loudly for an unknown provider rather than guessing', async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    await expect(h.service.availabilityOf(ProviderId('ghost'))).rejects.toThrow(
+      'unknown provider: ghost',
+    );
+  });
+});

@@ -65,11 +65,21 @@ export const makeHttpHandler = (
   service: GenerationService,
 ): ((request: Request) => Promise<Response>) => {
   return async (request: Request): Promise<Response> => {
-    const route = `${request.method} ${new URL(request.url).pathname}`;
+    const url = new URL(request.url);
+    const route = `${request.method} ${url.pathname}`;
     try {
       switch (route) {
         case 'GET /providers':
           return json(service.listProviders());
+        // A live availability read for the generation toggle. GET, not POST: it mutates
+        // nothing (unlike /poll, whose first success observation performs the store+catalog
+        // write), so it is safe and cacheless-by-default. The providerId rides as a query
+        // value and is branded here, at the trust boundary — the one place foreign input
+        // becomes a ProviderId. [LAW:single-enforcer]
+        case 'GET /availability': {
+          const providerId = ProviderId(requireString(url.searchParams.get('providerId'), 'providerId'));
+          return json(await service.availabilityOf(providerId));
+        }
         case 'POST /generations': {
           const handle = await service.submit(parseGenerationRequest(await readJson(request)));
           return json({ handle }, 201);

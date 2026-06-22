@@ -1,0 +1,91 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
+import { ProviderRegistry } from '../provider/index.js';
+import { makeGenerationService, makeHttpHandler } from '../api/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
+import { makeSiteHandler } from './siteHandler.js';
+import { serve } from './server.js';
+import type { RunningServer } from './server.js';
+
+// The Node↔Web bridge proven against a REAL socket: bind an ephemeral port, drive the whole
+// front-door surface over actual HTTP, and confirm the raw Node request/response is faithfully
+// translated to and from the Web handler. It uses the fake provider, so it needs no tmux and
+// runs in the normal suite — it is the steel thread's proof that the page, the API, and the
+// socket compose end to end. [LAW:verifiable-goals]
+
+const PAGE = '<!doctype html><title>tinkerpad front door</title>';
+
+const startServer = async (availability?: { state: 'unavailable'; reason: string }): Promise<RunningServer> => {
+  const registry = new ProviderRegistry();
+  registry.register(
+    makeFakeProvider({ id: 'fake', label: 'Fake Provider', outcome: 'success', ...(availability ? { availability } : {}) }),
+  );
+  const service = makeGenerationService({
+    registry,
+    store: makeMemoryArtifactStore(),
+    catalog: makeMemoryCatalog(),
+    disposeTurn: async () => undefined,
+  });
+  const handler = makeSiteHandler({ page: PAGE, apiHandler: makeHttpHandler(service) });
+  return serve({ handler, port: 0 });
+};
+
+let running: RunningServer | undefined;
+afterEach(async () => {
+  await running?.close();
+  running = undefined;
+});
+
+describe('serve — the front door over real HTTP', () => {
+  it('serves the page at /', async () => {
+    running = await startServer();
+    const res = await fetch(`${running.url}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(await res.text()).toBe(PAGE);
+  });
+
+  it('serves the provider list for the dropdown', async () => {
+    running = await startServer();
+    const res = await fetch(`${running.url}/providers`);
+    const providers = (await res.json()) as Array<{ id: string; label: string }>;
+    expect(providers.map((p) => p.label)).toEqual(['Fake Provider']);
+  });
+
+  it('serves the live availability toggle, reason and all', async () => {
+    running = await startServer({ state: 'unavailable', reason: 'tmux not found' });
+    const res = await fetch(`${running.url}/availability?providerId=fake`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ state: 'unavailable', reason: 'tmux not found' });
+  });
+
+  it('drives a full submit→poll generation through to a ready playground', async () => {
+    running = await startServer();
+    const submitRes = await fetch(`${running.url}/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'fake', brief: { description: 'a tiny counter' } }),
+    });
+    expect(submitRes.status).toBe(201);
+    const { handle } = (await submitRes.json()) as { handle: Record<string, string> };
+
+    const pollRes = await fetch(`${running.url}/poll`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ handle }),
+    });
+    const status = (await pollRes.json()) as { state: string; playgroundId?: string };
+    expect(status.state).toBe('ready');
+    expect(typeof status.playgroundId).toBe('string');
+  });
+
+  it('surfaces a bad request as 400 across the bridge', async () => {
+    running = await startServer();
+    const res = await fetch(`${running.url}/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'fake' }),
+    });
+    expect(res.status).toBe(400);
+  });
+});

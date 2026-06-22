@@ -38,6 +38,46 @@ describe('GET /providers', () => {
   });
 });
 
+describe('GET /availability — the live generation toggle', () => {
+  it('returns available for a ready provider, branding the providerId from the query', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const res = await handler(
+      new Request('http://tinkerpad.local/availability?providerId=fake'),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ state: 'available' });
+  });
+
+  it('surfaces the reason when the provider is unavailable', async () => {
+    const handler = handlerFor({
+      id: 'fake',
+      label: 'Fake',
+      outcome: 'success',
+      availability: { state: 'unavailable', reason: 'claude CLI not found' },
+    });
+    const res = await handler(
+      new Request('http://tinkerpad.local/availability?providerId=fake'),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ state: 'unavailable', reason: 'claude CLI not found' });
+  });
+
+  it('rejects a missing providerId as 400 at the trust boundary', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const res = await handler(new Request('http://tinkerpad.local/availability'));
+    expect(res.status).toBe(400);
+  });
+
+  it('surfaces an unknown provider loudly as 500, never a hidden default', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const res = await handler(
+      new Request('http://tinkerpad.local/availability?providerId=ghost'),
+    );
+    expect(res.status).toBe(500);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: 'unknown provider: ghost' });
+  });
+});
+
 describe('POST /generations then POST /poll — the full submit→poll round trip', () => {
   it('submits a brief, returns a handle, and polls it through to ready', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });

@@ -176,8 +176,9 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   // the provider resumes a follow-up turn (continue) by re-entering that dir, so disposing
   // it here would destroy the very thing iterate needs. Cleanup of a finished session's
   // workdirs is deferred (no "session abandoned" trigger yet — a steel-thread limitation,
-  // like the in-memory turn map). Only a failed turn, which leaves nothing continuable, is
-  // released. [LAW:no-ambient-temporal-coupling]
+  // like the in-memory turn map). Only a failed FIRST turn — which leaves no continuable
+  // session — is released; a failed refine keeps the session, since its prior version is
+  // still continuable (see reclaimOnFailure). [LAW:no-ambient-temporal-coupling]
   const finalizeSuccess = async (
     handle: SessionHandle,
     brief: Brief,
@@ -189,10 +190,37 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     return { state: 'ready', playgroundId: playground.id };
   };
 
+  // Reclaim a failed turn's workdir ONLY when the turn leaves nothing continuable —
+  // decided by its target, matched exhaustively so a new target kind (e.g. the remix
+  // epic's fork) MUST declare its failure-disposal here, never silently leak or destroy
+  // live state. A failed first turn (create) has no continuable session, so its workdir
+  // is reclaimed; a failed refine (append) sits on a still-continuable prior version, so
+  // the session is kept exactly as a successful turn's workdir is — releasing it would
+  // delete the live state a subsequent refine re-enters. The disposal is the target
+  // value, not a branch on which provider ran. [LAW:dataflow-not-control-flow]
+  // [LAW:types-are-the-program] [LAW:no-ambient-temporal-coupling]
+  const reclaimOnFailure = (handle: SessionHandle, target: TurnTarget): Promise<void> => {
+    switch (target.kind) {
+      case 'create':
+        return release(handle);
+      case 'append':
+        return Promise.resolve();
+      default: {
+        const unreachable: never = target;
+        return unreachable;
+      }
+    }
+  };
+
   // A failed turn produces no version and no playground — the error is surfaced, never a
-  // silent empty file. The turn's provider resources are still released. [LAW:no-silent-failure]
-  const finalizeFailure = async (handle: SessionHandle, message: string): Promise<GenerationStatus> => {
-    await release(handle);
+  // silent empty file. Its workdir is reclaimed only when nothing continuable remains
+  // (reclaimOnFailure). [LAW:no-silent-failure]
+  const finalizeFailure = async (
+    handle: SessionHandle,
+    target: TurnTarget,
+    message: string,
+  ): Promise<GenerationStatus> => {
+    await reclaimOnFailure(handle, target);
     return { state: 'failed', error: message };
   };
 
@@ -266,7 +294,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
           record.terminal = finalizeSuccess(handle, record.brief, record.target, status.result.artifact);
           return record.terminal;
         case 'failed':
-          record.terminal = finalizeFailure(handle, status.error.message);
+          record.terminal = finalizeFailure(handle, record.target, status.error.message);
           return record.terminal;
         default: {
           const unreachable: never = status;

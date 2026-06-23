@@ -201,6 +201,14 @@ describe('GenerationService.continue — refine an existing playground into a ne
     // Nothing was appended — the playground still has its single original turn.
     const playground = await h.catalog.getPlayground(seed.id);
     expect(playground.session.turns).toHaveLength(1);
+
+    // A failed REFINE must NOT release the session: its prior version is still
+    // continuable, and the session's workdir is the live state a subsequent refine
+    // re-enters — releasing it would delete that state. Only a failed FIRST turn, which
+    // leaves nothing continuable, is released (see the create-failure test above). This
+    // is the disposal invariant carried by the turn's target value, not the provider.
+    // [LAW:dataflow-not-control-flow]
+    expect(h.disposed).toEqual([]);
   });
 
   it('fails loudly when the playground provider cannot continue', async () => {

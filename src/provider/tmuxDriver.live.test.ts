@@ -50,6 +50,32 @@ describe.runIf(live)('tmux driver (live)', () => {
       if (next.state !== 'succeeded') throw new Error(next.state);
       expect(next.html.toLowerCase()).toContain('<html');
       expect(next.html).not.toBe(firstHtml);
+      const secondHtml = next.html;
+
+      // A THIRD turn — continuing an ALREADY-continued session. This is the case that
+      // regressed: a workdir keyed by turnId resolved the prior (turn-2) handle to a
+      // never-created directory, so this continue died in writeFile(prompt) with ENOENT.
+      // Keyed by sessionId every turn re-enters the one live workdir, so turn 3 (and N)
+      // resume cleanly. priorHandle is turn 2, exactly as the service reconstructs it
+      // from the catalog's newest turn. [LAW:one-source-of-truth]
+      const thirdTurn = {
+        providerId: handle.providerId,
+        sessionId: handle.sessionId,
+        turnId: TurnId(`turn-${Date.now()}-3`),
+      };
+      await driver.continue(
+        { description: 'make the count text larger and bold' },
+        thirdTurn,
+        followUp,
+      );
+
+      let third = await driver.poll(thirdTurn);
+      while (third.state === 'running') third = await driver.poll(thirdTurn);
+
+      expect(third.state).toBe('succeeded');
+      if (third.state !== 'succeeded') throw new Error(third.state);
+      expect(third.html.toLowerCase()).toContain('<html');
+      expect(third.html).not.toBe(secondHtml);
 
       await cleanupTurn(handle);
     },

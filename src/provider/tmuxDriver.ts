@@ -76,11 +76,16 @@ const binaryPresent = async (bin: string, versionFlag: string): Promise<boolean>
   }
 };
 
-// The directory a turn's files live in — a pure function of its turnId, so continue
-// can re-derive a prior turn's workspace without reaching into begin's in-memory
-// state. [LAW:one-source-of-truth]
+// The directory a SESSION's files live in — a pure function of its sessionId. All
+// turns of one session share this one workdir: it holds Claude Code's conversation
+// history and the playground file, which are the session's continuable state, not any
+// single turn's. Keying it by sessionId is what lets continue re-enter the live
+// workdir for EVERY follow-up turn (turn 2, 3, … N), not just the first — and it does
+// so without reaching into begin's in-memory state. A per-turn key was a lie about
+// what the directory represents: it bent away from the live workdir the moment a
+// session was continued more than once. [LAW:one-source-of-truth] [FRAMING:representation]
 const dirOf = (handle: SessionHandle): string =>
-  join(tmpdir(), 'tinkerpad-gen', handle.turnId);
+  join(tmpdir(), 'tinkerpad-gen', handle.sessionId);
 
 // The instruction handed to Claude Code. The brief reaches the agent only via this
 // file on disk — never interpolated into a shell command — so a brief can say
@@ -235,8 +240,12 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
   };
 };
 
-// Remove a turn's temp workdir. Separate from the driver because cleanup is the
-// app's call to make once it has the artifact, not part of generating. [LAW:decomposition]
+// Remove the session's temp workdir (the same one dirOf resolves — one source of
+// truth for where it lives, never a second path that can drift). It disposes the
+// whole session because the workdir IS the session's, shared by every turn; the
+// caller decides WHEN that is safe (only once nothing continuable remains). Separate
+// from the driver because cleanup is the app's call to make, not part of generating.
+// [LAW:decomposition] [LAW:one-source-of-truth]
 export const cleanupTurn = async (handle: SessionHandle): Promise<void> => {
-  await rm(join(tmpdir(), 'tinkerpad-gen', handle.turnId), { recursive: true, force: true });
+  await rm(dirOf(handle), { recursive: true, force: true });
 };

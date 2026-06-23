@@ -31,6 +31,15 @@ export interface CodeGenDriver {
   // here; the provider only mints identity and reads state. [LAW:one-source-of-truth]
   begin(brief: Brief, handle: SessionHandle): Promise<void>;
 
+  // Launch a FOLLOW-UP turn that resumes the work `priorHandle` began, applying a new
+  // brief on top of it (iterate). `handle` is the fresh identity the provider minted
+  // for this turn; `priorHandle` names the turn whose conversation and artifact carry
+  // forward. This is a genuinely different effect from begin — resume-with-context vs
+  // start-from-nothing — so it is its own method, not a flag on begin; the provider
+  // varies behaviour by calling the right one, never by branching inside it.
+  // [LAW:dataflow-not-control-flow] [LAW:no-mode-explosion]
+  continue(brief: Brief, handle: SessionHandle, priorHandle: SessionHandle): Promise<void>;
+
   // Inspect the handle's turn once. MUST eventually return a terminal snapshot
   // (succeeded or failed) — a turn that never settles is the driver's bug to fix
   // (e.g. via a deadline), because the provider's getResult await-loop trusts this

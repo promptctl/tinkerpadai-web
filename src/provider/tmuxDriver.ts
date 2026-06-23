@@ -76,6 +76,12 @@ const binaryPresent = async (bin: string, versionFlag: string): Promise<boolean>
   }
 };
 
+// The directory a turn's files live in — a pure function of its turnId, so continue
+// can re-derive a prior turn's workspace without reaching into begin's in-memory
+// state. [LAW:one-source-of-truth]
+const dirOf = (handle: SessionHandle): string =>
+  join(tmpdir(), 'tinkerpad-gen', handle.turnId);
+
 // The instruction handed to Claude Code. The brief reaches the agent only via this
 // file on disk — never interpolated into a shell command — so a brief can say
 // anything without becoming an injection. [FRAMING:representation]
@@ -86,6 +92,20 @@ const promptFor = (brief: Brief, artifactPath: string): string =>
     brief.description,
     '',
     `Write the complete, self-contained HTML file (inline CSS/JS, no external dependencies) to exactly this path: ${artifactPath}`,
+    'Write nothing else to that path. When the file is written, you are done.',
+  ].join('\n');
+
+// The follow-up instruction for a continue turn: refine the file already on disk
+// rather than build from nothing. The conversation is resumed via `claude --continue`
+// (below); this prompt names the artifact so the agent edits it in place and keeps it
+// self-contained. [FRAMING:representation]
+const continuePromptFor = (brief: Brief, artifactPath: string): string =>
+  [
+    'Continue refining the self-contained interactive HTML playground you built earlier. Apply this follow-up request:',
+    '',
+    brief.description,
+    '',
+    `The current playground is the file at exactly this path: ${artifactPath}. Update that file in place; keep it self-contained (inline CSS/JS, no external dependencies).`,
     'Write nothing else to that path. When the file is written, you are done.',
   ].join('\n');
 
@@ -139,7 +159,7 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
     },
 
     async begin(brief: Brief, handle: SessionHandle): Promise<void> {
-      const dir = join(tmpdir(), 'tinkerpad-gen', handle.turnId);
+      const dir = dirOf(handle);
       const session = sessionName(handle);
       await mkdir(dir, { recursive: true });
 
@@ -150,6 +170,34 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
       // The brief is read from the file, never interpolated into this command line.
       const paneCommand =
         `claude -p "$(cat ${PROMPT_FILE})" --dangerously-skip-permissions; ` +
+        `echo $? > ${EXIT_FILE}`;
+      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
+
+      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs });
+    },
+
+    // Resume the prior turn's conversation and refine its artifact. The follow-up runs
+    // in the SAME workdir as priorHandle (where the playground file and Claude Code's
+    // conversation history live) and resumes it with `claude --continue`, so context
+    // carries forward — this is "send a follow-up into the live session". The new turn
+    // gets its own fresh tmux session and its own world keyed by its turnId, so poll/
+    // progress track it independently of the prior turn. [LAW:one-source-of-truth]
+    async continue(brief: Brief, handle: SessionHandle, priorHandle: SessionHandle): Promise<void> {
+      const dir = dirOf(priorHandle);
+      const session = sessionName(handle);
+
+      // The prior turn left its exit sentinel in this dir; the new turn settles on a
+      // FRESH sentinel, so the stale one must go first or poll would read it and report
+      // the new turn done before it has even run. [LAW:no-silent-failure]
+      await rm(join(dir, EXIT_FILE), { force: true });
+
+      const artifactPath = join(dir, ARTIFACT_FILE);
+      await writeFile(join(dir, PROMPT_FILE), continuePromptFor(brief, artifactPath), 'utf8');
+
+      // `--continue` resumes the latest Claude Code conversation in this cwd — the one
+      // the prior turn started — so the follow-up has the full prior context.
+      const paneCommand =
+        `claude -p "$(cat ${PROMPT_FILE})" --continue --dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
       await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
 

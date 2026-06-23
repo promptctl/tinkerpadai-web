@@ -99,6 +99,9 @@ describe('makeContentHandler — the sandbox content origin', () => {
       createPlayground: async () => {
         throw new Error('not used');
       },
+      appendTurn: async () => {
+        throw new Error('not used');
+      },
       getPlayground: async () => {
         throw new Error('catalog.json is corrupt');
       },

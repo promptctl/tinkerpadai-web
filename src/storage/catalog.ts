@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type {
   CatalogDoc,
   NewPlayground,
+  NewTurn,
   Playground,
   PlaygroundId,
   PlaygroundSummary,
   SessionRecord,
+  TurnRecord,
   VersionId,
 } from './types.js';
 import { PlaygroundId as mkPlaygroundId } from './types.js';
@@ -30,6 +32,14 @@ export interface Catalog {
   // Record a brand-new playground from a session's first succeeded turn. The catalog
   // mints and returns the PlaygroundId. [LAW:single-enforcer]
   createPlayground(input: NewPlayground): Promise<Playground>;
+
+  // Append a follow-up turn (a new version) to an existing playground's session — the
+  // iterate write path. The READ path needs no change: currentVersionOf already derives
+  // the newest turn, so the commons and player serve the appended version automatically.
+  // An unknown id fails loudly with PlaygroundNotFoundError, distinct from infra failure;
+  // a turn whose handle names a different session is rejected, not silently stitched on.
+  // [LAW:one-source-of-truth] [LAW:no-silent-failure]
+  appendTurn(id: PlaygroundId, turn: NewTurn): Promise<Playground>;
 
   // The full record for one playground — session, turns, versions, lineage. An
   // unknown id fails loudly rather than returning a null callers must guard.
@@ -111,6 +121,35 @@ export const makeCatalog = (store: CatalogStore): Catalog => {
         const doc = await store.read();
         await store.write({ playgrounds: [...doc.playgrounds, playground] });
         return playground;
+      });
+    },
+
+    appendTurn(id: PlaygroundId, turn: NewTurn): Promise<Playground> {
+      return serialize(async () => {
+        const doc = await store.read();
+        const existing = find(doc, id);
+        // A follow-up turn belongs to its playground's session. A handle minted against a
+        // different session or provider would corrupt the record's identity, so reject it
+        // loudly rather than appending a foreign turn. [LAW:no-silent-failure]
+        if (
+          turn.handle.sessionId !== existing.session.sessionId ||
+          turn.handle.providerId !== existing.session.providerId
+        ) {
+          throw new Error(`turn ${turn.handle.turnId} does not belong to playground ${id}'s session`);
+        }
+        const appended: TurnRecord = {
+          turnId: turn.handle.turnId,
+          prompt: turn.prompt,
+          version: turn.version,
+        };
+        const updated: Playground = {
+          ...existing,
+          session: { ...existing.session, turns: [...existing.session.turns, appended] },
+        };
+        await store.write({
+          playgrounds: doc.playgrounds.map((p) => (p.id === id ? updated : p)),
+        });
+        return updated;
       });
     },
 

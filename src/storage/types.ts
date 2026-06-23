@@ -91,6 +91,18 @@ export interface NewPlayground {
   readonly lineage: Lineage | null;
 }
 
+// What a succeeded FOLLOW-UP turn hands the catalog to extend an existing playground
+// (iterate): the continued turn's handle, the follow-up prompt, and the stored version.
+// No lineage — appending a turn is the VERSION-HISTORY axis, never the fork axis; the two
+// stay separate. The handle's sessionId/providerId must match the target playground's
+// session (the catalog enforces it), so a follow-up cannot be stitched onto a foreign
+// session. [LAW:one-source-of-truth]
+export interface NewTurn {
+  readonly handle: SessionHandle;
+  readonly prompt: string;
+  readonly version: VersionId;
+}
+
 // The whole persisted catalog document — the unit a CatalogStore reads and writes.
 // Playgrounds are kept in insertion order so the commons lists them deterministically.
 export interface CatalogDoc {

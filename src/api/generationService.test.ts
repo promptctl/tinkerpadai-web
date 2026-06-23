@@ -4,9 +4,15 @@ import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import type { SessionHandle } from '../provider/index.js';
-import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
+import {
+  makeMemoryArtifactStore,
+  makeMemoryCatalog,
+  PlaygroundId,
+  PlaygroundNotFoundError,
+  VersionId,
+} from '../storage/index.js';
 import type { ArtifactStore } from '../storage/index.js';
-import { makeGenerationService } from './generationService.js';
+import { makeGenerationService, ProviderCannotContinueError } from './generationService.js';
 import type { GenerationService } from './generationService.js';
 
 // The generation service's contract: it wires a chosen provider to the store and
@@ -83,11 +89,14 @@ describe('GenerationService.poll — success persists the file as a catalogued p
     expect((await h.store.get(version)).html).toContain('a wave explorer');
   });
 
-  it('releases the settled turn exactly once, after persisting', async () => {
+  it('does NOT release a successful turn — its workdir is the session continuable state', async () => {
+    // A successful turn's workdir is what a follow-up (continue) resumes into, so the
+    // service must not dispose it on success. Only failed turns, which leave nothing
+    // continuable, are released.
     const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' });
     const handle = await submit(h, 'x');
     await h.service.poll(handle);
-    expect(h.disposed).toEqual([handle]);
+    expect(h.disposed).toEqual([]);
   });
 
   it('persists exactly once across repeated polls of a settled turn', async () => {
@@ -98,7 +107,6 @@ describe('GenerationService.poll — success persists the file as a catalogued p
     const second = await h.service.poll(handle);
     expect(first).toEqual(second);
     expect(await h.catalog.listPlaygrounds()).toHaveLength(1);
-    expect(h.disposed).toEqual([handle]);
   });
 
   it('persists exactly once even under concurrent polls of the same turn', async () => {
@@ -108,26 +116,26 @@ describe('GenerationService.poll — success persists the file as a catalogued p
     const [a, b] = await Promise.all([h.service.poll(handle), h.service.poll(handle)]);
     expect(a).toEqual(b);
     expect(await h.catalog.listPlaygrounds()).toHaveLength(1);
-    expect(h.disposed).toEqual([handle]);
   });
 });
 
-describe('GenerationService.poll — releasing the turn never misreports a durable success', () => {
-  it('reports ready and keeps the playground even when disposeTurn throws', async () => {
-    // A disposal fault cannot unmake a durable playground: the outcome is ready, the
-    // playground is catalogued, and the fault is surfaced loudly (not swallowed) — never
-    // a rejection that would lie about the live playground and wedge the turn forever.
+describe('GenerationService.poll — releasing a failed turn never misreports its outcome', () => {
+  it('reports failed even when disposeTurn throws, surfacing the fault loudly', async () => {
+    // Only a failed turn is released (a successful one's workdir is continuable). A disposal
+    // fault cannot unmake that settled failure: the outcome stays failed, the fault is
+    // surfaced loudly (not swallowed) — never a rejection that would wedge the turn behind a
+    // lie. [LAW:no-silent-failure]
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: { fail: 'skill crashed' } }, async () => {
       throw new Error('rm failed');
     });
-    const handle = await submit(h, 'durable despite cleanup fault');
+    const handle = await submit(h, 'doomed despite cleanup fault');
 
     const status = await h.service.poll(handle);
-    expect(status.state).toBe('ready');
-    expect(await h.catalog.listPlaygrounds()).toHaveLength(1);
+    expect(status).toEqual({ state: 'failed', error: 'skill crashed' });
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
 
-    // Re-polling still returns the durable success, not a memoized disposal rejection.
+    // Re-polling still returns the settled failure, not a memoized disposal rejection.
     expect(await h.service.poll(handle)).toEqual(status);
 
     // The disposal fault was surfaced, not hidden. [LAW:no-silent-failure]
@@ -146,6 +154,71 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     // The turn is still released even though nothing was stored.
     expect(h.disposed).toEqual([handle]);
+  });
+});
+
+describe('GenerationService.continue — refine an existing playground into a new version', () => {
+  it('appends a second version to the same playground, current version being the follow-up', async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const first = await submit(h, 'a counter');
+    const ready = await h.service.poll(first);
+    if (ready.state !== 'ready') throw new Error('unreachable');
+
+    const second = await h.service.continue(ready.playgroundId, { description: 'add a reset button' });
+    const continued = await h.service.poll(second);
+    if (continued.state !== 'ready') throw new Error('unreachable');
+    // The follow-up lands on the SAME playground, not a new one.
+    expect(continued.playgroundId).toBe(ready.playgroundId);
+
+    const playground = await h.catalog.getPlayground(ready.playgroundId);
+    expect(playground.session.turns).toHaveLength(2);
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(1);
+
+    // The current version is the second turn's, and its stored file reflects the follow-up
+    // brief — a genuine new version, not a replay of the first.
+    const summaries = await h.catalog.listPlaygrounds();
+    const current = summaries[0]?.currentVersion;
+    if (current === undefined) throw new Error('no version');
+    expect(current).toBe(playground.session.turns[1]?.version);
+    expect((await h.store.get(current)).html).toContain('add a reset button');
+  });
+
+  it('a continue turn that fails appends nothing and surfaces the error', async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: { fail: 'continue crashed' }, iterable: true });
+    // Seed an existing playground for this provider's session directly: the first turn need
+    // not have succeeded through this fail-outcome instance to exercise a failing continue.
+    const seed = await h.catalog.createPlayground({
+      handle: { providerId: h.providerId, sessionId: SessionId('seed-session'), turnId: TurnId('seed-turn') },
+      prompt: 'a counter',
+      version: VersionId('v-seed'),
+      lineage: null,
+    });
+
+    const handle = await h.service.continue(seed.id, { description: 'add a reset button' });
+    const status = await h.service.poll(handle);
+    expect(status).toEqual({ state: 'failed', error: 'continue crashed' });
+
+    // Nothing was appended — the playground still has its single original turn.
+    const playground = await h.catalog.getPlayground(seed.id);
+    expect(playground.session.turns).toHaveLength(1);
+  });
+
+  it('fails loudly when the playground provider cannot continue', async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const first = await submit(h, 'a counter');
+    const ready = await h.service.poll(first);
+    if (ready.state !== 'ready') throw new Error('unreachable');
+
+    await expect(
+      h.service.continue(ready.playgroundId, { description: 'add a reset button' }),
+    ).rejects.toThrow(ProviderCannotContinueError);
+  });
+
+  it('fails loudly for an unknown playground id', async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    await expect(
+      h.service.continue(PlaygroundId('nope'), { description: 'x' }),
+    ).rejects.toThrow(PlaygroundNotFoundError);
   });
 });
 

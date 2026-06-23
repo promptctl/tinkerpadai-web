@@ -90,6 +90,77 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
     }
   });
 
+  it('appends a follow-up turn as a new version; the current version becomes the latest', async () => {
+    const { catalog, close } = await open();
+    try {
+      const created = await catalog.createPlayground({
+        handle: handle('tmux', 'session-1', 'turn-1'),
+        prompt: 'a counter',
+        version: VersionId('version-1'),
+        lineage: null,
+      });
+
+      const updated = await catalog.appendTurn(created.id, {
+        handle: handle('tmux', 'session-1', 'turn-2'),
+        prompt: 'add a reset button',
+        version: VersionId('version-2'),
+      });
+
+      // Turns are preserved in order, both versions remain addressable, and the derived
+      // current version is the newest — the read path serves it with no change.
+      expect(updated.session.turns.map((t) => t.turnId)).toEqual([TurnId('turn-1'), TurnId('turn-2')]);
+      expect(updated.session.turns.map((t) => t.version)).toEqual([VersionId('version-1'), VersionId('version-2')]);
+      expect(currentVersionOf(updated.session)).toBe(VersionId('version-2'));
+      // Appending a turn is the version-history axis, never the fork axis — lineage is untouched.
+      expect(updated.session.lineage).toBeNull();
+
+      const got = await catalog.getPlayground(created.id);
+      expect(currentVersionOf(got.session)).toBe(VersionId('version-2'));
+      // The commons summary now reflects the latest version while keeping the original prompt.
+      const summary = (await catalog.listPlaygrounds()).find((s) => s.id === created.id);
+      expect(summary?.prompt).toBe('a counter');
+      expect(summary?.currentVersion).toBe(VersionId('version-2'));
+    } finally {
+      await close();
+    }
+  });
+
+  it('appending to an unknown playground fails loudly', async () => {
+    const { catalog, close } = await open();
+    try {
+      await expect(
+        catalog.appendTurn(PlaygroundId('does-not-exist'), {
+          handle: handle('tmux', 'session-x', 'turn-x'),
+          prompt: 'nope',
+          version: VersionId('version-x'),
+        }),
+      ).rejects.toThrow(/unknown playground/);
+    } finally {
+      await close();
+    }
+  });
+
+  it('rejects a follow-up turn minted against a different session', async () => {
+    const { catalog, close } = await open();
+    try {
+      const created = await catalog.createPlayground({
+        handle: handle('tmux', 'session-1', 'turn-1'),
+        prompt: 'a counter',
+        version: VersionId('version-1'),
+        lineage: null,
+      });
+      await expect(
+        catalog.appendTurn(created.id, {
+          handle: handle('tmux', 'a-different-session', 'turn-2'),
+          prompt: 'foreign turn',
+          version: VersionId('version-2'),
+        }),
+      ).rejects.toThrow(/does not belong/);
+    } finally {
+      await close();
+    }
+  });
+
   it('fails loudly on an unknown playground rather than returning null', async () => {
     const { catalog, close } = await open();
     try {

@@ -50,7 +50,30 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       if (version === undefined) throw new Error('catalogued playground has no version');
       const artifact = await store.get(version);
       expect(artifact.html.toLowerCase()).toContain('<html');
+
+      // REFINE: a follow-up brief onto the same playground produces a successive version, the
+      // contract the player's refine box drives. continue resolves the provider from the
+      // playground's session — no provider is restated. The playground count stays 1 (an
+      // appended version, not a new playground) and currentVersion advances to the refined
+      // file, which is what currentVersionOf serves on reload. [LAW:verifiable-goals]
+      const refined = await service.continue(status.playgroundId, {
+        description: 'add a reset button that sets the count back to zero',
+      });
+      let refinedStatus: GenerationStatus = await service.poll(refined);
+      while (refinedStatus.state === 'pending' || refinedStatus.state === 'running') {
+        refinedStatus = await service.poll(refined);
+      }
+      expect(refinedStatus.state).toBe('ready');
+      if (refinedStatus.state !== 'ready') throw new Error(refinedStatus.state);
+      expect(refinedStatus.playgroundId).toBe(status.playgroundId);
+
+      const afterRefine = await catalog.listPlaygrounds();
+      expect(afterRefine).toHaveLength(1);
+      const newVersion = afterRefine[0]?.currentVersion;
+      if (newVersion === undefined) throw new Error('refined playground has no version');
+      expect(newVersion).not.toBe(version);
+      expect((await store.get(newVersion)).html.toLowerCase()).toContain('<html');
     },
-    5 * 60 * 1000,
+    10 * 60 * 1000,
   );
 });

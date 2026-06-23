@@ -93,4 +93,22 @@ export const describeIterateContract = (make: ContractProviderFactory): void => 
     expect(second.turnId).not.toBe(first.turnId);
     expect(second.providerId).toBe(first.providerId);
   });
+
+  it('a continued turn carries through to its own succeeded result, distinct from the first', async () => {
+    const provider = make({ id: 'p', label: 'P', outcome: 'success', iterable: true });
+    if (provider.continueSession === undefined) {
+      throw new Error('describeIterateContract requires a provider that implements continueSession');
+    }
+    const first = await provider.startSession({ description: 'a counter' });
+    const firstResult = await provider.getResult(first);
+
+    const second = await provider.continueSession(first, { description: 'add a reset button' });
+    const status = await provider.getStatus(second);
+    expect(status.state).toBe('succeeded');
+    if (status.state !== 'succeeded') throw new Error('unreachable');
+    // The follow-up brief, not the original, drives the new turn's artifact — so the
+    // continued version is genuinely a new version, not a replay of the first.
+    expect(status.result.artifact.html).toContain('add a reset button');
+    expect(status.result.artifact.html).not.toBe(firstResult.artifact.html);
+  });
 };

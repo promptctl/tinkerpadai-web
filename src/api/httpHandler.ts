@@ -1,6 +1,8 @@
-import type { GenerationRequest, SessionHandle } from '../provider/index.js';
+import type { Brief, GenerationRequest, SessionHandle } from '../provider/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
+import { PlaygroundId, PlaygroundNotFoundError } from '../storage/index.js';
 import type { GenerationService } from './generationService.js';
+import { ProviderCannotContinueError } from './generationService.js';
 
 // THE HTTP SURFACE the front door calls (p0v.5). A runtime-agnostic Web fetch handler —
 // (Request) => Promise<Response> — so it runs on a Node server, a Cloudflare Worker, or
@@ -31,6 +33,20 @@ const parseGenerationRequest = (body: unknown): GenerationRequest => {
   if (!isRecord(body.brief)) throw new BadRequest('missing field: brief');
   return {
     providerId: ProviderId(requireString(body.providerId, 'providerId')),
+    brief: { description: requireString(body.brief.description, 'brief.description') },
+  };
+};
+
+// The single place that validates and brands an incoming continue request. Symmetric with
+// parseGenerationRequest: foreign JSON crosses the trust boundary here and only here, where
+// the playgroundId is re-branded (its runtime brand was erased over the wire). The body
+// names the target playground instead of a provider — continue resolves the provider from
+// the playground's session, so the caller never restates it. [LAW:single-enforcer]
+const parseContinueRequest = (body: unknown): { playgroundId: PlaygroundId; brief: Brief } => {
+  if (!isRecord(body)) throw new BadRequest('body must be a JSON object');
+  if (!isRecord(body.brief)) throw new BadRequest('missing field: brief');
+  return {
+    playgroundId: PlaygroundId(requireString(body.playgroundId, 'playgroundId')),
     brief: { description: requireString(body.brief.description, 'brief.description') },
   };
 };
@@ -84,6 +100,16 @@ export const makeHttpHandler = (
           const handle = await service.submit(parseGenerationRequest(await readJson(request)));
           return json({ handle }, 201);
         }
+        // The continue path: a follow-up brief onto an existing playground. Symmetric with
+        // POST /generations — it returns a fresh SessionHandle (201) the client drives with
+        // the EXISTING POST /poll; no new poll surface. continue resolves and rejects the
+        // target (unknown playground, non-iterable provider) synchronously before any handle
+        // exists, so the catch below maps those failures and there is no half-state to poll.
+        case 'POST /generations/continue': {
+          const { playgroundId, brief } = parseContinueRequest(await readJson(request));
+          const handle = await service.continue(playgroundId, brief);
+          return json({ handle }, 201);
+        }
         // POST, not GET: a poll is not safe — the first observation of a succeeded turn
         // performs the store+catalog write — so it must not be treated as cacheable.
         case 'POST /poll':
@@ -93,10 +119,19 @@ export const makeHttpHandler = (
       }
     } catch (error) {
       if (error instanceof BadRequest) return json({ error: error.message }, 400);
-      // Any failure from the service is surfaced loudly with its message — never a 200
-      // hiding an error, never a silent empty body. Finer status taxonomy (e.g. unknown
-      // provider as 404) is a later refinement; the message is always carried so the
-      // caller is never sent down a wrong path. [LAW:no-silent-failure]
+      // A well-formed request naming a playground that doesn't exist: a client error, not
+      // infra. The typed PlaygroundNotFoundError carries the id in its message. [LAW:no-silent-failure]
+      if (error instanceof PlaygroundNotFoundError) return json({ error: error.message }, 404);
+      // The request is well-formed AND the playground exists, but its provider cannot iterate
+      // (no continueSession). The input is unprocessable on semantic, not infra, grounds — so
+      // 422, distinct from both the 404 (no such playground) and the generic 500 (real
+      // failure). Surfacing it as 500 would misrepresent a client-actionable condition as a
+      // server fault and send the caller down the wrong path. [LAW:no-silent-failure]
+      if (error instanceof ProviderCannotContinueError) return json({ error: error.message }, 422);
+      // Any other failure from the service is surfaced loudly with its message — never a 200
+      // hiding an error, never a silent empty body. Finer status taxonomy for the remaining
+      // 500s (e.g. unknown provider as 404) is a later refinement; the message is always
+      // carried so the caller is never sent down a wrong path. [LAW:no-silent-failure]
       return json({ error: error instanceof Error ? error.message : String(error) }, 500);
     }
   };

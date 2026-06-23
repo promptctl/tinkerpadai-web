@@ -97,6 +97,73 @@ describe('POST /generations then POST /poll — the full submit→poll round tri
   });
 });
 
+describe('POST /generations/continue then POST /poll — the iterate round trip', () => {
+  // Drive an initial generation all the way to a catalogued playground, returning its id —
+  // the continue route's input is a playground that already exists, so the test must mint one.
+  const submitToReady = async (
+    handler: (request: Request) => Promise<Response>,
+  ): Promise<string> => {
+    const { handle } = (await (
+      await handler(post('/generations', { providerId: 'fake', brief: { description: 'a tiny counter' } }))
+    ).json()) as { handle: Record<string, string> };
+    const status = (await (await handler(post('/poll', { handle }))).json()) as {
+      state: string;
+      playgroundId?: string;
+    };
+    expect(status.state).toBe('ready');
+    return status.playgroundId as string;
+  };
+
+  it('continues an existing playground, returns a new handle, and polls it to ready', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const playgroundId = await submitToReady(handler);
+
+    const continueRes = await handler(
+      post('/generations/continue', { playgroundId, brief: { description: 'now make it count by two' } }),
+    );
+    expect(continueRes.status).toBe(201);
+    const { handle } = (await continueRes.json()) as { handle: Record<string, string> };
+    expect(handle.providerId).toBe('fake');
+
+    const pollRes = await handler(post('/poll', { handle }));
+    expect(pollRes.status).toBe(200);
+    const status = (await pollRes.json()) as { state: string; playgroundId?: string };
+    expect(status.state).toBe('ready');
+    expect(status.playgroundId).toBe(playgroundId);
+  });
+
+  it('rejects an unknown playground id loudly as 404, never a turn that targets nothing', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const res = await handler(
+      post('/generations/continue', { playgroundId: 'ghost', brief: { description: 'x' } }),
+    );
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('rejects continuing a non-iterable provider as 422, not a server fault or a silent no-op', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(
+      post('/generations/continue', { playgroundId, brief: { description: 'x' } }),
+    );
+    expect(res.status).toBe(422);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('rejects a continue with a missing brief as 400', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const res = await handler(post('/generations/continue', { playgroundId: 'pg-1' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a continue with a missing playgroundId as 400', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const res = await handler(post('/generations/continue', { brief: { description: 'x' } }));
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /poll — a failed generation surfaces the error as data, not an empty file', () => {
   it('reports state failed with the surfaced message', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: { fail: 'skill crashed' } });

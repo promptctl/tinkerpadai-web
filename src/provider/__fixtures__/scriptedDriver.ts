@@ -35,6 +35,13 @@ export const makeScriptedDriver = (opts: ContractProviderOptions): CodeGenDriver
       turns.set(handle.turnId, { brief, runningLeft: opts.runningPolls ?? 0 });
     },
 
+    // A follow-up turn is, to this double, just a new turn carrying the follow-up
+    // brief — enough to prove the orchestration mints fresh identity and surfaces a
+    // distinct artifact. The real resume effect lives in the tmux driver.
+    async continue(brief: Brief, handle: SessionHandle, _priorHandle: SessionHandle): Promise<void> {
+      turns.set(handle.turnId, { brief, runningLeft: opts.runningPolls ?? 0 });
+    },
+
     async poll(handle: SessionHandle): Promise<DriverSnapshot> {
       const turn = turnOf(handle);
       if (turn.runningLeft > 0) {

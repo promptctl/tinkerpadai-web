@@ -22,9 +22,12 @@ describe('Provider seam contract: fake provider', () => describeProviderContract
 describe('Provider seam contract: tmux provider (scripted driver)', () =>
   describeProviderContract(tmuxFactory));
 
-// Iterate is a capability — only the fake implements it. The one-shot tmux provider
-// omits continueSession, so this contract simply does not apply to it.
+// Iterate is a capability proven the same way against every provider that has it: the
+// fake (no driver) and the tmux provider (scripted driver) both implement
+// continueSession, so the one contract runs against both. [LAW:behavior-not-structure]
 describe('Provider iterate contract: fake provider', () => describeIterateContract(makeFakeProvider));
+describe('Provider iterate contract: tmux provider (scripted driver)', () =>
+  describeIterateContract(tmuxFactory));
 
 describe('SessionStatus is exhaustive — every state is handled, by construction', () => {
   it('a total function over the union has no uncovered case', () => {

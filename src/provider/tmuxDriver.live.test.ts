@@ -32,9 +32,27 @@ describe.runIf(live)('tmux driver (live)', () => {
       if (snapshot.state !== 'succeeded') throw new Error(snapshot.state);
       expect(snapshot.html.length).toBeGreaterThan(0);
       expect(snapshot.html.toLowerCase()).toContain('<html');
+      const firstHtml = snapshot.html;
+
+      // Continue the same session with a follow-up and confirm a fresh artifact comes
+      // back — the live proof that "send a follow-up into the live session" works.
+      const followUp = {
+        providerId: handle.providerId,
+        sessionId: handle.sessionId,
+        turnId: TurnId(`turn-${Date.now()}-2`),
+      };
+      await driver.continue({ description: 'add a reset button that sets the count to zero' }, followUp, handle);
+
+      let next = await driver.poll(followUp);
+      while (next.state === 'running') next = await driver.poll(followUp);
+
+      expect(next.state).toBe('succeeded');
+      if (next.state !== 'succeeded') throw new Error(next.state);
+      expect(next.html.toLowerCase()).toContain('<html');
+      expect(next.html).not.toBe(firstHtml);
 
       await cleanupTurn(handle);
     },
-    5 * 60 * 1000,
+    8 * 60 * 1000,
   );
 });

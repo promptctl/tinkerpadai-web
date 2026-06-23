@@ -50,18 +50,31 @@ export const makeTmuxProvider = (config: TmuxProviderConfig): Provider => {
   const providerId = ProviderId(config.id);
   const { driver } = config;
 
-  // The provider owns the identity space: every turn gets a fresh, unique handle.
-  // sessionId and turnId are distinct so a future continueSession can pin a new turn
-  // within the same session without re-minting the session. [LAW:one-source-of-truth]
-  const mintHandle = (): SessionHandle => ({
+  // The provider owns the identity space. A turn always gets a fresh turnId; a NEW
+  // session also gets a fresh sessionId, while a follow-up turn reuses the caller's
+  // sessionId so successive versions stay one session. Minting a turn lives in one
+  // place so start and continue cannot diverge on identity. [LAW:one-source-of-truth]
+  const mintTurn = (sessionId: SessionId): SessionHandle => ({
     providerId,
-    sessionId: SessionId(`session-${randomUUID()}`),
+    sessionId,
     turnId: TurnId(`turn-${randomUUID()}`),
   });
+  const mintHandle = (): SessionHandle => mintTurn(SessionId(`session-${randomUUID()}`));
 
   async function startSession(brief: Brief): Promise<SessionHandle> {
     const handle = mintHandle();
     await driver.begin(brief, handle);
+    return handle;
+  }
+
+  // Continue an existing session with a follow-up: mint a fresh turn pinned to the
+  // SAME session, then resume the prior turn through the driver. Symmetric to
+  // startSession — same orchestration, the only difference is which driver effect and
+  // which session id, both carried as values. The driver owns the resume effect; this
+  // body stays ignorant of tmux. [LAW:dataflow-not-control-flow] [LAW:effects-at-boundaries]
+  async function continueSession(prior: SessionHandle, followUp: Brief): Promise<SessionHandle> {
+    const handle = mintTurn(prior.sessionId);
+    await driver.continue(followUp, handle, prior);
     return handle;
   }
 
@@ -90,6 +103,9 @@ export const makeTmuxProvider = (config: TmuxProviderConfig): Provider => {
     return driver.isAvailable();
   }
 
+  // continueSession is PRESENT, so capabilitiesOf reports continue:true for the real
+  // provider — capability is method presence, no boolean to keep in sync. fork stays
+  // omitted until the remix epic. [LAW:one-source-of-truth]
   return {
     id: providerId,
     label: config.label,
@@ -98,5 +114,6 @@ export const makeTmuxProvider = (config: TmuxProviderConfig): Provider => {
     streamProgress,
     getResult,
     getAvailability,
+    continueSession,
   };
 };

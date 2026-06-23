@@ -61,14 +61,19 @@ export interface CatalogStore {
   write(doc: CatalogDoc): Promise<void>;
 }
 
-// The latest version of a playground, derived from its session's turns. Version
-// history is the turns in order; the current version is simply the last one. Derived,
-// never stored, so it cannot drift from the turns. The non-empty turns tuple makes
-// this total. [LAW:one-source-of-truth]
-export const currentVersionOf = (session: SessionRecord): VersionId => {
+// The latest turn of a session, derived from its turns in order. Version history IS
+// the turns; the current turn is simply the last one. Derived, never stored, so it
+// cannot drift. The non-empty turns tuple makes this total — no null to guard. This is
+// the single home for "the newest turn of a session"; both the current version and the
+// handle that resumes the session (the iterate path) are read from it, never re-derived
+// elsewhere. [LAW:one-source-of-truth] [LAW:no-defensive-null-guards]
+export const currentTurnOf = (session: SessionRecord): TurnRecord => {
   const [first, ...rest] = session.turns;
-  return (rest.at(-1) ?? first).version;
+  return rest.at(-1) ?? first;
 };
+
+// The latest version of a playground — the newest turn's version. [LAW:one-source-of-truth]
+export const currentVersionOf = (session: SessionRecord): VersionId => currentTurnOf(session).version;
 
 // The cheap projection for the commons list: original describe + latest version.
 // Derived from the playground, never persisted alongside it. [LAW:one-source-of-truth]

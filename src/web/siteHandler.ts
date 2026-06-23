@@ -40,7 +40,9 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
       const playground = await catalog.getPlayground(PlaygroundId(id));
       const summary = summarize(playground);
       const contentSrc = `${contentOrigin}/?id=${encodeURIComponent(summary.id)}`;
-      return html(renderPlayer({ id: summary.id, prompt: summary.prompt, contentSrc }));
+      return html(
+        renderPlayer({ id: summary.id, prompt: summary.prompt, contentSrc, providerId: summary.providerId }),
+      );
     } catch (error) {
       // ONLY a genuine unknown id becomes a 404 page. Any other failure (the catalog can't
       // be read, an invariant is violated) is the server being wrong — let it propagate to

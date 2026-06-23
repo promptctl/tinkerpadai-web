@@ -9,7 +9,8 @@ import type {
   SessionHandle,
   SessionStatus,
 } from '../provider/index.js';
-import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
+import type { ArtifactStore, Catalog, Playground, PlaygroundId, VersionId } from '../storage/index.js';
+import { currentTurnOf } from '../storage/index.js';
 
 // THE GENERATION SERVICE — the one boundary where the generation effect is performed,
 // wiring registry -> provider -> store -> catalog. It is provider-agnostic by
@@ -30,6 +31,20 @@ export type GenerationStatus =
   | { readonly state: 'running' }
   | { readonly state: 'ready'; readonly playgroundId: PlaygroundId }
   | { readonly state: 'failed'; readonly error: string };
+
+// The TYPED "this provider can't iterate" signal. continue() is only meaningful against a
+// provider that implements continueSession; capability IS method presence (registry's
+// capabilitiesOf derives it the same way). A one-shot provider asked to continue is a loud,
+// typed failure at submit time — not a silent no-op that would leave the caller polling a
+// turn that will never exist. Typed (not a bare Error) so the HTTP route can map it to a
+// distinct status, the way PlaygroundNotFoundError is the 404 signal.
+// [LAW:no-silent-failure] [LAW:types-are-the-program]
+export class ProviderCannotContinueError extends Error {
+  constructor(public readonly providerId: ProviderId) {
+    super(`provider ${providerId} cannot continue a session`);
+    this.name = 'ProviderCannotContinueError';
+  }
+}
 
 export interface GenerationServiceDeps {
   readonly registry: ProviderRegistry;
@@ -60,19 +75,37 @@ export interface GenerationService {
   // is done. The returned handle is what the caller polls.
   submit(request: GenerationRequest): Promise<SessionHandle>;
 
+  // Refine an existing playground: send a follow-up brief into its session, producing a
+  // successive version. Symmetric with submit — it registers a turn and returns the handle
+  // to poll; the difference is purely the turn's TARGET (append onto this playground, not
+  // create a new one), carried as a value so the one finalize path serves both. An unknown
+  // id fails loudly (PlaygroundNotFoundError); a provider that can't iterate fails loudly
+  // (ProviderCannotContinueError). [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+  continue(playgroundId: PlaygroundId, brief: Brief): Promise<SessionHandle>;
+
   // The point-in-time status of a turn. On the first observation of a succeeded provider
-  // status it performs the one effectful transition (store the file, record the
-  // playground, release the turn) exactly once and thereafter reports `ready`; on
-  // failure it surfaces the message and writes nothing. [LAW:no-silent-failure]
+  // status it performs the one effectful transition (store the file, record the version on
+  // its target playground) exactly once and thereafter reports `ready`; on failure it
+  // surfaces the message, writes nothing, and releases the turn. [LAW:no-silent-failure]
   poll(handle: SessionHandle): Promise<GenerationStatus>;
 }
 
+// Where a turn's successful artifact lands in the catalog, carried as a VALUE on the
+// turn so the one finalize path dispatches on it rather than branching on which kind of
+// turn produced it. A first turn creates a playground; a follow-up appends a version to a
+// named one. This is the only difference between submit and continue at persist time.
+// [LAW:dataflow-not-control-flow]
+type TurnTarget =
+  | { readonly kind: 'create' }
+  | { readonly kind: 'append'; readonly playgroundId: PlaygroundId };
+
 // Per-turn state the service owns: the brief the turn carried (the catalog needs the
 // prompt at persist time and the handle does not carry it — so the service is the single
-// source of truth for the prompt that drove the turn), and the memoized terminal
-// transition. [LAW:one-source-of-truth]
+// source of truth for the prompt that drove the turn), where its result will be recorded,
+// and the memoized terminal transition. [LAW:one-source-of-truth]
 interface TurnRecord {
   readonly brief: Brief;
+  readonly target: TurnTarget;
   // Null until the first poll observes a terminal provider status; then it holds the
   // single in-flight/settled persist. Memoizing the transition (not just a boolean) is
   // what makes the effect fire exactly once even under concurrent polls.
@@ -111,24 +144,48 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     }
   };
 
+  // Record a stored version against its target. The create-vs-append choice is the turn's
+  // target value, matched exhaustively here — the single seam between submit and continue
+  // at persist time. appendTurn rejects a handle whose session doesn't match the target
+  // playground, but the continue path reconstructs the prior handle from that same session,
+  // so the check passes by construction. [LAW:dataflow-not-control-flow]
+  const persist = (
+    target: TurnTarget,
+    handle: SessionHandle,
+    prompt: string,
+    version: VersionId,
+  ): Promise<Playground> => {
+    switch (target.kind) {
+      case 'create':
+        return catalog.createPlayground({ handle, prompt, version, lineage: null });
+      case 'append':
+        return catalog.appendTurn(target.playgroundId, { handle, prompt, version });
+      default: {
+        const unreachable: never = target;
+        return unreachable;
+      }
+    }
+  };
+
   // The one effectful transition. Order is load-bearing: store first (the catalog
-  // references the version it returns), then catalog — the outcome is SEALED once
-  // createPlayground returns. A failure of store/catalog rejects this promise and is
-  // surfaced loudly; nothing half-written is reported as success. Release runs last and
-  // cannot change the sealed outcome. [LAW:no-ambient-temporal-coupling]
+  // references the version it returns), then catalog — the outcome is SEALED once persist
+  // returns. A failure of store/catalog rejects this promise and is surfaced loudly;
+  // nothing half-written is reported as success. [LAW:no-ambient-temporal-coupling]
+  //
+  // A successful turn is NOT released: its workdir IS the session's continuable state —
+  // the provider resumes a follow-up turn (continue) by re-entering that dir, so disposing
+  // it here would destroy the very thing iterate needs. Cleanup of a finished session's
+  // workdirs is deferred (no "session abandoned" trigger yet — a steel-thread limitation,
+  // like the in-memory turn map). Only a failed turn, which leaves nothing continuable, is
+  // released. [LAW:no-ambient-temporal-coupling]
   const finalizeSuccess = async (
     handle: SessionHandle,
     brief: Brief,
+    target: TurnTarget,
     artifact: Artifact,
   ): Promise<GenerationStatus> => {
     const version = await store.put(artifact);
-    const playground = await catalog.createPlayground({
-      handle,
-      prompt: brief.description,
-      version,
-      lineage: null,
-    });
-    await release(handle);
+    const playground = await persist(target, handle, brief.description, version);
     return { state: 'ready', playgroundId: playground.id };
   };
 
@@ -158,7 +215,33 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // there is no null to branch on. [LAW:dataflow-not-control-flow]
       const provider = registry.get(request.providerId);
       const handle = await provider.startSession(request.brief);
-      turns.set(handle.turnId, { brief: request.brief, terminal: null });
+      turns.set(handle.turnId, { brief: request.brief, target: { kind: 'create' }, terminal: null });
+      return handle;
+    },
+
+    async continue(playgroundId: PlaygroundId, brief: Brief): Promise<SessionHandle> {
+      // Resolve the target playground first: an unknown id fails loudly here with the typed
+      // PlaygroundNotFoundError, never a turn that targets nothing. [LAW:no-silent-failure]
+      const { session } = await catalog.getPlayground(playgroundId);
+      const provider = registry.get(session.providerId);
+
+      // Capability is method presence. A provider that can't iterate fails loudly at submit
+      // time — never a silent no-op. The guard narrows continueSession to defined, and we
+      // call it on the provider so it keeps its receiver. [LAW:no-silent-failure]
+      if (provider.continueSession === undefined) {
+        throw new ProviderCannotContinueError(session.providerId);
+      }
+
+      // Reconstruct the handle that resumes this session: its newest turn. providerId and
+      // sessionId are preserved from the record, so the appended turn belongs to this
+      // session by construction (appendTurn enforces that). [LAW:one-source-of-truth]
+      const prior: SessionHandle = {
+        providerId: session.providerId,
+        sessionId: session.sessionId,
+        turnId: currentTurnOf(session).turnId,
+      };
+      const handle = await provider.continueSession(prior, brief);
+      turns.set(handle.turnId, { brief, target: { kind: 'append', playgroundId }, terminal: null });
       return handle;
     },
 
@@ -180,7 +263,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
         case 'running':
           return { state: 'running' };
         case 'succeeded':
-          record.terminal = finalizeSuccess(handle, record.brief, status.result.artifact);
+          record.terminal = finalizeSuccess(handle, record.brief, record.target, status.result.artifact);
           return record.terminal;
         case 'failed':
           record.terminal = finalizeFailure(handle, status.error.message);

@@ -9,7 +9,7 @@ export { makeMemoryArtifactStore } from './memoryArtifactStore.js';
 export { makeFileArtifactStore } from './fileArtifactStore.js';
 
 export type { Catalog, CatalogStore } from './catalog.js';
-export { makeCatalog, currentVersionOf, summarize, PlaygroundNotFoundError } from './catalog.js';
+export { makeCatalog, currentTurnOf, currentVersionOf, summarize, PlaygroundNotFoundError } from './catalog.js';
 export { makeMemoryCatalog } from './memoryCatalog.js';
 export { makeFileCatalog } from './fileCatalog.js';
 

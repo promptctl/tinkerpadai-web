@@ -41,7 +41,12 @@ describe.runIf(live)('tmux driver (live)', () => {
         sessionId: handle.sessionId,
         turnId: TurnId(`turn-${Date.now()}-2`),
       };
-      await driver.continue({ description: 'add a reset button that sets the count to zero' }, followUp, handle);
+      await driver.continue(
+        { description: 'add a reset button that sets the count to zero' },
+        followUp,
+        handle,
+        { html: firstHtml },
+      );
 
       let next = await driver.poll(followUp);
       while (next.state === 'running') next = await driver.poll(followUp);
@@ -67,6 +72,7 @@ describe.runIf(live)('tmux driver (live)', () => {
         { description: 'make the count text larger and bold' },
         thirdTurn,
         followUp,
+        { html: secondHtml },
       );
 
       let third = await driver.poll(thirdTurn);
@@ -76,6 +82,33 @@ describe.runIf(live)('tmux driver (live)', () => {
       if (third.state !== 'succeeded') throw new Error(third.state);
       expect(third.html.toLowerCase()).toContain('<html');
       expect(third.html).not.toBe(secondHtml);
+      const thirdHtml = third.html;
+
+      // COLD-PATH RE-SEED — the eviction case. Evict the session's workdir (exactly what
+      // the idle GC does), then continue anyway. With the cache gone, the driver must
+      // re-seed the working file from the durable artifact handed in as `seed` and run
+      // fresh, so the playground stays refinable across eviction — the live proof that
+      // eviction never costs continuability, only conversation context. [LAW:one-source-of-truth]
+      await cleanupTurn(thirdTurn);
+
+      const afterEvict = {
+        providerId: handle.providerId,
+        sessionId: handle.sessionId,
+        turnId: TurnId(`turn-${Date.now()}-4`),
+      };
+      await driver.continue(
+        { description: 'add a label that reads "Counter" above the number' },
+        afterEvict,
+        thirdTurn,
+        { html: thirdHtml },
+      );
+
+      let fourth = await driver.poll(afterEvict);
+      while (fourth.state === 'running') fourth = await driver.poll(afterEvict);
+
+      expect(fourth.state).toBe('succeeded');
+      if (fourth.state !== 'succeeded') throw new Error(fourth.state);
+      expect(fourth.html.toLowerCase()).toContain('<html');
 
       await cleanupTurn(handle);
     },

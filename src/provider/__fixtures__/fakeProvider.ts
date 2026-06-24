@@ -1,6 +1,7 @@
 import type { Provider } from '../provider.js';
 import type { ContractProviderOptions } from '../provider.contract.js';
 import type {
+  Artifact,
   Availability,
   Brief,
   GenerationResult,
@@ -93,7 +94,7 @@ export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
 
   return {
     ...base,
-    async continueSession(handle: SessionHandle, followUp: Brief): Promise<SessionHandle> {
+    async continueSession(handle: SessionHandle, followUp: Brief, _seed: Artifact): Promise<SessionHandle> {
       return beginTurn(handle.sessionId, followUp);
     },
     async fork(handle: SessionHandle): Promise<SessionHandle> {

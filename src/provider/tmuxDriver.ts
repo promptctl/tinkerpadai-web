@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CodeGenDriver, DriverSnapshot } from './codeGenDriver.js';
-import type { Availability, Brief, ProgressEvent, SessionHandle } from './types.js';
+import type { Artifact, Availability, Brief, ProgressEvent, SessionHandle } from './types.js';
 
 // The real, deliberately crude body behind the Provider seam: it drives Claude Code
 // over tmux to turn a brief into a self-contained HTML playground. It is the one
@@ -41,12 +41,19 @@ const ARTIFACT_FILE = 'playground.html';
 const PROMPT_FILE = 'prompt.txt';
 const EXIT_FILE = 'exit.code';
 
+// The single root every session workdir lives under — named once so dirOf (which
+// resolves one session's dir) and the idle GC (which scans them all) cannot drift on
+// where the workdirs are. [LAW:one-source-of-truth]
+const WORKDIR_ROOT = join(tmpdir(), 'tinkerpad-gen');
+
 // Per-turn world state the driver owns: where its files live, what its tmux session
-// is called, and when it must give up. [LAW:one-source-of-truth]
+// is called, when it must give up, and whether this turn re-seeded a cold workdir (so
+// progress can say so honestly). [LAW:one-source-of-truth]
 interface TurnWorld {
   readonly dir: string;
   readonly session: string;
   readonly deadline: number;
+  readonly reseeded: boolean;
 }
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -84,8 +91,20 @@ const binaryPresent = async (bin: string, versionFlag: string): Promise<boolean>
 // so without reaching into begin's in-memory state. A per-turn key was a lie about
 // what the directory represents: it bent away from the live workdir the moment a
 // session was continued more than once. [LAW:one-source-of-truth] [FRAMING:representation]
-const dirOf = (handle: SessionHandle): string =>
-  join(tmpdir(), 'tinkerpad-gen', handle.sessionId);
+const dirOf = (handle: SessionHandle): string => join(WORKDIR_ROOT, handle.sessionId);
+
+// Whether a session's workdir is still on disk. Absence is a real, expected state —
+// the idle GC may have evicted it, or a restart/reboot may have wiped /tmp — so it is
+// a typed answer, not a swallowed error; any OTHER stat failure throws loudly.
+// [LAW:no-silent-failure]
+const dirExists = async (dir: string): Promise<boolean> => {
+  try {
+    return (await stat(dir)).isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+};
 
 // The instruction handed to Claude Code. The brief reaches the agent only via this
 // file on disk — never interpolated into a shell command — so a brief can say
@@ -178,35 +197,58 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
         `echo $? > ${EXIT_FILE}`;
       await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
 
-      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs });
+      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs, reseeded: false });
     },
 
-    // Resume the prior turn's conversation and refine its artifact. The follow-up runs
-    // in the SAME workdir as priorHandle (where the playground file and Claude Code's
-    // conversation history live) and resumes it with `claude --continue`, so context
-    // carries forward — this is "send a follow-up into the live session". The new turn
-    // gets its own fresh tmux session and its own world keyed by its turnId, so poll/
-    // progress track it independently of the prior turn. [LAW:one-source-of-truth]
-    async continue(brief: Brief, handle: SessionHandle, priorHandle: SessionHandle): Promise<void> {
+    // Resume the prior turn and refine its artifact. The follow-up runs in the SAME
+    // workdir as priorHandle. Two cases, decided by whether that workdir cache survived:
+    //
+    //  WARM — the dir is on disk: resume the live Claude Code conversation with
+    //  `--continue`, so the full prior context carries forward. The seed is redundant.
+    //
+    //  COLD — the dir was evicted by the idle GC, or lost to a restart/reboot: the
+    //  conversation cache is gone, but the playground's artifact is the store's durable
+    //  truth and arrives here as `seed`. Re-seed the working file from it and run FRESH
+    //  (no `--continue`) — the agent refines the real current artifact from the file,
+    //  forgoing only the prior conversation, never the artifact or the ability to
+    //  continue. We deliberately do not depend on Claude Code's own session store
+    //  surviving; the durable seed we control is the source of truth. [LAW:one-source-of-truth]
+    //
+    // The new turn gets its own fresh tmux session and its own world keyed by its
+    // turnId, so poll/progress track it independently of the prior turn.
+    // [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+    async continue(
+      brief: Brief,
+      handle: SessionHandle,
+      priorHandle: SessionHandle,
+      seed: Artifact,
+    ): Promise<void> {
       const dir = dirOf(priorHandle);
       const session = sessionName(handle);
+      const warm = await dirExists(dir);
+
+      await mkdir(dir, { recursive: true });
+      const artifactPath = join(dir, ARTIFACT_FILE);
+      // Cold: the cache is gone, so the working file must be reconstructed from the
+      // durable seed before the agent can refine it in place.
+      if (!warm) await writeFile(artifactPath, seed.html, 'utf8');
 
       // The prior turn left its exit sentinel in this dir; the new turn settles on a
       // FRESH sentinel, so the stale one must go first or poll would read it and report
-      // the new turn done before it has even run. [LAW:no-silent-failure]
+      // the new turn done before it has even run. Harmless on a cold dir. [LAW:no-silent-failure]
       await rm(join(dir, EXIT_FILE), { force: true });
-
-      const artifactPath = join(dir, ARTIFACT_FILE);
       await writeFile(join(dir, PROMPT_FILE), continuePromptFor(brief, artifactPath), 'utf8');
 
-      // `--continue` resumes the latest Claude Code conversation in this cwd — the one
-      // the prior turn started — so the follow-up has the full prior context.
+      // `--continue` only when warm: it resumes the latest Claude Code conversation in
+      // this cwd. On a cold re-seed there is no conversation to resume, so the flag is
+      // omitted and the agent works from the re-seeded file alone.
+      const continueFlag = warm ? '--continue ' : '';
       const paneCommand =
-        `claude -p "$(cat ${PROMPT_FILE})" --continue --dangerously-skip-permissions; ` +
+        `claude -p "$(cat ${PROMPT_FILE})" ${continueFlag}--dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
       await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
 
-      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs });
+      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs, reseeded: !warm });
     },
 
     async poll(handle: SessionHandle): Promise<DriverSnapshot> {
@@ -225,6 +267,12 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
 
     async *progress(handle: SessionHandle): AsyncIterable<ProgressEvent> {
       const world = worldOf(handle);
+      // A re-seeded turn refines the durable artifact without the prior conversation —
+      // a real (if minor) loss of context. Surface it so the degradation is observed,
+      // never silent. [LAW:no-silent-failure]
+      if (world.reseeded) {
+        yield { at: Date.now(), message: 'resuming from stored version (prior conversation unavailable)' };
+      }
       yield { at: Date.now(), message: 'generation started' };
       while ((await readOrNull(join(world.dir, EXIT_FILE))) === null && Date.now() <= world.deadline) {
         if (!(await isAlive(world.session))) break;
@@ -240,12 +288,111 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
   };
 };
 
-// Remove the session's temp workdir (the same one dirOf resolves — one source of
-// truth for where it lives, never a second path that can drift). It disposes the
-// whole session because the workdir IS the session's, shared by every turn; the
-// caller decides WHEN that is safe (only once nothing continuable remains). Separate
-// from the driver because cleanup is the app's call to make, not part of generating.
-// [LAW:decomposition] [LAW:one-source-of-truth]
+// Remove one session's temp workdir by handle (the same dir dirOf resolves — one source
+// of truth for where it lives, never a second path that can drift). It disposes the whole
+// session because the workdir IS the session's, shared by every turn. Removing it is
+// always safe: continue re-seeds a missing workdir from the durable store, so this only
+// drops the session's cache to cold, never destroys its continuability. The eager,
+// by-handle disposer for a failed create (reclaimOnFailure); the idle bulk sweep is
+// evictIdleWorkdirs. Separate from the driver because cleanup is the app's call to make,
+// not part of generating. [LAW:decomposition] [LAW:one-source-of-truth]
 export const cleanupTurn = async (handle: SessionHandle): Promise<void> => {
   await rm(dirOf(handle), { recursive: true, force: true });
+};
+
+// ── Idle workdir eviction ───────────────────────────────────────────────────
+// A successful session's workdir is a CACHE of its durable artifact, kept warm so a
+// follow-up resumes with full conversation context. Nothing disposes it on the happy
+// path, so without a sweeper the dirs accumulate one-per-session for the life of the
+// process. These reclaim the cold ones. Eviction is always SAFE because continue
+// re-seeds a missing workdir from the store (above): an evicted session stays
+// continuable, it only loses prior conversation context. The filesystem is the source
+// of truth (a dir's mtime is its last turn's activity), so this survives a restart
+// that the in-memory turn maps do not. [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
+
+// One scanned workdir: its session id (the dir name) and when it was last touched.
+export interface WorkdirEntry {
+  readonly name: string;
+  readonly mtimeMs: number;
+}
+
+// The PURE policy: which workdirs are past the idle deadline. Each turn rewrites its
+// dir as it runs (the exit sentinel is removed and recreated), so a fresh mtime means
+// recent activity and idleness beyond maxIdleMs means no turn has touched it since.
+// maxIdleMs must stay far larger than a single generation's timeout, so an in-flight
+// turn — whose dir was just written — is never a candidate. Pure, so the policy is
+// verified without touching the clock or disk. [LAW:effects-at-boundaries]
+export const expiredWorkdirs = (
+  entries: readonly WorkdirEntry[],
+  nowMs: number,
+  maxIdleMs: number,
+): readonly string[] => entries.filter((entry) => nowMs - entry.mtimeMs > maxIdleMs).map((entry) => entry.name);
+
+export interface EvictWorkdirsOptions {
+  readonly maxIdleMs: number;
+  readonly nowMs: number;
+}
+
+// The EFFECT: read the workdir root, decide with the pure policy, remove the expired
+// dirs. Returns the session ids it evicted, for logging and verification. A missing
+// root means no session has generated yet — a real empty state, not an error to
+// swallow; any other read failure throws loudly. [LAW:no-silent-failure]
+export const evictIdleWorkdirs = async (opts: EvictWorkdirsOptions): Promise<readonly string[]> => {
+  const names = await readdir(WORKDIR_ROOT).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [] as string[];
+    throw error;
+  });
+  const entries = await Promise.all(
+    names.map(
+      async (name): Promise<WorkdirEntry> => ({
+        name,
+        mtimeMs: (await stat(join(WORKDIR_ROOT, name))).mtimeMs,
+      }),
+    ),
+  );
+  const expired = expiredWorkdirs(entries, opts.nowMs, opts.maxIdleMs);
+  await Promise.all(expired.map((name) => rm(join(WORKDIR_ROOT, name), { recursive: true, force: true })));
+  return expired;
+};
+
+export interface WorkdirJanitorConfig {
+  readonly maxIdleMs?: number;
+  readonly sweepIntervalMs?: number;
+}
+
+export interface WorkdirJanitor {
+  stop(): void;
+}
+
+const DEFAULT_MAX_IDLE_MS = 6 * 60 * 60 * 1000; // 6h idle — far beyond any single generation
+const DEFAULT_SWEEP_INTERVAL_MS = 30 * 60 * 1000; // sweep every 30 minutes
+
+// The lifecycle OWNER: a background sweeper that evicts idle workdirs on an interval.
+// It is the SINGLE explicit owner of eviction timing — start is this call, stop is the
+// returned handle — with the clock read only at the effect edge, never an ambient timer
+// smeared across the code. The timer is unref'd so it never keeps the process alive on
+// its own. Local-only: started by the runtime entry (main.ts), never by makeApp,
+// because the workdir cache is the local tmux provider's concern and the agnostic app
+// graph must stay free of background effects. [LAW:no-ambient-temporal-coupling]
+export const startWorkdirJanitor = (config: WorkdirJanitorConfig = {}): WorkdirJanitor => {
+  const maxIdleMs = config.maxIdleMs ?? DEFAULT_MAX_IDLE_MS;
+  const sweepIntervalMs = config.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
+
+  const sweep = (): void => {
+    void evictIdleWorkdirs({ maxIdleMs, nowMs: Date.now() })
+      .then((evicted) => {
+        if (evicted.length > 0) {
+          console.log(`tinkerpad: evicted ${evicted.length} idle session workdir(s)`);
+        }
+      })
+      // A sweep fault is surfaced loudly but must not crash the server. [LAW:no-silent-failure]
+      .catch((error: unknown) => {
+        console.error('tinkerpad: workdir janitor sweep failed:', error);
+      });
+  };
+
+  sweep(); // clear restart-orphans promptly, then keep sweeping on the interval
+  const timer = setInterval(sweep, sweepIntervalMs);
+  timer.unref();
+  return { stop: () => clearInterval(timer) };
 };

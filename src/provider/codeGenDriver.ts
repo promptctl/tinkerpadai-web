@@ -1,4 +1,4 @@
-import type { Availability, Brief, ProgressEvent, SessionHandle } from './types.js';
+import type { Artifact, Availability, Brief, ProgressEvent, SessionHandle } from './types.js';
 
 // The effectful boundary the tmux provider is built on: the interface to an
 // external code-generating agent. EVERYTHING that touches the world — spawning a
@@ -38,7 +38,14 @@ export interface CodeGenDriver {
   // start-from-nothing — so it is its own method, not a flag on begin; the provider
   // varies behaviour by calling the right one, never by branching inside it.
   // [LAW:dataflow-not-control-flow] [LAW:no-mode-explosion]
-  continue(brief: Brief, handle: SessionHandle, priorHandle: SessionHandle): Promise<void>;
+  //
+  // `seed` is the prior turn's CURRENT artifact from the durable store. When the
+  // session's cached workdir survives, the driver resumes the live conversation and
+  // the seed is redundant; when it was evicted (or lost to a restart), the driver
+  // re-seeds the working file from this value and continues without the conversation —
+  // so continuability is backed by the durable artifact, not the ephemeral cache.
+  // [LAW:one-source-of-truth]
+  continue(brief: Brief, handle: SessionHandle, priorHandle: SessionHandle, seed: Artifact): Promise<void>;
 
   // Inspect the handle's turn once. MUST eventually return a terminal snapshot
   // (succeeded or failed) — a turn that never settles is the driver's bug to fix

@@ -62,7 +62,13 @@ export interface Provider {
   // [LAW:dataflow-not-control-flow]
   continueSession?(handle: SessionHandle, followUp: Brief, seed: Artifact): Promise<SessionHandle>;
 
-  // Branch a new session from an existing one (remix). Optional — present iff the
-  // provider supports it. Lineage is recorded by the catalog (p0v.2), not here.
-  fork?(handle: SessionHandle): Promise<SessionHandle>;
+  // Branch a NEW independent session from an existing one (remix). Optional — present
+  // iff the provider supports it. `seed` is the parent playground's CURRENT durable
+  // artifact, read from the store and passed across the seam as a value — the same
+  // shape continueSession uses — so the provider seeds the new session from it without
+  // ever reaching into the parent's (possibly-evicted) private state. The returned
+  // handle names a fresh session whose identity is wholly distinct from the parent's;
+  // lineage (parent/forkedFromVersion) is recorded by the catalog (p0v.2), not here.
+  // [LAW:one-source-of-truth] [LAW:dataflow-not-control-flow]
+  fork?(handle: SessionHandle, seed: Artifact): Promise<SessionHandle>;
 }

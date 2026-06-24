@@ -116,3 +116,43 @@ export const describeIterateContract = (make: ContractProviderFactory): void => 
     expect(status.result.artifact.html).not.toBe(firstResult.artifact.html);
   });
 };
+
+// The remix capability's contract. Applies ONLY to providers that implement fork —
+// capability is method presence, so a provider without it is simply not registered for
+// this suite. fork takes the parent handle and a `seed` (the parent's current artifact,
+// a value crossing the seam), and yields a NEW independent session seeded from it.
+// [LAW:dataflow-not-control-flow]
+export const describeRemixContract = (make: ContractProviderFactory): void => {
+  it('forks into a NEW independent session — distinct session and turn, same provider', async () => {
+    const provider = make({ id: 'p', label: 'P', outcome: 'success', iterable: true });
+    if (provider.fork === undefined) {
+      throw new Error('describeRemixContract requires a provider that implements fork');
+    }
+    const parent = await provider.startSession({ description: 'a counter' });
+    const forked = await provider.fork(parent, { html: '<!-- a counter -->' });
+
+    // A fork is a NEW session, not another turn of the parent's — its identity is wholly
+    // distinct so the two sessions iterate independently. [LAW:decomposition]
+    expect(forked.sessionId).not.toBe(parent.sessionId);
+    expect(forked.turnId).not.toBe(parent.turnId);
+    expect(forked.providerId).toBe(parent.providerId);
+  });
+
+  it('a fork starts from the seed — its genesis version reflects the forked artifact, not a fresh brief', async () => {
+    const provider = make({ id: 'p', label: 'P', outcome: 'success', iterable: true });
+    if (provider.fork === undefined) {
+      throw new Error('describeRemixContract requires a provider that implements fork');
+    }
+    const parent = await provider.startSession({ description: 'original sketch' });
+    const seed = (await provider.getResult(parent)).artifact;
+
+    const forked = await provider.fork(parent, seed);
+    const status = await provider.getStatus(forked);
+    expect(status.state).toBe('succeeded');
+    if (status.state !== 'succeeded') throw new Error('unreachable');
+    // The fork is seeded from the parent's CURRENT artifact, handed across the seam as a
+    // value — so the independent branch begins where the parent is, not from an empty
+    // brief. [LAW:one-source-of-truth]
+    expect(status.result.artifact.html).toBe(seed.html);
+  });
+};

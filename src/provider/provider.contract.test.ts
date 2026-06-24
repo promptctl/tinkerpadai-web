@@ -5,6 +5,7 @@ import {
   type ContractProviderFactory,
   describeIterateContract,
   describeProviderContract,
+  describeRemixContract,
 } from './provider.contract.js';
 import { makeTmuxProvider } from './tmuxProvider.js';
 import type { SessionStatus } from './types.js';
@@ -28,6 +29,13 @@ describe('Provider seam contract: tmux provider (scripted driver)', () =>
 describe('Provider iterate contract: fake provider', () => describeIterateContract(makeFakeProvider));
 describe('Provider iterate contract: tmux provider (scripted driver)', () =>
   describeIterateContract(tmuxFactory));
+
+// Remix is a capability proven the same way against every provider that has it: the fake
+// (no driver) and the tmux provider (scripted driver) both implement fork, so the one
+// contract runs against both. [LAW:behavior-not-structure]
+describe('Provider remix contract: fake provider', () => describeRemixContract(makeFakeProvider));
+describe('Provider remix contract: tmux provider (scripted driver)', () =>
+  describeRemixContract(tmuxFactory));
 
 describe('SessionStatus is exhaustive — every state is handled, by construction', () => {
   it('a total function over the union has no uncovered case', () => {

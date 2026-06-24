@@ -47,6 +47,18 @@ export interface CodeGenDriver {
   // [LAW:one-source-of-truth]
   continue(brief: Brief, handle: SessionHandle, priorHandle: SessionHandle, seed: Artifact): Promise<void>;
 
+  // Launch the GENESIS turn of a forked session: establish `handle` (a freshly-minted,
+  // independent session identity) seeded from `seed` — the parent's current artifact,
+  // arriving as a value. Like begin it starts from nothing prior IN THIS session, but
+  // unlike begin its starting point is the seed file rather than a blank brief; like
+  // continue's cold path it re-seeds the working file from the durable artifact, but
+  // under a NEW sessionId whose workdir is wholly distinct from the parent's — so a
+  // fork never touches, and is never touched by, the parent's evictable cache. The fork
+  // is a genuinely different effect from begin/continue (branch-from-artifact vs
+  // start-from-brief vs resume-with-context), so it is its own method, chosen by value.
+  // [LAW:dataflow-not-control-flow] [LAW:no-mode-explosion] [LAW:one-source-of-truth]
+  fork(handle: SessionHandle, seed: Artifact): Promise<void>;
+
   // Inspect the handle's turn once. MUST eventually return a terminal snapshot
   // (succeeded or failed) — a turn that never settles is the driver's bug to fix
   // (e.g. via a deadline), because the provider's getResult await-loop trusts this

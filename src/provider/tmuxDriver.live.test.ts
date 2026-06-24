@@ -110,8 +110,51 @@ describe.runIf(live)('tmux driver (live)', () => {
       if (fourth.state !== 'succeeded') throw new Error(fourth.state);
       expect(fourth.html.toLowerCase()).toContain('<html');
 
+      // REMIX FORK — branch a brand-new independent session from a prior artifact. The
+      // fork handle carries a FRESH sessionId (the provider mints it), so the driver
+      // resolves a NEW workdir distinct from the parent's, seeds it from the artifact
+      // handed in as `seed`, and runs fresh — establishing an independent, refinable
+      // playground that stands on the durable seed alone, never the parent's workdir.
+      // The live proof of the new-session-from-seed path the scripted driver can't reach
+      // (it has no workdir). [LAW:one-source-of-truth]
+      const forkHandle = {
+        providerId: handle.providerId,
+        sessionId: SessionId(`session-${Date.now()}-fork`),
+        turnId: TurnId(`turn-${Date.now()}-fork`),
+      };
+      await driver.fork(forkHandle, { html: firstHtml });
+
+      let forked = await driver.poll(forkHandle);
+      while (forked.state === 'running') forked = await driver.poll(forkHandle);
+
+      expect(forked.state).toBe('succeeded');
+      if (forked.state !== 'succeeded') throw new Error(forked.state);
+      expect(forked.html.toLowerCase()).toContain('<html');
+
+      // The fork is a SEPARATE session: continuing it must not disturb the parent's still-
+      // live workdir. Refine the fork once to confirm it is independently continuable.
+      const forkRefine = {
+        providerId: handle.providerId,
+        sessionId: forkHandle.sessionId,
+        turnId: TurnId(`turn-${Date.now()}-fork-2`),
+      };
+      await driver.continue(
+        { description: 'change the buttons to say "up" and "down"' },
+        forkRefine,
+        forkHandle,
+        { html: forked.html },
+      );
+
+      let forkedNext = await driver.poll(forkRefine);
+      while (forkedNext.state === 'running') forkedNext = await driver.poll(forkRefine);
+
+      expect(forkedNext.state).toBe('succeeded');
+      if (forkedNext.state !== 'succeeded') throw new Error(forkedNext.state);
+      expect(forkedNext.html.toLowerCase()).toContain('<html');
+
+      await cleanupTurn(forkHandle);
       await cleanupTurn(handle);
     },
-    8 * 60 * 1000,
+    12 * 60 * 1000,
   );
 });

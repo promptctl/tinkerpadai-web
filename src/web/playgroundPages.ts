@@ -86,40 +86,50 @@ export interface PlayerView {
   // The iframe's src on the CONTENT origin (a foreign origin). The player page never holds
   // the playground html itself — it points the sandbox at where that html is served raw.
   readonly contentSrc: string;
-  // The provider that owns this playground's session. The refine box does NOT let the user
-  // pick a provider — continue resolves it from the session — so this is carried only to gate
-  // the box on that one provider's live availability, exactly as the front door gates submit
-  // on the selected provider. It rides into the page as escaped data, never as JS. [LAW:decomposition]
+  // The provider that owns this playground's session. Neither action box lets the user pick a
+  // provider — continue and fork both resolve it from the session — so this is carried only to
+  // gate the boxes on that one provider's live availability (and, for remix, its fork
+  // capability), exactly as the front door gates submit on the selected provider. It rides
+  // into the page as escaped data, never as JS. [LAW:decomposition]
   readonly providerId: PlaygroundSummary['providerId'];
 }
 
-// The refine client, inlined into the player chrome. It drives the SAME generation API the
-// front door does (continue + the existing poll loop) and renders from what it reads, so the
-// box's every visible state is a server value, not an assumption. It is GATED entirely at
-// runtime: the page itself is provider-agnostic (the read/use path stays provider-free), and
-// this script reveals the box only after /providers proves generation is on. With an empty
-// registry the box stays hidden and browse/use are untouched. [LAW:decomposition]
+// The player client, inlined into the player chrome. It wires TWO actions onto the SAME
+// generation API the front door uses — refine (continue) and remix (fork) — each driven to a
+// terminal state over the EXISTING poll loop. Both flows are ONE behavior (submit a turn, poll
+// it to ready, act on the result) parameterized by VALUES: the endpoint, the request payload,
+// the progress noun, the stand-down on an unsupported provider, and the terminal action. The
+// poll loop and the JSON helpers live exactly once (runTurn/api) — refine and remix differ in
+// data, never in a copied loop. [LAW:dataflow-not-control-flow] [LAW:one-source-of-truth]
 //
-// On ready it reloads the page: currentVersionOf already serves the newest version, so a plain
-// reload re-frames the refined playground with no read-path change. A follow-up never re-asks
-// for a provider — continue resolves it from the playground's session. [LAW:no-mode-explosion]
-const REFINE_SCRIPT = `
+// It is GATED entirely at runtime: the page itself is provider-agnostic (the read/use path
+// stays provider-free), and this script reveals each box only after /providers proves
+// generation is on. With an empty registry both boxes stay hidden and browse/use are untouched.
+// Refine reloads in place on ready (currentVersionOf already serves the newest version); remix
+// NAVIGATES to the new fork's own player, since fork yields an INDEPENDENT playground whose
+// id is the poll's terminal value. Neither action ever re-asks for a provider — continue and
+// fork resolve it from the session. [LAW:decomposition] [LAW:no-mode-explosion]
+const PLAYER_SCRIPT = `
   const $ = (id) => document.getElementById(id);
-  const bar = $('refine-bar');
+  const actions = $('actions');
   const form = $('refine');
-  const input = $('refine-input');
-  const submitBtn = $('refine-submit');
-  const note = $('refine-note');
+  const refineInput = $('refine-input');
+  const refineBtn = $('refine-submit');
+  const refineNote = $('refine-note');
+  const remixBar = $('remix-bar');
+  const remixBtn = $('remix-submit');
+  const remixNote = $('remix-note');
 
   // The playground and its provider arrive as DATA on the form, escaped at render time and
   // read here as plain strings — never interpolated into this script, so a hostile id can
-  // never become code. [FRAMING:representation]
+  // never become code. One source for both actions; remix reads the same values refine does.
+  // [FRAMING:representation] [LAW:one-source-of-truth]
   const playgroundId = form.dataset.playgroundId;
   const providerId = form.dataset.providerId;
 
-  // The one client-side HTML escaper for anything that becomes innerHTML in the note region,
+  // The one client-side HTML escaper for anything that becomes innerHTML in a note region,
   // mirroring the front door's single enforcer. Server strings (a failure message) pass
-  // through this so "<img onerror=…>" renders as text, never an element.
+  // through this so "<img onerror=…>" renders as text, never an element. [LAW:single-enforcer]
   const esc = (value) =>
     String(value)
       .replaceAll('&', '&amp;')
@@ -128,14 +138,19 @@ const REFINE_SCRIPT = `
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&#39;');
 
-  const setNote = (html, kind) => {
-    note.innerHTML = html;
-    note.className = 'refine-note' + (kind ? ' ' + kind : '');
+  // A note writer bound to one status element — refine and remix each get their own, so a
+  // running turn's progress never overwrites the other control's message.
+  const noteWriter = (el) => (html, kind) => {
+    el.innerHTML = html;
+    el.className = 'refine-note' + (kind ? ' ' + kind : '');
   };
+  const setRefineNote = noteWriter(refineNote);
+  const setRemixNote = noteWriter(remixNote);
 
-  // The shared JSON+ok helper for the symmetric calls (/providers, /availability, /poll).
-  // The continue POST is handled separately because its 422 must be read off the status, not
-  // collapsed into a generic error. A body that does not parse is a real fault — let it reject.
+  // The shared JSON+ok helper for the symmetric reads (/providers, /availability, /poll).
+  // A turn's POST is handled inside runTurn instead, because its 201/422 must be read off the
+  // status, not collapsed into a generic error. A body that does not parse is a real fault —
+  // let it reject.
   const api = async (path, init) => {
     const res = await fetch(path, init);
     const body = await res.json();
@@ -143,26 +158,31 @@ const REFINE_SCRIPT = `
     return body;
   };
 
-  // Drive the follow-up turn to a terminal state over the EXISTING poll loop — no new progress
-  // surface. The running poll blocks on the server, so this never spins.
-  const refine = async (description) => {
-    setNote('<span class="spin"></span>Submitting…', 'muted');
-    const res = await fetch('/generations/continue', {
+  // The lifted turn runner — the single poll loop both actions share. It POSTs the turn,
+  // then drives the returned handle to a terminal state over the EXISTING poll loop (no new
+  // progress surface; the running poll blocks on the server, so this never spins). What
+  // varies between refine and remix is passed as VALUES, never branched on:
+  //   path/payload : which endpoint and body (continue carries a brief; fork carries none)
+  //   noun         : the progress verb shown while polling
+  //   onUnsupported: stand the action down when the provider can't perform this turn (422)
+  //   onReady      : what to do with the terminal playgroundId (reload vs navigate)
+  // [LAW:dataflow-not-control-flow] [LAW:composability]
+  const runTurn = async (config) => {
+    config.setNote('<span class="spin"></span>Submitting…', 'muted');
+    const res = await fetch(config.path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ playgroundId, brief: { description } }),
+      body: JSON.stringify(config.payload),
     });
     const body = await res.json();
-    // 422 is the one client-actionable semantic case: this playground's provider is one-shot
-    // and cannot iterate. Surface it as an unavailable state and stand the box down — not a
-    // crash. Every other non-201 is a loud failure carrying the server's message.
+    // 422 is the one client-actionable semantic case: this playground's provider can't perform
+    // this turn (one-shot for continue, non-forkable for fork). Stand the action down with the
+    // reason — not a crash. Every other non-201 is a loud failure carrying the server's message.
     if (res.status === 422) {
-      submitBtn.disabled = true;
-      input.disabled = true;
-      setNote('Refine is unavailable for this playground: ' + esc(body.error), 'bad');
+      config.onUnsupported(body.error);
       return;
     }
-    if (res.status !== 201) throw new Error(body.error ?? ('refine failed (' + res.status + ')'));
+    if (res.status !== 201) throw new Error(body.error ?? ('request failed (' + res.status + ')'));
 
     const handle = body.handle;
     for (;;) {
@@ -172,55 +192,115 @@ const REFINE_SCRIPT = `
         body: JSON.stringify({ handle }),
       });
       if (status.state === 'pending' || status.state === 'running') {
-        setNote('<span class="spin"></span>Refining… (' + esc(status.state) + ')', 'muted');
+        config.setNote('<span class="spin"></span>' + config.noun + '… (' + esc(status.state) + ')', 'muted');
         continue;
       }
       if (status.state === 'ready') {
-        // The newest version is now current; a reload re-frames it. No read-path change.
-        setNote('<span class="good">Updated. Reloading…</span>', 'good');
-        location.reload();
+        config.onReady(status);
         return;
       }
       throw new Error(status.error);
     }
   };
 
+  // Refine: a follow-up brief onto THIS playground. On ready the newest version is current, so
+  // a reload re-frames it with no read-path change. [LAW:no-mode-explosion]
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const description = input.value.trim();
+    const description = refineInput.value.trim();
     if (description === '') return;
-    submitBtn.disabled = true;
-    input.disabled = true;
+    refineBtn.disabled = true;
+    refineInput.disabled = true;
     try {
-      await refine(description);
+      await runTurn({
+        path: '/generations/continue',
+        payload: { playgroundId, brief: { description } },
+        noun: 'Refining',
+        setNote: setRefineNote,
+        onUnsupported: (reason) => {
+          refineBtn.disabled = true;
+          refineInput.disabled = true;
+          setRefineNote('Refine is unavailable for this playground: ' + esc(reason), 'bad');
+        },
+        onReady: () => {
+          setRefineNote('<span class="good">Updated. Reloading…</span>', 'good');
+          location.reload();
+        },
+      });
     } catch (error) {
-      setNote('<span class="bad">' + esc(error.message) + '</span>', 'bad');
-      submitBtn.disabled = false;
-      input.disabled = false;
+      setRefineNote('<span class="bad">' + esc(error.message) + '</span>', 'bad');
+      refineBtn.disabled = false;
+      refineInput.disabled = false;
     }
   });
 
-  // Boot gate. /providers decides whether the box exists at all: an empty registry means
-  // generation is off, so the box stays hidden and browse/use are untouched. When a provider
-  // exists, reveal the box, then check THIS playground's provider's live availability and gate
-  // submit on it — the same two-level gate the front door uses, minus the provider picker.
+  // Remix: branch THIS playground into a NEW independent fork. fork carries no brief — the
+  // service derives the new playground's first-turn prompt from the parent's original describe.
+  // On ready the terminal playgroundId is the FORK's own id (distinct from this one), so we
+  // navigate there: the user lands on the copy they now own. [LAW:one-source-of-truth]
+  remixBtn.addEventListener('click', async () => {
+    remixBtn.disabled = true;
+    try {
+      await runTurn({
+        path: '/generations/fork',
+        payload: { playgroundId },
+        noun: 'Remixing',
+        setNote: setRemixNote,
+        onUnsupported: (reason) => {
+          remixBtn.disabled = true;
+          setRemixNote('Remix is unavailable for this playground: ' + esc(reason), 'bad');
+        },
+        onReady: (status) => {
+          setRemixNote('<span class="good">Forked. Opening your copy…</span>', 'good');
+          location.assign('/play?id=' + encodeURIComponent(status.playgroundId));
+        },
+      });
+    } catch (error) {
+      setRemixNote('<span class="bad">' + esc(error.message) + '</span>', 'bad');
+      remixBtn.disabled = false;
+    }
+  });
+
+  // Boot gate. /providers decides whether the action region exists at all: an empty registry
+  // means generation is off, so it stays hidden and browse/use are untouched. When a provider
+  // exists, reveal the region, then check THIS playground's provider's live availability ONCE
+  // and gate both actions on it — the same two-level gate the front door uses, minus the picker.
+  // Remix carries one extra gate: it is offered only when this provider can FORK (a static
+  // capability read off the descriptor), so the 422 path stays unreachable from the happy path.
+  // [LAW:no-silent-failure]
   (async () => {
     try {
       const providers = await api('/providers');
       if (providers.length === 0) return;
-      bar.hidden = false;
+      actions.hidden = false;
       const availability = await api('/availability?providerId=' + encodeURIComponent(providerId));
       const ok = availability.state === 'available';
-      submitBtn.disabled = !ok;
-      input.disabled = !ok;
-      if (!ok) setNote('Refine unavailable: ' + esc(availability.reason), 'bad');
+
+      refineBtn.disabled = !ok;
+      refineInput.disabled = !ok;
+      if (!ok) setRefineNote('Refine unavailable: ' + esc(availability.reason), 'bad');
+
+      // Capability gate: only offer remix when this playground's provider implements fork.
+      // A provider absent from the list (deregistered) is treated as not forkable — remix
+      // stays hidden, never a dead live-looking button.
+      const descriptor = providers.find((p) => p.id === providerId);
+      const forkable = descriptor !== undefined && descriptor.capabilities.fork === true;
+      if (forkable) {
+        remixBar.hidden = false;
+        remixBtn.disabled = !ok;
+        if (!ok) setRemixNote('Remix unavailable: ' + esc(availability.reason), 'bad');
+      }
     } catch (error) {
-      // Generation could not be read (or this playground's provider is gone): leave the box
-      // hidden if it never opened, or stand it down with a reason. Never a dead, live-looking
-      // control. [LAW:no-silent-failure]
-      submitBtn.disabled = true;
-      input.disabled = true;
-      if (!bar.hidden) setNote('Refine unavailable: ' + esc(error.message), 'bad');
+      // Generation could not be read (or this playground's provider is gone): leave the region
+      // hidden if it never opened, or stand both actions down with a reason. Never a dead,
+      // live-looking control. [LAW:no-silent-failure]
+      refineBtn.disabled = true;
+      refineInput.disabled = true;
+      remixBtn.disabled = true;
+      if (!actions.hidden) {
+        setRefineNote('Refine unavailable: ' + esc(error.message), 'bad');
+        if (!remixBar.hidden) setRemixNote('Remix unavailable: ' + esc(error.message), 'bad');
+      }
     }
   })();
 `;
@@ -240,11 +320,15 @@ export const renderPlayer = (view: PlayerView): string =>
   header h1 { font-size:0.95rem; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   header a { font-size:0.85rem; white-space:nowrap; }
   iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
-  footer { border-top:1px solid var(--line); padding:0.6rem 1rem; display:flex; flex-direction:column; gap:0.4rem; }
+  footer { border-top:1px solid var(--line); padding:0.6rem 1rem; display:flex; flex-direction:column; gap:0.5rem; }
   footer form { display:flex; gap:0.6rem; }
   footer input { flex:1 1 auto; background:#0f1218; color:var(--fg); border:1px solid var(--line); border-radius:0.5rem; padding:0.5rem 0.7rem; font:inherit; }
   footer button { background:var(--accent); color:#0b1020; border:0; border-radius:0.5rem; padding:0.5rem 1.1rem; font:inherit; font-weight:600; cursor:pointer; }
   footer button:disabled { opacity:0.45; cursor:not-allowed; }
+  #remix-bar { display:flex; align-items:center; gap:0.6rem; }
+  /* Remix is a DIFFERENT kind of action from refine (branch off vs change in place), so it
+     reads as a secondary, outlined control rather than the primary accent button. */
+  #remix-submit { background:transparent; color:var(--accent); border:1px solid var(--accent); }
   .refine-note { font-size:0.8rem; color:var(--muted); min-height:1.1em; }
   .refine-note.bad { color:#ff8a8a; }
   .refine-note.good { color:#7ee2a8; }
@@ -261,12 +345,16 @@ export const renderPlayer = (view: PlayerView): string =>
   sandbox="allow-scripts"
   referrerpolicy="no-referrer"
 ></iframe>
-<footer id="refine-bar" hidden>
+<footer id="actions" hidden>
+  <div id="remix-bar" hidden>
+    <button type="button" id="remix-submit">Remix this playground →</button>
+    <div class="refine-note" id="remix-note" role="status" aria-live="polite"></div>
+  </div>
   <form id="refine" data-playground-id="${escapeHtml(view.id)}" data-provider-id="${escapeHtml(view.providerId)}">
     <input id="refine-input" type="text" placeholder="Refine this playground — describe a change…" required />
     <button type="submit" id="refine-submit">Refine</button>
   </form>
   <div class="refine-note" id="refine-note" role="status" aria-live="polite"></div>
 </footer>
-<script type="module">${REFINE_SCRIPT}</script>`,
+<script type="module">${PLAYER_SCRIPT}</script>`,
   );

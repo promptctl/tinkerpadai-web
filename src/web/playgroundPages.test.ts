@@ -39,16 +39,26 @@ describe('renderPlayer', () => {
     expect(html).not.toContain('allow-same-origin');
   });
 
-  // The refine box wires the follow-up to the SAME generation API (continue + the existing
-  // poll loop), and starts hidden so the page is provider-agnostic — the client reveals it
-  // only after /providers proves generation is on. [LAW:no-mode-explosion]
-  it('renders the refine box hidden, wired to the continue + poll endpoints', () => {
+  // The action region wires both follow-ups to the SAME generation API (continue/fork + the
+  // existing poll loop), and starts hidden so the page is provider-agnostic — the client
+  // reveals it only after /providers proves generation is on. [LAW:no-mode-explosion]
+  it('renders the action region hidden, wired to the continue + poll endpoints', () => {
     const html = renderPlayer(view);
-    expect(html).toContain('id="refine-bar" hidden');
+    expect(html).toContain('id="actions" hidden');
     expect(html).toContain('/generations/continue');
     expect(html).toContain('/poll');
     expect(html).toContain('/providers');
     expect(html).toContain('/availability');
+  });
+
+  // The remix control wires the fork action to the SAME poll loop and starts hidden behind its
+  // own capability gate (the client reveals it only when the provider can fork), so a
+  // non-forkable playground never shows a dead button. [LAW:no-mode-explosion]
+  it('renders the remix control hidden, wired to the fork endpoint', () => {
+    const html = renderPlayer(view);
+    expect(html).toContain('id="remix-bar" hidden');
+    expect(html).toContain('id="remix-submit"');
+    expect(html).toContain('/generations/fork');
   });
 
   // The playground id and its provider cross into the page as DATA (escaped attributes), so a

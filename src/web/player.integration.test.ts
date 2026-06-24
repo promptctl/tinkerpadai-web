@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
 import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
-import { ProviderId, SessionId, TurnId } from '../provider/index.js';
+import { ProviderId, ProviderRegistry, SessionId, TurnId } from '../provider/index.js';
+import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
+import { makeGenerationService } from '../api/generationService.js';
+import { makeHttpHandler } from '../api/httpHandler.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
@@ -67,5 +70,67 @@ describe('commons + sandboxed player over two real origins', () => {
     expect(framed.status).toBe(200);
     expect(framed.headers.get('content-security-policy')).toContain("connect-src 'none'");
     expect(await framed.text()).toBe(RAW_HTML);
+  });
+});
+
+// THE REMIX ACTION, proven over the real composed front door. The player's remix button does
+// exactly one HTTP dance: POST /generations/fork with this playground's id, then drive the
+// EXISTING /poll loop to ready, then navigate to /play?id=<the new fork's id>. With no DOM
+// runner the script itself is not executed, so this exercises that SAME wiring through the
+// composed site handler (real apiHandler) over real sockets — the integration acceptance the
+// ticket names: the remix action issues the fork POST and follows the handle to a NEW,
+// independent, navigable playground. [LAW:verifiable-goals]
+describe('remix action over the composed front door', () => {
+  it('forks a playground via /generations/fork and lands the new id at its own player', async () => {
+    const catalog = makeMemoryCatalog();
+    const store = makeMemoryArtifactStore();
+
+    // A forkable provider (iterable exposes fork), wired through the real service + HTTP
+    // handler, composed behind the site handler exactly as production does.
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true }));
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => undefined });
+    const site = await serve({
+      handler: makeSiteHandler({
+        page: PAGE,
+        catalog,
+        contentOrigin: 'http://content.local',
+        apiHandler: makeHttpHandler(service),
+      }),
+      port: 0,
+    });
+    servers.push(site);
+
+    const post = (path: string, body: unknown): Promise<Response> =>
+      fetch(`${site.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const pollToReady = async (handle: unknown): Promise<string> => {
+      const status = (await (await post('/poll', { handle })).json()) as { state: string; playgroundId?: string };
+      expect(status.state).toBe('ready');
+      return status.playgroundId as string;
+    };
+
+    // Mint a parent playground through the real service so it is genuinely catalogued and
+    // forkable — the same starting point a user browses to.
+    const submit = (await post('/generations', { providerId: 'fake', brief: { description: 'a tiny counter' } }));
+    const { handle: submitHandle } = (await submit.json()) as { handle: unknown };
+    const parentId = await pollToReady(submitHandle);
+
+    // The remix button's call: fork by id, no brief.
+    const forkRes = await post('/generations/fork', { playgroundId: parentId });
+    expect(forkRes.status).toBe(201);
+    const { handle: forkHandle } = (await forkRes.json()) as { handle: unknown };
+
+    // Following the handle to ready yields the FORK's own id — an independent playground.
+    const forkId = await pollToReady(forkHandle);
+    expect(forkId).not.toBe(parentId);
+
+    // The navigation target the button follows resolves to the fork's own player chrome.
+    const player = await (await fetch(`${site.url}/play?id=${encodeURIComponent(forkId)}`)).text();
+    expect(player).toContain(`src="http://content.local/?id=${encodeURIComponent(forkId)}"`);
+    expect(player).toContain('Remix this playground');
   });
 });

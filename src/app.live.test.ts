@@ -73,7 +73,49 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       if (newVersion === undefined) throw new Error('refined playground has no version');
       expect(newVersion).not.toBe(version);
       expect((await store.get(newVersion)).html.toLowerCase()).toContain('<html');
+
+      // REMIX: forking the playground branches its current version into a NEW, INDEPENDENT
+      // session — the contract the player's remix button drives. fork carries no brief (the
+      // service derives the first-turn prompt from the parent's original describe) and resolves
+      // the provider from the parent's session. INDEPENDENT: the catalog gains a second
+      // playground with a DISTINCT id, not another version of the parent. [LAW:verifiable-goals]
+      const forked = await service.fork(status.playgroundId);
+      let forkedStatus: GenerationStatus = await service.poll(forked);
+      while (forkedStatus.state === 'pending' || forkedStatus.state === 'running') {
+        forkedStatus = await service.poll(forked);
+      }
+      expect(forkedStatus.state).toBe('ready');
+      if (forkedStatus.state !== 'ready') throw new Error(forkedStatus.state);
+      expect(forkedStatus.playgroundId).not.toBe(status.playgroundId);
+
+      const afterFork = await catalog.listPlaygrounds();
+      expect(afterFork).toHaveLength(2);
+      const forkVersion = afterFork.find((s) => s.id === forkedStatus.playgroundId)?.currentVersion;
+      if (forkVersion === undefined) throw new Error('forked playground has no version');
+      expect((await store.get(forkVersion)).html.toLowerCase()).toContain('<html');
+
+      // CONTINUABLE: the fork is a first-class playground that can itself be refined — a
+      // follow-up onto the fork advances ITS version while leaving the parent untouched (the
+      // catalog stays at 2). This is what makes a remix "your own copy you can iterate".
+      const forkRefined = await service.continue(forkedStatus.playgroundId, {
+        description: 'add a label above the counter',
+      });
+      let forkRefinedStatus: GenerationStatus = await service.poll(forkRefined);
+      while (forkRefinedStatus.state === 'pending' || forkRefinedStatus.state === 'running') {
+        forkRefinedStatus = await service.poll(forkRefined);
+      }
+      expect(forkRefinedStatus.state).toBe('ready');
+      if (forkRefinedStatus.state !== 'ready') throw new Error(forkRefinedStatus.state);
+      expect(forkRefinedStatus.playgroundId).toBe(forkedStatus.playgroundId);
+
+      const afterForkRefine = await catalog.listPlaygrounds();
+      expect(afterForkRefine).toHaveLength(2);
+      const forkNewVersion = afterForkRefine.find((s) => s.id === forkedStatus.playgroundId)?.currentVersion;
+      if (forkNewVersion === undefined) throw new Error('refined fork has no version');
+      expect(forkNewVersion).not.toBe(forkVersion);
+      // The parent is untouched by work on its fork — independent sessions, not shared state.
+      expect(afterForkRefine.find((s) => s.id === status.playgroundId)?.currentVersion).toBe(newVersion);
     },
-    10 * 60 * 1000,
+    15 * 60 * 1000,
   );
 });

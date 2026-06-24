@@ -267,13 +267,17 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
 
     async *progress(handle: SessionHandle): AsyncIterable<ProgressEvent> {
       const world = worldOf(handle);
-      // A re-seeded turn refines the durable artifact without the prior conversation —
-      // a real (if minor) loss of context. Surface it so the degradation is observed,
-      // never silent. [LAW:no-silent-failure]
-      if (world.reseeded) {
-        yield { at: Date.now(), message: 'resuming from stored version (prior conversation unavailable)' };
-      }
-      yield { at: Date.now(), message: 'generation started' };
+      // The opening status is ONE event whose message varies with the turn's state: a
+      // re-seeded turn refines the durable artifact without its prior conversation, so it
+      // says so — surfacing that loss of context rather than hiding it — while every other
+      // turn reports the normal start. One unconditional yield, the message carried as a
+      // value, never a conditional extra event. [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+      yield {
+        at: Date.now(),
+        message: world.reseeded
+          ? 'resuming from stored version (prior conversation unavailable)'
+          : 'generation started',
+      };
       while ((await readOrNull(join(world.dir, EXIT_FILE))) === null && Date.now() <= world.deadline) {
         if (!(await isAlive(world.session))) break;
         const pane = (await run('tmux', ['capture-pane', '-t', world.session, '-p']).catch(

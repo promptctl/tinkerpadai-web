@@ -94,6 +94,17 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       if (forkVersion === undefined) throw new Error('forked playground has no version');
       expect((await store.get(forkVersion)).html.toLowerCase()).toContain('<html');
 
+      // VISIBLE LINEAGE (p0v.17): the read projection surfaces the fork's provenance over the
+      // REAL catalog — the parent (not a fork) carries none, the fork resolves back to the
+      // parent's browsable id and original describe. This is the attribution the commons/player
+      // render; here we prove it is derived correctly from real minted ids. [LAW:verifiable-goals]
+      const parentSummary = afterFork.find((s) => s.id === status.playgroundId);
+      const forkSummary = afterFork.find((s) => s.id === forkedStatus.playgroundId);
+      expect(parentSummary?.forkedFrom).toBeNull();
+      expect(forkSummary?.forkedFrom).toEqual({
+        parent: { id: status.playgroundId, prompt: parentSummary?.prompt },
+      });
+
       // CONTINUABLE: the fork is a first-class playground that can itself be refined — a
       // follow-up onto the fork advances ITS version while leaving the parent untouched (the
       // catalog stays at 2). This is what makes a remix "your own copy you can iterate".

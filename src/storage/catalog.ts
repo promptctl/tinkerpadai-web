@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import type { SessionId } from '../provider/index.js';
 import type {
   CatalogDoc,
+  ForkAttribution,
   NewPlayground,
   NewTurn,
+  ParentRef,
   Playground,
   PlaygroundId,
   PlaygroundSummary,
@@ -75,13 +78,36 @@ export const currentTurnOf = (session: SessionRecord): TurnRecord => {
 // The latest version of a playground — the newest turn's version. [LAW:one-source-of-truth]
 export const currentVersionOf = (session: SessionRecord): VersionId => currentTurnOf(session).version;
 
-// The cheap projection for the commons list: original describe + latest version.
-// Derived from the playground, never persisted alongside it. [LAW:one-source-of-truth]
-export const summarize = (playground: Playground): PlaygroundSummary => ({
+// The fork-axis projection, kept deliberately apart from the version-axis projection below:
+// it reads ONLY lineage, never turns or versions, so the two axes cannot bleed into each
+// other in the read path any more than they do in storage. A non-fork projects to null (a
+// value, not a special case); a fork projects to the parent its given resolver can reach, or
+// null when the parent has left the commons — the fork fact survives a departed parent.
+// `resolveParent` is the seam: this stays a pure single-playground projection and asks only
+// for a way to turn a parent SessionId into a browsable reference, never for the whole catalog.
+// [LAW:one-source-of-truth] [LAW:composability] [LAW:dataflow-not-control-flow]
+export const forkAttributionOf = (
+  playground: Playground,
+  resolveParent: (parent: SessionId) => ParentRef | null,
+): ForkAttribution | null =>
+  playground.session.lineage === null
+    ? null
+    : { parent: resolveParent(playground.session.lineage.parentSession) };
+
+// The cheap projection for the commons list: original describe, latest version, and fork
+// attribution. The single place a PlaygroundSummary is born — derived from the playground,
+// never persisted alongside it. The parent resolver is supplied by the caller that holds the
+// full catalog (listPlaygrounds), so summarize itself stays a pure single-playground function.
+// [LAW:one-source-of-truth]
+export const summarize = (
+  playground: Playground,
+  resolveParent: (parent: SessionId) => ParentRef | null,
+): PlaygroundSummary => ({
   id: playground.id,
   prompt: playground.session.turns[0].prompt,
   providerId: playground.session.providerId,
   currentVersion: currentVersionOf(playground.session),
+  forkedFrom: forkAttributionOf(playground, resolveParent),
 });
 
 // The single implementation of the catalog invariants over any CatalogStore. The
@@ -164,7 +190,16 @@ export const makeCatalog = (store: CatalogStore): Catalog => {
 
     async listPlaygrounds(): Promise<readonly PlaygroundSummary[]> {
       const doc = await store.read();
-      return doc.playgrounds.map(summarize);
+      // The parent-link index, built once over the whole catalog: a session resolves to its
+      // playground's browsable reference. A derivation over the SoT, discarded after this read
+      // — never a stored map that could drift from the playgrounds it indexes. Sessions are
+      // 1:1 with playgrounds (a fork mints a new session), so the key is unambiguous.
+      // [LAW:one-source-of-truth]
+      const parents = new Map<SessionId, ParentRef>(
+        doc.playgrounds.map((p) => [p.session.sessionId, { id: p.id, prompt: p.session.turns[0].prompt }]),
+      );
+      const resolveParent = (parent: SessionId): ParentRef | null => parents.get(parent) ?? null;
+      return doc.playgrounds.map((p) => summarize(p, resolveParent));
     },
   };
 };

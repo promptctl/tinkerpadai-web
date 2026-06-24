@@ -8,17 +8,52 @@ import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js'
 
 const XSS = '<script>alert(1)</script>';
 
+const summary = (over: Partial<Parameters<typeof renderCommons>[0][number]> = {}) => ({
+  id: PlaygroundId('abc'),
+  prompt: 'a tiny counter',
+  providerId: 'p' as never,
+  currentVersion: 'v' as never,
+  forkedFrom: null,
+  ...over,
+});
+
 describe('renderCommons', () => {
   it('escapes a hostile prompt into inert text', () => {
-    const html = renderCommons([
-      { id: PlaygroundId('abc'), prompt: XSS, providerId: 'p' as never, currentVersion: 'v' as never },
-    ]);
+    const html = renderCommons([summary({ prompt: XSS })]);
     expect(html).not.toContain(XSS);
     expect(html).toContain('&lt;script&gt;');
   });
 
   it('renders an empty list as an empty state, not a crash', () => {
     expect(renderCommons([]).toLowerCase()).toContain('no playgrounds yet');
+  });
+
+  // Attribution is data flow: a fork shows "forked from <parent>" linking back, a non-fork
+  // shows nothing — not a special case, just the empty value rendered as the empty fragment.
+  it('attributes a fork to its browsable parent and links back', () => {
+    const html = renderCommons([
+      summary({ id: PlaygroundId('child'), prompt: 'a remixed counter', forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: 'the original counter' } } }),
+    ]);
+    expect(html).toContain('Forked from');
+    expect(html).toContain('the original counter');
+    expect(html).toContain(`/play?id=${encodeURIComponent('parent')}`);
+  });
+
+  it('shows no attribution for a playground that is not a fork', () => {
+    expect(renderCommons([summary()])).not.toContain('Forked from');
+  });
+
+  // A fork whose parent has left the commons keeps the durable fork fact, but offers no link
+  // to a parent that is no longer browsable. [LAW:no-silent-failure]
+  it('states the fork fact without a link when the parent is gone', () => {
+    const html = renderCommons([summary({ forkedFrom: { parent: null } })]);
+    expect(html).toContain('Forked from a playground no longer in the commons');
+  });
+
+  it('escapes a hostile parent prompt in the attribution', () => {
+    const html = renderCommons([summary({ forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: XSS } } })]);
+    expect(html).not.toContain(XSS);
+    expect(html).toContain('&lt;script&gt;');
   });
 });
 
@@ -28,6 +63,7 @@ describe('renderPlayer', () => {
     prompt: XSS,
     contentSrc: 'http://c.local/?id=abc',
     providerId: 'p' as never,
+    forkedFrom: null,
   };
 
   it('escapes the prompt in its chrome but keeps the content src intact', () => {
@@ -59,6 +95,19 @@ describe('renderPlayer', () => {
     expect(html).toContain('id="remix-bar" hidden');
     expect(html).toContain('id="remix-submit"');
     expect(html).toContain('/generations/fork');
+  });
+
+  // The player carries the SAME fork attribution the commons does: a forked playground links
+  // back to its parent in the chrome, a non-fork shows none — data flow, not a special case.
+  it('attributes a forked playground to its parent in the chrome', () => {
+    const html = renderPlayer({ ...view, prompt: 'a remix', forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: 'the original' } } });
+    expect(html).toContain('Forked from');
+    expect(html).toContain('the original');
+    expect(html).toContain(`/play?id=${encodeURIComponent('parent')}`);
+  });
+
+  it('shows no attribution for a player that is not a fork', () => {
+    expect(renderPlayer(view)).not.toContain('Forked from');
   });
 
   // The playground id and its provider cross into the page as DATA (escaped attributes), so a

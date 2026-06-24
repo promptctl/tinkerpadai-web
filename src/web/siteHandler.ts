@@ -1,5 +1,5 @@
 import type { Catalog } from '../storage/index.js';
-import { PlaygroundId, PlaygroundNotFoundError, summarize } from '../storage/index.js';
+import { PlaygroundId } from '../storage/index.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 
 // THE APP-ORIGIN SURFACE — the front door's one composed Web handler. It serves the trusted
@@ -36,22 +36,27 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
   const { page, catalog, contentOrigin, apiHandler } = deps;
 
   const playPage = async (id: string): Promise<Response> => {
-    try {
-      const playground = await catalog.getPlayground(PlaygroundId(id));
-      const summary = summarize(playground);
-      const contentSrc = `${contentOrigin}/?id=${encodeURIComponent(summary.id)}`;
-      return html(
-        renderPlayer({ id: summary.id, prompt: summary.prompt, contentSrc, providerId: summary.providerId }),
-      );
-    } catch (error) {
-      // ONLY a genuine unknown id becomes a 404 page. Any other failure (the catalog can't
-      // be read, an invariant is violated) is the server being wrong — let it propagate to
-      // serve()'s loud 500 rather than relabel it as "not found". [LAW:no-silent-failure]
-      if (error instanceof PlaygroundNotFoundError) {
-        return html(renderNotice('Playground not found', `No playground in the commons has the id "${id}".`), 404);
-      }
-      throw error;
+    // The player renders the SAME projected summary the commons does — including resolved fork
+    // attribution, which can only be derived against the whole catalog. So the player reads
+    // through the one projection (listPlaygrounds), then selects its target. An unknown id is
+    // simply absent from the list — a value (undefined), rendered as a 404, not a thrown special
+    // case. A genuine read/invariant failure throws out of listPlaygrounds and propagates to
+    // serve()'s loud 500, never relabeled as "not found". [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+    const target = PlaygroundId(id);
+    const summary = (await catalog.listPlaygrounds()).find((s) => s.id === target);
+    if (summary === undefined) {
+      return html(renderNotice('Playground not found', `No playground in the commons has the id "${id}".`), 404);
     }
+    const contentSrc = `${contentOrigin}/?id=${encodeURIComponent(summary.id)}`;
+    return html(
+      renderPlayer({
+        id: summary.id,
+        prompt: summary.prompt,
+        contentSrc,
+        providerId: summary.providerId,
+        forkedFrom: summary.forkedFrom,
+      }),
+    );
   };
 
   return async (request: Request): Promise<Response> => {

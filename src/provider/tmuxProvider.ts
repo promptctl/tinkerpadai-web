@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { CodeGenDriver, DriverSnapshot } from './codeGenDriver.js';
 import type { Provider } from './provider.js';
 import type {
+  Artifact,
   Availability,
   Brief,
   GenerationResult,
@@ -72,9 +73,13 @@ export const makeTmuxProvider = (config: TmuxProviderConfig): Provider => {
   // startSession — same orchestration, the only difference is which driver effect and
   // which session id, both carried as values. The driver owns the resume effect; this
   // body stays ignorant of tmux. [LAW:dataflow-not-control-flow] [LAW:effects-at-boundaries]
-  async function continueSession(prior: SessionHandle, followUp: Brief): Promise<SessionHandle> {
+  async function continueSession(
+    prior: SessionHandle,
+    followUp: Brief,
+    seed: Artifact,
+  ): Promise<SessionHandle> {
     const handle = mintTurn(prior.sessionId);
-    await driver.continue(followUp, handle, prior);
+    await driver.continue(followUp, handle, prior, seed);
     return handle;
   }
 

@@ -9,8 +9,20 @@ export { ProviderRegistry, capabilitiesOf } from './registry.js';
 // and registers it; everything else sees only a Provider. [LAW:effects-at-boundaries]
 export { makeTmuxProvider } from './tmuxProvider.js';
 export type { TmuxProviderConfig } from './tmuxProvider.js';
-export { makeTmuxDriver, cleanupTurn } from './tmuxDriver.js';
-export type { TmuxDriverConfig } from './tmuxDriver.js';
+export {
+  makeTmuxDriver,
+  cleanupTurn,
+  expiredWorkdirs,
+  evictIdleWorkdirs,
+  startWorkdirJanitor,
+} from './tmuxDriver.js';
+export type {
+  TmuxDriverConfig,
+  WorkdirEntry,
+  EvictWorkdirsOptions,
+  WorkdirJanitorConfig,
+  WorkdirJanitor,
+} from './tmuxDriver.js';
 export type { CodeGenDriver, DriverSnapshot } from './codeGenDriver.js';
 export {
   ProviderId,

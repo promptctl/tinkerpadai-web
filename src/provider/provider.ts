@@ -1,4 +1,5 @@
 import type {
+  Artifact,
   Availability,
   Brief,
   GenerationResult,
@@ -52,8 +53,14 @@ export interface Provider {
   getAvailability(): Promise<Availability>;
 
   // Continue an existing session with a follow-up turn (iterate). Optional —
-  // present iff the provider supports it.
-  continueSession?(handle: SessionHandle, followUp: Brief): Promise<SessionHandle>;
+  // present iff the provider supports it. `seed` is the playground's CURRENT durable
+  // artifact — the store's source of truth for its bytes — passed as a value so a
+  // provider whose private per-session state was reclaimed (the tmux workdir is a
+  // CACHE of exactly this, evicted when idle) can reconstruct it and still continue.
+  // A provider that retains its own durable context just ignores the seed; the value
+  // always flows, the provider decides whether it needs it. [LAW:one-source-of-truth]
+  // [LAW:dataflow-not-control-flow]
+  continueSession?(handle: SessionHandle, followUp: Brief, seed: Artifact): Promise<SessionHandle>;
 
   // Branch a new session from an existing one (remix). Optional — present iff the
   // provider supports it. Lineage is recorded by the catalog (p0v.2), not here.

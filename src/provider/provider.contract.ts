@@ -87,7 +87,7 @@ export const describeIterateContract = (make: ContractProviderFactory): void => 
       throw new Error('describeIterateContract requires a provider that implements continueSession');
     }
     const first = await provider.startSession({ description: 'v1' });
-    const second = await provider.continueSession(first, { description: 'v2' });
+    const second = await provider.continueSession(first, { description: 'v2' }, { html: '<!-- v1 -->' });
 
     expect(second.sessionId).toBe(first.sessionId);
     expect(second.turnId).not.toBe(first.turnId);
@@ -102,7 +102,11 @@ export const describeIterateContract = (make: ContractProviderFactory): void => 
     const first = await provider.startSession({ description: 'a counter' });
     const firstResult = await provider.getResult(first);
 
-    const second = await provider.continueSession(first, { description: 'add a reset button' });
+    const second = await provider.continueSession(
+      first,
+      { description: 'add a reset button' },
+      firstResult.artifact,
+    );
     const status = await provider.getStatus(second);
     expect(status.state).toBe('succeeded');
     if (status.state !== 'succeeded') throw new Error('unreachable');

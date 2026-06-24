@@ -9,7 +9,6 @@ import {
   makeMemoryCatalog,
   PlaygroundId,
   PlaygroundNotFoundError,
-  VersionId,
 } from '../storage/index.js';
 import type { ArtifactStore } from '../storage/index.js';
 import { makeGenerationService, ProviderCannotContinueError } from './generationService.js';
@@ -187,10 +186,14 @@ describe('GenerationService.continue — refine an existing playground into a ne
     const h = harnessFor({ id: 'fake', label: 'Fake', outcome: { fail: 'continue crashed' }, iterable: true });
     // Seed an existing playground for this provider's session directly: the first turn need
     // not have succeeded through this fail-outcome instance to exercise a failing continue.
+    // The current artifact MUST be in the store — continue reads it as the seed it hands the
+    // provider, an invariant every real continuable playground satisfies (finalizeSuccess put
+    // it there). Storing it here makes the harness honor that invariant rather than fake it.
+    const seedVersion = await h.store.put({ html: '<!-- a counter -->' });
     const seed = await h.catalog.createPlayground({
       handle: { providerId: h.providerId, sessionId: SessionId('seed-session'), turnId: TurnId('seed-turn') },
       prompt: 'a counter',
-      version: VersionId('v-seed'),
+      version: seedVersion,
       lineage: null,
     });
 

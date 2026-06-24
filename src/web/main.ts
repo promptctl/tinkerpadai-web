@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { makeApp } from '../app.js';
+import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
@@ -43,6 +44,14 @@ const main = async (): Promise<void> => {
     apiHandler: app.handler,
   });
   const { url } = await serve({ handler, port });
+
+  // Start the idle-workdir sweeper. It lives HERE, in the runtime entry, not in makeApp:
+  // a background timer is a runtime effect, and makeApp must stay a pure graph builder
+  // that tests can construct without leaking timers. The local tmux provider is the only
+  // thing that mints workdirs, so its cache GC is a local-runtime concern. The handle is
+  // intentionally unreferenced — the sweep runs for the life of the process and stops on
+  // exit (its timer is unref'd). [LAW:effects-at-boundaries] [LAW:no-ambient-temporal-coupling]
+  startWorkdirJanitor();
 
   // The logs the operator needs: where each origin listens. [LAW:no-silent-failure]
   console.log(`TinkerPad front door listening on ${url} (data: ${dataDir})`);

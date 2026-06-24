@@ -1,6 +1,6 @@
 import type { CodeGenDriver, DriverSnapshot } from '../codeGenDriver.js';
 import type { ContractProviderOptions } from '../provider.contract.js';
-import type { Brief, ProgressEvent, SessionHandle } from '../types.js';
+import type { Artifact, Brief, ProgressEvent, SessionHandle } from '../types.js';
 
 // A CodeGenDriver test double: it stands in for "drive Claude Code over tmux" so the
 // real orchestration (tmuxProvider) can be run through the provider contract with no
@@ -37,8 +37,14 @@ export const makeScriptedDriver = (opts: ContractProviderOptions): CodeGenDriver
 
     // A follow-up turn is, to this double, just a new turn carrying the follow-up
     // brief — enough to prove the orchestration mints fresh identity and surfaces a
-    // distinct artifact. The real resume effect lives in the tmux driver.
-    async continue(brief: Brief, handle: SessionHandle, _priorHandle: SessionHandle): Promise<void> {
+    // distinct artifact. The real resume effect — and the warm/cold re-seed that uses
+    // `_seed` — lives in the tmux driver; this double has no workdir to lose.
+    async continue(
+      brief: Brief,
+      handle: SessionHandle,
+      _priorHandle: SessionHandle,
+      _seed: Artifact,
+    ): Promise<void> {
       turns.set(handle.turnId, { brief, runningLeft: opts.runningPolls ?? 0 });
     },
 

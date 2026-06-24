@@ -10,7 +10,7 @@ import type {
   SessionStatus,
 } from '../provider/index.js';
 import type { ArtifactStore, Catalog, Playground, PlaygroundId, VersionId } from '../storage/index.js';
-import { currentTurnOf } from '../storage/index.js';
+import { currentTurnOf, currentVersionOf } from '../storage/index.js';
 
 // THE GENERATION SERVICE — the one boundary where the generation effect is performed,
 // wiring registry -> provider -> store -> catalog. It is provider-agnostic by
@@ -172,13 +172,15 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   // returns. A failure of store/catalog rejects this promise and is surfaced loudly;
   // nothing half-written is reported as success. [LAW:no-ambient-temporal-coupling]
   //
-  // A successful turn is NOT released: its workdir IS the session's continuable state —
-  // the provider resumes a follow-up turn (continue) by re-entering that dir, so disposing
-  // it here would destroy the very thing iterate needs. Cleanup of a finished session's
-  // workdirs is deferred (no "session abandoned" trigger yet — a steel-thread limitation,
-  // like the in-memory turn map). Only a failed FIRST turn — which leaves no continuable
-  // session — is released; a failed refine keeps the session, since its prior version is
-  // still continuable (see reclaimOnFailure). [LAW:no-ambient-temporal-coupling]
+  // A successful turn is NOT released here: its workdir is the warm cache a follow-up
+  // (continue) re-enters to resume with full conversation context, so disposing it the
+  // instant a turn settles would throw that context away on every refine. Idle caches are
+  // instead reclaimed out-of-band by the workdir janitor (provider layer), and eviction is
+  // safe because continue re-seeds a missing workdir from the durable store — so the cache
+  // is an optimization, never the source of truth. Only a failed FIRST turn — which leaves
+  // no continuable session — is released eagerly; a failed refine keeps the session, since
+  // its prior version is still continuable (see reclaimOnFailure). [LAW:no-ambient-temporal-coupling]
+  // [LAW:one-source-of-truth]
   const finalizeSuccess = async (
     handle: SessionHandle,
     brief: Brief,
@@ -268,7 +270,16 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
         sessionId: session.sessionId,
         turnId: currentTurnOf(session).turnId,
       };
-      const handle = await provider.continueSession(prior, brief);
+
+      // The playground's current artifact, read from the store — the durable source of
+      // truth for its bytes — handed to the provider as the seed it continues from. This
+      // is the one place store and provider legitimately meet, so the provider never
+      // reaches into storage itself: continuability is backed by the durable artifact,
+      // not the provider's evictable per-session cache. A continuable playground always
+      // has a current version in the store (finalizeSuccess put it there), so this is a
+      // total read, not a guard. [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
+      const seed = await store.get(currentVersionOf(session));
+      const handle = await provider.continueSession(prior, brief, seed);
       turns.set(handle.turnId, { brief, target: { kind: 'append', playgroundId }, terminal: null });
       return handle;
     },

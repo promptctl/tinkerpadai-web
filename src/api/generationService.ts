@@ -9,7 +9,7 @@ import type {
   SessionHandle,
   SessionStatus,
 } from '../provider/index.js';
-import type { ArtifactStore, Catalog, Playground, PlaygroundId, VersionId } from '../storage/index.js';
+import type { ArtifactStore, Catalog, Lineage, Playground, PlaygroundId, VersionId } from '../storage/index.js';
 import { currentTurnOf, currentVersionOf } from '../storage/index.js';
 
 // THE GENERATION SERVICE — the one boundary where the generation effect is performed,
@@ -43,6 +43,19 @@ export class ProviderCannotContinueError extends Error {
   constructor(public readonly providerId: ProviderId) {
     super(`provider ${providerId} cannot continue a session`);
     this.name = 'ProviderCannotContinueError';
+  }
+}
+
+// The TYPED "this provider can't fork" signal — the remix sibling of
+// ProviderCannotContinueError. fork() is only meaningful against a provider that
+// implements fork; capability IS method presence (capabilitiesOf derives it the same way).
+// A provider asked to branch a session it can't is a loud, typed failure at fork time, so
+// the HTTP route (p0v.15) can map it to a distinct status the way the continue signal does.
+// [LAW:no-silent-failure] [LAW:types-are-the-program]
+export class ProviderCannotForkError extends Error {
+  constructor(public readonly providerId: ProviderId) {
+    super(`provider ${providerId} cannot fork a session`);
+    this.name = 'ProviderCannotForkError';
   }
 }
 
@@ -83,6 +96,17 @@ export interface GenerationService {
   // (ProviderCannotContinueError). [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
   continue(playgroundId: PlaygroundId, brief: Brief): Promise<SessionHandle>;
 
+  // Fork an existing playground: branch its CURRENT artifact into a NEW independent
+  // session, producing a fresh playground whose lineage points back at the parent. Like
+  // submit it registers a first turn that CREATES a playground (not appends a version) and
+  // returns the handle to poll; like continue it resolves the parent and reads its current
+  // artifact as the seed. The two differences from submit are both values, not branches: the
+  // turn's create target carries fork lineage, and fork carries no user brief, so the new
+  // playground's first-turn prompt is the parent's original describe. An unknown id fails
+  // loudly (PlaygroundNotFoundError); a provider that can't fork fails loudly
+  // (ProviderCannotForkError). [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+  fork(playgroundId: PlaygroundId): Promise<SessionHandle>;
+
   // The point-in-time status of a turn. On the first observation of a succeeded provider
   // status it performs the one effectful transition (store the file, record the version on
   // its target playground) exactly once and thereafter reports `ready`; on failure it
@@ -93,10 +117,12 @@ export interface GenerationService {
 // Where a turn's successful artifact lands in the catalog, carried as a VALUE on the
 // turn so the one finalize path dispatches on it rather than branching on which kind of
 // turn produced it. A first turn creates a playground; a follow-up appends a version to a
-// named one. This is the only difference between submit and continue at persist time.
-// [LAW:dataflow-not-control-flow]
+// named one. submit and fork are BOTH 'create' turns differing only by their lineage value
+// (submit null, fork the parent reference) — not two kinds — so the one createPlayground
+// write serves both and a failed fork inherits create's failure-disposal for free.
+// [LAW:dataflow-not-control-flow] [LAW:one-type-per-behavior]
 type TurnTarget =
-  | { readonly kind: 'create' }
+  | { readonly kind: 'create'; readonly lineage: Lineage | null }
   | { readonly kind: 'append'; readonly playgroundId: PlaygroundId };
 
 // Per-turn state the service owns: the brief the turn carried (the catalog needs the
@@ -157,7 +183,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   ): Promise<Playground> => {
     switch (target.kind) {
       case 'create':
-        return catalog.createPlayground({ handle, prompt, version, lineage: null });
+        return catalog.createPlayground({ handle, prompt, version, lineage: target.lineage });
       case 'append':
         return catalog.appendTurn(target.playgroundId, { handle, prompt, version });
       default: {
@@ -245,7 +271,11 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // there is no null to branch on. [LAW:dataflow-not-control-flow]
       const provider = registry.get(request.providerId);
       const handle = await provider.startSession(request.brief);
-      turns.set(handle.turnId, { brief: request.brief, target: { kind: 'create' }, terminal: null });
+      turns.set(handle.turnId, {
+        brief: request.brief,
+        target: { kind: 'create', lineage: null },
+        terminal: null,
+      });
       return handle;
     },
 
@@ -281,6 +311,46 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       const seed = await store.get(currentVersionOf(session));
       const handle = await provider.continueSession(prior, brief, seed);
       turns.set(handle.turnId, { brief, target: { kind: 'append', playgroundId }, terminal: null });
+      return handle;
+    },
+
+    async fork(playgroundId: PlaygroundId): Promise<SessionHandle> {
+      // Resolve the parent first: an unknown id fails loudly with the typed
+      // PlaygroundNotFoundError, never a fork of nothing. [LAW:no-silent-failure]
+      const { session } = await catalog.getPlayground(playgroundId);
+      const provider = registry.get(session.providerId);
+
+      // Capability is method presence. A provider that can't fork fails loudly here — never
+      // a silent no-op. The guard narrows fork to defined; we call it on the provider so it
+      // keeps its receiver. [LAW:no-silent-failure]
+      if (provider.fork === undefined) {
+        throw new ProviderCannotForkError(session.providerId);
+      }
+
+      // The parent's newest turn — the handle whose current artifact we branch from.
+      const parent: SessionHandle = {
+        providerId: session.providerId,
+        sessionId: session.sessionId,
+        turnId: currentTurnOf(session).turnId,
+      };
+
+      // The parent's CURRENT artifact, read from the store (the durable source of truth for
+      // its bytes) and handed to the provider as the seed it branches from — the same seam
+      // continue uses, so the provider never reaches into storage. This version IS what
+      // lineage records as forkedFromVersion: the seed and the recorded origin are one value,
+      // so they cannot drift. [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
+      const forkedFromVersion = currentVersionOf(session);
+      const seed = await store.get(forkedFromVersion);
+      const handle = await provider.fork(parent, seed);
+
+      // fork carries no user brief, so the service owns the new playground's first-turn
+      // prompt: the parent's original describe (turns[0], always present — a session enters
+      // the catalog only once its first turn produced a version). The fork branches into a
+      // NEW playground (kind: 'create') carrying lineage back to the parent — the only thing
+      // distinguishing this create from submit's. [LAW:one-source-of-truth]
+      const brief: Brief = { description: session.turns[0].prompt };
+      const lineage: Lineage = { parentSession: session.sessionId, forkedFromVersion };
+      turns.set(handle.turnId, { brief, target: { kind: 'create', lineage }, terminal: null });
       return handle;
     },
 

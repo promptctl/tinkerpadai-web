@@ -164,6 +164,62 @@ describe('POST /generations/continue then POST /poll — the iterate round trip'
   });
 });
 
+describe('POST /generations/fork then POST /poll — the remix round trip', () => {
+  // A fork's input is an existing playground, so the test mints one first — same as continue.
+  const submitToReady = async (
+    handler: (request: Request) => Promise<Response>,
+  ): Promise<string> => {
+    const { handle } = (await (
+      await handler(post('/generations', { providerId: 'fake', brief: { description: 'a tiny counter' } }))
+    ).json()) as { handle: Record<string, string> };
+    const status = (await (await handler(post('/poll', { handle }))).json()) as {
+      state: string;
+      playgroundId?: string;
+    };
+    expect(status.state).toBe('ready');
+    return status.playgroundId as string;
+  };
+
+  it('forks an existing playground, returns a new handle, and polls it to a NEW playground', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const parentId = await submitToReady(handler);
+
+    const forkRes = await handler(post('/generations/fork', { playgroundId: parentId }));
+    expect(forkRes.status).toBe(201);
+    const { handle } = (await forkRes.json()) as { handle: Record<string, string> };
+    expect(handle.providerId).toBe('fake');
+
+    const pollRes = await handler(post('/poll', { handle }));
+    expect(pollRes.status).toBe(200);
+    const status = (await pollRes.json()) as { state: string; playgroundId?: string };
+    expect(status.state).toBe('ready');
+    // A fork is an INDEPENDENT playground, not another version of the parent — its id differs.
+    expect(typeof status.playgroundId).toBe('string');
+    expect(status.playgroundId).not.toBe(parentId);
+  });
+
+  it('rejects forking an unknown playground id loudly as 404, never a fork of nothing', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const res = await handler(post('/generations/fork', { playgroundId: 'ghost' }));
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('rejects forking with a non-forkable provider as 422, not a server fault or a silent no-op', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/generations/fork', { playgroundId }));
+    expect(res.status).toBe(422);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('rejects a fork with a missing playgroundId as 400', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
+    const res = await handler(post('/generations/fork', {}));
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /poll — a failed generation surfaces the error as data, not an empty file', () => {
   it('reports state failed with the surfaced message', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: { fail: 'skill crashed' } });

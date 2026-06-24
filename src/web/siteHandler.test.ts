@@ -115,8 +115,10 @@ describe('makeSiteHandler', () => {
   });
 
   it('propagates a catalog read failure loudly rather than relabeling it as a 404', async () => {
-    // Only a typed not-found is a 404 page; an infra/invariant failure is the server being
-    // wrong and must surface (serve() turns the throw into a loud 500). [LAW:no-silent-failure]
+    // An unknown id is simply absent from the projection (a 404); an infra/invariant failure
+    // throws out of the read and must surface (serve() turns the throw into a loud 500), never
+    // collapsed into "not found". The player reads through listPlaygrounds, so that is the seam
+    // that fails here. [LAW:no-silent-failure]
     const brokenCatalog: Catalog = {
       createPlayground: async () => {
         throw new Error('not used');
@@ -125,11 +127,46 @@ describe('makeSiteHandler', () => {
         throw new Error('not used');
       },
       getPlayground: async () => {
+        throw new Error('not used');
+      },
+      listPlaygrounds: async () => {
         throw new Error('catalog.json is corrupt');
       },
-      listPlaygrounds: async () => [],
     };
     const { handler } = build(brokenCatalog);
     await expect(handler(new Request('http://front.local/play?id=anything'))).rejects.toThrow('corrupt');
+  });
+
+  // Fork attribution flows through the real projection: a child playground forked from a parent
+  // surfaces "Forked from <parent>" linking back to the parent's player, on BOTH the commons
+  // list and the child's own player chrome. A non-fork surfaces none.
+  it('attributes a fork to its parent on the commons and the player, linking back', async () => {
+    const catalog = makeMemoryCatalog();
+    const parent = await catalog.createPlayground({
+      handle: { providerId: ProviderId('p'), sessionId: SessionId('parent-session'), turnId: TurnId('t0') },
+      prompt: 'the original counter',
+      version: VersionId('v1'),
+      lineage: null,
+    });
+    const child = await catalog.createPlayground({
+      handle: { providerId: ProviderId('p'), sessionId: SessionId('child-session'), turnId: TurnId('t1') },
+      prompt: 'a remixed counter',
+      version: VersionId('v2'),
+      lineage: { parentSession: SessionId('parent-session'), forkedFromVersion: VersionId('v1') },
+    });
+    const { handler } = build(catalog);
+
+    const commons = await (await handler(new Request('http://front.local/commons'))).text();
+    expect(commons).toContain('Forked from');
+    expect(commons).toContain('the original counter');
+    expect(commons).toContain(`/play?id=${encodeURIComponent(parent.id)}`);
+
+    const player = await (await handler(new Request(`http://front.local/play?id=${encodeURIComponent(child.id)}`))).text();
+    expect(player).toContain('Forked from');
+    expect(player).toContain(`/play?id=${encodeURIComponent(parent.id)}`);
+
+    // The parent itself is not a fork — no attribution on its player.
+    const parentPlayer = await (await handler(new Request(`http://front.local/play?id=${encodeURIComponent(parent.id)}`))).text();
+    expect(parentPlayer).not.toContain('Forked from');
   });
 });

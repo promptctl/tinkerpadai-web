@@ -69,14 +69,36 @@ export interface Playground {
   readonly session: SessionRecord;
 }
 
+// A browsable reference to a parent playground — its public id and its original describe
+// (the title the commons shows). Both come from the SAME parent playground when it is
+// resolved, so they cannot disagree; the parent's generation identity (its SessionId)
+// never crosses into the read path. [LAW:decomposition]
+export interface ParentRef {
+  readonly id: PlaygroundId;
+  readonly prompt: string;
+}
+
+// Fork lineage PROJECTED for the read path — the visible half of the remix. A playground
+// either is a fork or it is not (the whole value is null when it is not, so non-forks are a
+// value, never a special case). When it is a fork, `parent` is the browsable parent where it
+// still resolves in the commons, or null when the parent has left — the fork FACT is durable
+// even when the parent is gone. This is the fork axis only: "forked from another playground's
+// version", never this playground's own turn/version history, which the two never conflate.
+// A derivation of Lineage over the catalog, never a stored second copy. [LAW:one-source-of-truth]
+export interface ForkAttribution {
+  readonly parent: ParentRef | null;
+}
+
 // The derived, cheap view for rendering the commons list (p0v.6). `prompt` is the
-// original describe (the first turn); `currentVersion` is the latest version to run.
+// original describe (the first turn); `currentVersion` is the latest version to run;
+// `forkedFrom` is the fork-axis attribution (null when this playground is not a fork).
 // A projection of Playground, never stored alongside it.
 export interface PlaygroundSummary {
   readonly id: PlaygroundId;
   readonly prompt: string;
   readonly providerId: ProviderId;
   readonly currentVersion: VersionId;
+  readonly forkedFrom: ForkAttribution | null;
 }
 
 // What p0v.4 hands the catalog on a succeeded turn: the provider's turn handle

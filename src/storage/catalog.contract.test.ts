@@ -170,6 +170,52 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
     }
   });
 
+  it('projects fork attribution onto the summary, resolving the parent to a browsable reference', async () => {
+    const { catalog, close } = await open();
+    try {
+      const parent = await catalog.createPlayground({
+        handle: handle('tmux', 'parent-session', 'parent-turn'),
+        prompt: 'the original',
+        version: VersionId('parent-version'),
+        lineage: null,
+      });
+      const child = await catalog.createPlayground({
+        handle: handle('tmux', 'child-session', 'child-turn'),
+        prompt: 'a remix',
+        version: VersionId('child-version'),
+        lineage: { parentSession: SessionId('parent-session'), forkedFromVersion: VersionId('parent-version') },
+      });
+
+      const list = await catalog.listPlaygrounds();
+      // A non-fork carries no attribution; a fork resolves to the parent's browsable id AND its
+      // original describe (the title the commons shows) — derived over the catalog, never stored.
+      expect(list.find((s) => s.id === parent.id)?.forkedFrom).toBeNull();
+      expect(list.find((s) => s.id === child.id)?.forkedFrom).toEqual({
+        parent: { id: parent.id, prompt: 'the original' },
+      });
+    } finally {
+      await close();
+    }
+  });
+
+  it('surfaces the fork fact without a parent link when the parent is not in the commons', async () => {
+    const { catalog, close } = await open();
+    try {
+      const orphan = await catalog.createPlayground({
+        handle: handle('tmux', 'child-session', 'child-turn'),
+        prompt: 'a remix of a departed parent',
+        version: VersionId('child-version'),
+        lineage: { parentSession: SessionId('gone-session'), forkedFromVersion: VersionId('gone-version') },
+      });
+
+      const summary = (await catalog.listPlaygrounds()).find((s) => s.id === orphan.id);
+      // It is durably a fork, but the parent has left — attribution present, parent null.
+      expect(summary?.forkedFrom).toEqual({ parent: null });
+    } finally {
+      await close();
+    }
+  });
+
   it('keeps fork lineage a separate axis from version history', async () => {
     const { catalog, close } = await open();
     try {

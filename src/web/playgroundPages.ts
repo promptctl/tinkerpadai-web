@@ -1,4 +1,4 @@
-import type { PlaygroundId, PlaygroundSummary } from '../storage/index.js';
+import type { ForkAttribution, ParentRef, PlaygroundId, PlaygroundSummary } from '../storage/index.js';
 import { escapeHtml } from './escapeHtml.js';
 
 // THE APP-ORIGIN "USE" PAGES, as pure string builders. Given already-read data they return
@@ -13,6 +13,24 @@ import { escapeHtml } from './escapeHtml.js';
 // A playground id placed into an href: URL-encode for the query slot, then html-escape for
 // the attribute. One value, both boundaries it crosses. [LAW:single-enforcer]
 const playHref = (id: PlaygroundId): string => `/play?id=${escapeHtml(encodeURIComponent(id))}`;
+
+// The fork-attribution label — the fork axis rendered as inline html. It is the SAME on every
+// surface (a link to the parent where it still resolves, plain text once the parent has left),
+// so it lives once; the surfaces below differ only in the wrapper they put around it. The
+// parent's prompt is server data and crosses through the single enforcer, like every other
+// outside value on this trusted origin. [LAW:single-enforcer] [LAW:one-source-of-truth]
+const forkedFromLabel = (parent: ParentRef | null): string =>
+  parent === null
+    ? 'Forked from a playground no longer in the commons'
+    : `Forked from <a href="${playHref(parent.id)}">${escapeHtml(parent.prompt)}</a>`;
+
+// Per-surface attribution fragments: a non-fork is the empty string (a value, never a branch
+// that skips markup), a fork is the shared label inside the surface's own element. The commons
+// row carries it as a meta line; the player header as its own row. [LAW:dataflow-not-control-flow]
+const commonsForkedFrom = (forkedFrom: ForkAttribution | null): string =>
+  forkedFrom === null ? '' : `<div class="meta fork">↳ ${forkedFromLabel(forkedFrom.parent)}</div>`;
+const playerForkedFrom = (forkedFrom: ForkAttribution | null): string =>
+  forkedFrom === null ? '' : `<p class="forked-from">↳ ${forkedFromLabel(forkedFrom.parent)}</p>`;
 
 const shell = (title: string, body: string): string =>
   `<!doctype html>
@@ -34,6 +52,7 @@ const shell = (title: string, body: string): string =>
   li a { font-weight:600; text-decoration:none; }
   li a:hover { text-decoration:underline; }
   .meta { color:var(--muted); font-size:0.8rem; margin-top:0.3rem; }
+  .meta.fork a { font-weight:600; }
   .empty { color:var(--muted); }
 </style>
 </head>
@@ -51,7 +70,7 @@ export const renderCommons = (summaries: readonly PlaygroundSummary[]): string =
       (s) =>
         `  <li><a href="${playHref(s.id)}">${escapeHtml(s.prompt)}</a><div class="meta">${escapeHtml(
           s.providerId,
-        )}</div></li>`,
+        )}</div>${commonsForkedFrom(s.forkedFrom)}</li>`,
     )
     .join('\n');
   const list =
@@ -92,6 +111,11 @@ export interface PlayerView {
   // capability), exactly as the front door gates submit on the selected provider. It rides
   // into the page as escaped data, never as JS. [LAW:decomposition]
   readonly providerId: PlaygroundSummary['providerId'];
+  // The fork-axis attribution — null when this playground is not a fork, else the parent it was
+  // remixed from (linked where the parent still browses). The SAME projected value the commons
+  // row carries, so attribution reads identically wherever a playground appears. It is rendered
+  // as escaped chrome (a link/text), never interpolated into the client script. [LAW:one-source-of-truth]
+  readonly forkedFrom: PlaygroundSummary['forkedFrom'];
 }
 
 // The player client, inlined into the player chrome. It wires TWO actions onto the SAME
@@ -316,9 +340,11 @@ export const renderPlayer = (view: PlayerView): string =>
     `${view.prompt} — TinkerPad`,
     `<style>
   body { display:flex; flex-direction:column; height:100vh; }
-  header { padding:0.6rem 1rem; border-bottom:1px solid var(--line); display:flex; gap:1rem; align-items:baseline; }
+  header { padding:0.6rem 1rem; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:0.25rem 1rem; align-items:baseline; }
   header h1 { font-size:0.95rem; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   header a { font-size:0.85rem; white-space:nowrap; }
+  .forked-from { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
+  .forked-from a { font-weight:600; }
   iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
   footer { border-top:1px solid var(--line); padding:0.6rem 1rem; display:flex; flex-direction:column; gap:0.5rem; }
   footer form { display:flex; gap:0.6rem; }
@@ -338,6 +364,7 @@ export const renderPlayer = (view: PlayerView): string =>
 <header>
   <a href="/commons">← Commons</a>
   <h1>${escapeHtml(view.prompt)}</h1>
+  ${playerForkedFrom(view.forkedFrom)}
 </header>
 <iframe
   title="${escapeHtml(view.prompt)}"

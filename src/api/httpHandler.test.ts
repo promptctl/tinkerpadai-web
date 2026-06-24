@@ -28,6 +28,21 @@ const post = (path: string, body: unknown): Request =>
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 
+// Drive an initial generation all the way to a catalogued playground, returning its id. Both
+// the continue and fork round trips operate on a playground that already exists, so each must
+// mint one first — this is the single definition of "get me a ready playground". [LAW:one-source-of-truth]
+const submitToReady = async (handler: (request: Request) => Promise<Response>): Promise<string> => {
+  const { handle } = (await (
+    await handler(post('/generations', { providerId: 'fake', brief: { description: 'a tiny counter' } }))
+  ).json()) as { handle: Record<string, string> };
+  const status = (await (await handler(post('/poll', { handle }))).json()) as {
+    state: string;
+    playgroundId?: string;
+  };
+  expect(status.state).toBe('ready');
+  return status.playgroundId as string;
+};
+
 describe('GET /providers', () => {
   it('returns the registered providers for the dropdown', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake Provider', outcome: 'success' });
@@ -98,22 +113,6 @@ describe('POST /generations then POST /poll — the full submit→poll round tri
 });
 
 describe('POST /generations/continue then POST /poll — the iterate round trip', () => {
-  // Drive an initial generation all the way to a catalogued playground, returning its id —
-  // the continue route's input is a playground that already exists, so the test must mint one.
-  const submitToReady = async (
-    handler: (request: Request) => Promise<Response>,
-  ): Promise<string> => {
-    const { handle } = (await (
-      await handler(post('/generations', { providerId: 'fake', brief: { description: 'a tiny counter' } }))
-    ).json()) as { handle: Record<string, string> };
-    const status = (await (await handler(post('/poll', { handle }))).json()) as {
-      state: string;
-      playgroundId?: string;
-    };
-    expect(status.state).toBe('ready');
-    return status.playgroundId as string;
-  };
-
   it('continues an existing playground, returns a new handle, and polls it to ready', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
     const playgroundId = await submitToReady(handler);
@@ -165,21 +164,6 @@ describe('POST /generations/continue then POST /poll — the iterate round trip'
 });
 
 describe('POST /generations/fork then POST /poll — the remix round trip', () => {
-  // A fork's input is an existing playground, so the test mints one first — same as continue.
-  const submitToReady = async (
-    handler: (request: Request) => Promise<Response>,
-  ): Promise<string> => {
-    const { handle } = (await (
-      await handler(post('/generations', { providerId: 'fake', brief: { description: 'a tiny counter' } }))
-    ).json()) as { handle: Record<string, string> };
-    const status = (await (await handler(post('/poll', { handle }))).json()) as {
-      state: string;
-      playgroundId?: string;
-    };
-    expect(status.state).toBe('ready');
-    return status.playgroundId as string;
-  };
-
   it('forks an existing playground, returns a new handle, and polls it to a NEW playground', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
     const parentId = await submitToReady(handler);

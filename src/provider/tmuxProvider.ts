@@ -18,9 +18,10 @@ import { ProviderId, SessionId, TurnId } from './types.js';
 // tmux — swap the driver for an HTTP client or an in-memory fake and this body is
 // unchanged. That ignorance is the proof the seam is real. [LAW:effects-at-boundaries]
 //
-// One-shot: startSession + getResult are the headline path; continueSession/fork are
-// OMITTED, not stubbed — capability is method presence, so capabilitiesOf reports
-// continue:false/fork:false with no boolean to keep in sync. [LAW:one-source-of-truth]
+// startSession + getResult are the headline path; continueSession (iterate) and fork
+// (remix) are PRESENT because the tmux driver supports both — capability is method
+// presence, so capabilitiesOf reports continue:true/fork:true with no boolean to keep
+// in sync. A driver that lacked either would simply not expose it. [LAW:one-source-of-truth]
 
 export interface TmuxProviderConfig {
   readonly id: string;
@@ -83,6 +84,18 @@ export const makeTmuxProvider = (config: TmuxProviderConfig): Provider => {
     return handle;
   }
 
+  // Fork an existing session into a NEW one (remix): mint a fresh handle — a brand-new
+  // sessionId, not the parent's — then have the driver establish it from the seed. The
+  // parent handle names what is being forked at the seam, but a tmux session lives only
+  // in its workdir, so the seed value is all the driver needs; the parent's identity and
+  // cache are never touched. Symmetric to startSession — same mint-then-drive shape, the
+  // seed carried as a value. [LAW:dataflow-not-control-flow] [LAW:effects-at-boundaries]
+  async function fork(_parent: SessionHandle, seed: Artifact): Promise<SessionHandle> {
+    const handle = mintHandle();
+    await driver.fork(handle, seed);
+    return handle;
+  }
+
   async function getStatus(handle: SessionHandle): Promise<SessionStatus> {
     return statusOf(await driver.poll(handle));
   }
@@ -108,9 +121,9 @@ export const makeTmuxProvider = (config: TmuxProviderConfig): Provider => {
     return driver.isAvailable();
   }
 
-  // continueSession is PRESENT, so capabilitiesOf reports continue:true for the real
-  // provider — capability is method presence, no boolean to keep in sync. fork stays
-  // omitted until the remix epic. [LAW:one-source-of-truth]
+  // continueSession AND fork are PRESENT, so capabilitiesOf reports continue:true and
+  // fork:true for the real provider — capability is method presence, no boolean to keep
+  // in sync. [LAW:one-source-of-truth]
   return {
     id: providerId,
     label: config.label,
@@ -120,5 +133,6 @@ export const makeTmuxProvider = (config: TmuxProviderConfig): Provider => {
     getResult,
     getAvailability,
     continueSession,
+    fork,
   };
 };

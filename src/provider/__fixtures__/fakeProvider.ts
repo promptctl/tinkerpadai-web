@@ -20,10 +20,12 @@ import { ProviderId, SessionId, TurnId } from '../types.js';
 // It accepts the canonical ContractProviderOptions so the same knobs drive both this
 // and the scripted tmux driver through one shared contract. [LAW:one-source-of-truth]
 
-// Per-turn mutable state: which brief produced it, and how many more `running`
-// reads remain before it settles.
+// Per-turn mutable state: the html a succeeded poll yields (computed when the turn is
+// created — from the brief for a fresh/continued turn, from the seed for a fork — so a
+// fork's genesis version reflects the forked artifact, not a brief it never had), and
+// how many more `running` reads remain before it settles.
 interface TurnState {
-  readonly brief: Brief;
+  readonly html: string;
   runningLeft: number;
 }
 
@@ -33,11 +35,13 @@ export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
   const turns = new Map<string, TurnState>();
   let minted = 0;
 
-  const beginTurn = (sessionId: SessionId, brief: Brief): SessionHandle => {
+  const beginTurn = (sessionId: SessionId, html: string): SessionHandle => {
     const turnId = TurnId(`turn-${(minted += 1)}`);
-    turns.set(turnId, { brief, runningLeft: opts.runningPolls ?? 0 });
+    turns.set(turnId, { html, runningLeft: opts.runningPolls ?? 0 });
     return { providerId, sessionId, turnId };
   };
+
+  const htmlFor = (brief: Brief): string => `<!-- ${brief.description} -->`;
 
   const turnOf = (handle: SessionHandle): TurnState => {
     const turn = turns.get(handle.turnId);
@@ -46,7 +50,7 @@ export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
   };
 
   async function startSession(brief: Brief): Promise<SessionHandle> {
-    return beginTurn(SessionId(`session-${(minted += 1)}`), brief);
+    return beginTurn(SessionId(`session-${(minted += 1)}`), htmlFor(brief));
   }
 
   async function getStatus(handle: SessionHandle): Promise<SessionStatus> {
@@ -56,7 +60,7 @@ export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
       return { state: 'running' };
     }
     return opts.outcome === 'success'
-      ? { state: 'succeeded', result: { artifact: { html: `<!-- ${turn.brief.description} -->` } } }
+      ? { state: 'succeeded', result: { artifact: { html: turn.html } } }
       : { state: 'failed', error: { message: opts.outcome.fail } };
   }
 
@@ -95,10 +99,14 @@ export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
   return {
     ...base,
     async continueSession(handle: SessionHandle, followUp: Brief, _seed: Artifact): Promise<SessionHandle> {
-      return beginTurn(handle.sessionId, followUp);
+      return beginTurn(handle.sessionId, htmlFor(followUp));
     },
-    async fork(handle: SessionHandle): Promise<SessionHandle> {
-      return beginTurn(SessionId(`session-${(minted += 1)}`), turnOf(handle).brief);
+    // A fork mints a NEW session (its own sessionId) seeded from the parent's current
+    // artifact — so its genesis version IS that seed, the independent branch starting
+    // where the parent is. The parent handle is not read: the seed value carries
+    // everything the fork needs. [LAW:one-source-of-truth] [LAW:dataflow-not-control-flow]
+    async fork(_parent: SessionHandle, seed: Artifact): Promise<SessionHandle> {
+      return beginTurn(SessionId(`session-${(minted += 1)}`), seed.html);
     },
   };
 };

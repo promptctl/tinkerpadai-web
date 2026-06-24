@@ -2,7 +2,7 @@ import type { Brief, GenerationRequest, SessionHandle } from '../provider/index.
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { PlaygroundId, PlaygroundNotFoundError } from '../storage/index.js';
 import type { GenerationService } from './generationService.js';
-import { ProviderCannotContinueError } from './generationService.js';
+import { ProviderCannotContinueError, ProviderCannotForkError } from './generationService.js';
 
 // THE HTTP SURFACE the front door calls (p0v.5). A runtime-agnostic Web fetch handler —
 // (Request) => Promise<Response> — so it runs on a Node server, a Cloudflare Worker, or
@@ -49,6 +49,17 @@ const parseContinueRequest = (body: unknown): { playgroundId: PlaygroundId; brie
     playgroundId: PlaygroundId(requireString(body.playgroundId, 'playgroundId')),
     brief: { description: requireString(body.brief.description, 'brief.description') },
   };
+};
+
+// The single place that validates and brands an incoming fork request. It names ONLY the
+// parent playground to branch from — no brief, unlike parseContinueRequest. A fork carries
+// no follow-up: the service derives the new playground's first-turn prompt from the parent's
+// original describe, so the body restating one would be a second source of truth for it.
+// 'Remix with a tweak' is a continue() onto the resulting fork, a separate call with its own
+// brief — not a field folded in here. [LAW:single-enforcer] [LAW:one-source-of-truth]
+const parseForkRequest = (body: unknown): { playgroundId: PlaygroundId } => {
+  if (!isRecord(body)) throw new BadRequest('body must be a JSON object');
+  return { playgroundId: PlaygroundId(requireString(body.playgroundId, 'playgroundId')) };
 };
 
 // The single place that validates and brands an incoming handle (what `poll` receives).
@@ -110,6 +121,17 @@ export const makeHttpHandler = (
           const handle = await service.continue(playgroundId, brief);
           return json({ handle }, 201);
         }
+        // The fork path: branch an existing playground at its current version into a NEW,
+        // independent session. Symmetric with POST /generations/continue — returns a fresh
+        // SessionHandle (201) the client drives with the EXISTING POST /poll; no new poll
+        // surface. fork takes no brief (see parseForkRequest). It resolves and rejects the
+        // target (unknown playground -> 404, non-forkable provider -> 422) synchronously
+        // before any handle exists, so the catch maps those and there is no half-state to poll.
+        case 'POST /generations/fork': {
+          const { playgroundId } = parseForkRequest(await readJson(request));
+          const handle = await service.fork(playgroundId);
+          return json({ handle }, 201);
+        }
         // POST, not GET: a poll is not safe — the first observation of a succeeded turn
         // performs the store+catalog write — so it must not be treated as cacheable.
         case 'POST /poll':
@@ -128,6 +150,10 @@ export const makeHttpHandler = (
       // failure). Surfacing it as 500 would misrepresent a client-actionable condition as a
       // server fault and send the caller down the wrong path. [LAW:no-silent-failure]
       if (error instanceof ProviderCannotContinueError) return json({ error: error.message }, 422);
+      // The remix sibling: the playground exists but its provider cannot fork (no fork method).
+      // Unprocessable on semantic grounds, exactly like the continue case above — 422, never a
+      // 500 that misreads a client-actionable condition as a server fault. [LAW:no-silent-failure]
+      if (error instanceof ProviderCannotForkError) return json({ error: error.message }, 422);
       // Any other failure from the service is surfaced loudly with its message — never a 200
       // hiding an error, never a silent empty body. Finer status taxonomy for the remaining
       // 500s (e.g. unknown provider as 404) is a later refinement; the message is always

@@ -11,8 +11,11 @@ import type { Artifact, Brief, ProgressEvent, SessionHandle } from '../types.js'
 // of `running` reads before the turn settles, so the await-until-terminal contract
 // is exercised deterministically rather than via sleeps. [LAW:no-ambient-temporal-coupling]
 
+// The html a succeeded poll yields, fixed when the turn is created: derived from the
+// brief for begin/continue, taken from the seed for a fork — so a fork's genesis version
+// reflects the forked artifact rather than a brief it never carried.
 interface TurnState {
-  readonly brief: Brief;
+  readonly html: string;
   runningLeft: number;
 }
 
@@ -32,7 +35,7 @@ export const makeScriptedDriver = (opts: ContractProviderOptions): CodeGenDriver
     },
 
     async begin(brief: Brief, handle: SessionHandle): Promise<void> {
-      turns.set(handle.turnId, { brief, runningLeft: opts.runningPolls ?? 0 });
+      turns.set(handle.turnId, { html: `<!-- ${brief.description} -->`, runningLeft: opts.runningPolls ?? 0 });
     },
 
     // A follow-up turn is, to this double, just a new turn carrying the follow-up
@@ -45,7 +48,15 @@ export const makeScriptedDriver = (opts: ContractProviderOptions): CodeGenDriver
       _priorHandle: SessionHandle,
       _seed: Artifact,
     ): Promise<void> {
-      turns.set(handle.turnId, { brief, runningLeft: opts.runningPolls ?? 0 });
+      turns.set(handle.turnId, { html: `<!-- ${brief.description} -->`, runningLeft: opts.runningPolls ?? 0 });
+    },
+
+    // A fork is, to this double, a new turn whose artifact IS the seed — proving the
+    // orchestration mints a fresh independent identity and starts from the forked file.
+    // The real seed-into-a-new-workdir effect lives in the tmux driver; this double has
+    // no workdir, so the seed is simply the html the turn will yield.
+    async fork(handle: SessionHandle, seed: Artifact): Promise<void> {
+      turns.set(handle.turnId, { html: seed.html, runningLeft: opts.runningPolls ?? 0 });
     },
 
     async poll(handle: SessionHandle): Promise<DriverSnapshot> {
@@ -55,7 +66,7 @@ export const makeScriptedDriver = (opts: ContractProviderOptions): CodeGenDriver
         return { state: 'running' };
       }
       return opts.outcome === 'success'
-        ? { state: 'succeeded', html: `<!-- ${turn.brief.description} -->` }
+        ? { state: 'succeeded', html: turn.html }
         : { state: 'failed', message: opts.outcome.fail };
     },
 

@@ -133,6 +133,18 @@ const continuePromptFor = (brief: Brief, artifactPath: string): string =>
     'Write nothing else to that path. When the file is written, you are done.',
   ].join('\n');
 
+// The genesis instruction for a FORK: the seed artifact is already written to the
+// working file; this prompt hands the agent that file as the starting point of a new,
+// independent session. Running Claude (rather than copying the file silently) is what
+// establishes a live conversation in the fresh workdir, so a later refine of the fork
+// resumes with context exactly as any session's does. [FRAMING:representation]
+const forkPromptFor = (artifactPath: string): string =>
+  [
+    'You are forking an existing self-contained interactive HTML playground to use as the starting point for a new one.',
+    `The playground is the file at exactly this path: ${artifactPath}. Keep it as the playground; keep it self-contained (inline CSS/JS, no external dependencies).`,
+    'Write nothing else to that path. When the file is written, you are done.',
+  ].join('\n');
+
 export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => {
   const pollIntervalMs = config.pollIntervalMs ?? 750;
   const timeoutMs = config.timeoutMs ?? 5 * 60 * 1000;
@@ -249,6 +261,31 @@ export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => 
       await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
 
       worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs, reseeded: !warm });
+    },
+
+    // Branch a NEW independent session from a seed artifact. `handle` already carries a
+    // freshly-minted sessionId (the provider minted it), so dirOf resolves a brand-new
+    // workdir — distinct from the parent's by construction, never reached into. This is
+    // begin() seeded from the durable artifact: write the seed to the working file, then
+    // run Claude FRESH (no `--continue`, there is no prior conversation in this new dir)
+    // so a live conversation is established for later refines. The parent session — warm,
+    // cold, or evicted — is untouched: the fork is backed by the seed value, not the
+    // parent's cache. [LAW:one-source-of-truth] [LAW:dataflow-not-control-flow]
+    async fork(handle: SessionHandle, seed: Artifact): Promise<void> {
+      const dir = dirOf(handle);
+      const session = sessionName(handle);
+      await mkdir(dir, { recursive: true });
+
+      const artifactPath = join(dir, ARTIFACT_FILE);
+      await writeFile(artifactPath, seed.html, 'utf8');
+      await writeFile(join(dir, PROMPT_FILE), forkPromptFor(artifactPath), 'utf8');
+
+      const paneCommand =
+        `claude -p "$(cat ${PROMPT_FILE})" --dangerously-skip-permissions; ` +
+        `echo $? > ${EXIT_FILE}`;
+      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
+
+      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs, reseeded: false });
     },
 
     async poll(handle: SessionHandle): Promise<DriverSnapshot> {

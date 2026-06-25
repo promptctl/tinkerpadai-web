@@ -22,6 +22,7 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       const dataDir = await mkdtemp(join(tmpdir(), 'tinkerpad-app-live-'));
       const { service, registry, store, catalog } = makeApp({
         dataDir,
+        devSecret: 'live-test-secret',
         driver: { pollIntervalMs: 1000 },
       });
 

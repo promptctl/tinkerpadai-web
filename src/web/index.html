@@ -37,7 +37,7 @@
         padding: 1.25rem;
       }
       label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0 0 0.35rem; }
-      textarea, select {
+      textarea, select, input {
         width: 100%;
         background: #0f1218;
         color: var(--text);
@@ -108,6 +108,21 @@
         No generation provider is available. Generation is off until one is registered.
       </div>
 
+      <!-- The sign-in affordance. Hidden until a write is gated: generation requires an
+           authenticated session, so the first 401 on the write path reveals this, and a
+           successful sign-in retries the action the user was attempting. The secret is the
+           dev login printed in the server log at startup. -->
+      <form class="panel" id="signin" hidden>
+        <div class="row">
+          <label for="secret">Sign in to generate — dev secret (printed in the server log)</label>
+          <input id="secret" type="password" autocomplete="current-password" />
+        </div>
+        <div class="controls">
+          <button type="submit" id="signin-submit">Sign in</button>
+        </div>
+        <div class="note bad" id="signin-note"></div>
+      </form>
+
       <div id="status" role="status" aria-live="polite"></div>
     </main>
 
@@ -132,7 +147,14 @@
         // truncated response), not an empty object to read as data: let res.json() reject
         // and surface loudly through the caller's catch, never a silent {}.
         const body = await res.json();
-        if (!res.ok) throw new Error(body.error ?? `request failed (${res.status})`);
+        if (!res.ok) {
+          // Carry the status on the error so callers can branch on the KIND of failure as a
+          // value — the write-gate distinguishes a 401 (sign in, then retry) from any other
+          // failure (surface it) without re-parsing a message string.
+          const error = new Error(body.error ?? `request failed (${res.status})`);
+          error.status = res.status;
+          throw error;
+        }
         return body;
       };
 
@@ -206,15 +228,58 @@
         }
       };
 
+      const signinForm = $('signin');
+      const secretInput = $('secret');
+      const signinNote = $('signin-note');
+
+      // The action the user attempted that got gated, held so a successful sign-in can replay it.
+      // null when nothing is waiting on auth. The gate is data-driven: a 401 stashes the retry and
+      // reveals the form; sign-in success runs it. No "are we mid-login" flag spread through the UI.
+      let pendingAfterAuth = null;
+
+      const requireSignin = (retry) => {
+        pendingAfterAuth = retry;
+        signinNote.textContent = '';
+        signinForm.hidden = false;
+        secretInput.focus();
+        setStatus('<span class="bad">Sign in to generate.</span>');
+      };
+
+      signinForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        signinNote.textContent = '';
+        try {
+          await api('/session', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ secret: secretInput.value }),
+          });
+          secretInput.value = '';
+          signinForm.hidden = true;
+          const retry = pendingAfterAuth;
+          pendingAfterAuth = null;
+          if (retry) await retry();
+        } catch (error) {
+          // A bad secret comes back as 401; show it on the sign-in form, not the status region.
+          signinNote.textContent = error.message;
+        }
+      });
+
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         submitBtn.disabled = true;
+        // The whole attempt as a replayable thunk: if the write path gates it (401), sign in and
+        // run this exact action again. It re-reads the fields at call time, so the retry carries
+        // whatever the user typed.
+        const run = () => generate($('provider').value, $('description').value.trim());
         try {
-          await generate($('provider').value, $('description').value.trim());
+          await run();
         } catch (error) {
-          // A poll can fail loudly — e.g. the in-memory turn did not survive a server
-          // restart ("unknown turn"). Surface it; do not leave a dead spinner.
-          setStatus(`<span class="bad">${esc(error.message)}</span>`);
+          // An unauthenticated write is a value (401) the UI handles by asking to sign in, then
+          // retrying — distinct from any other failure (e.g. a poll on an "unknown turn" after a
+          // server restart), which is surfaced loudly so no dead spinner is left behind.
+          if (error.status === 401) requireSignin(run);
+          else setStatus(`<span class="bad">${esc(error.message)}</span>`);
         } finally {
           submitBtn.disabled = false;
         }

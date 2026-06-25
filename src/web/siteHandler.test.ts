@@ -24,6 +24,7 @@ const seed = async (catalog: Catalog, prompt: string): Promise<PlaygroundId> => 
 
 const build = (
   catalog: Catalog,
+  sessionHandler: (request: Request) => Promise<Response | null> = async () => null,
 ): { handler: (request: Request) => Promise<Response>; delegated: Request[] } => {
   const delegated: Request[] = [];
   const apiHandler = async (request: Request): Promise<Response> => {
@@ -34,7 +35,7 @@ const build = (
     });
   };
   return {
-    handler: makeSiteHandler({ page: PAGE, catalog, contentOrigin: CONTENT_ORIGIN, apiHandler }),
+    handler: makeSiteHandler({ page: PAGE, catalog, contentOrigin: CONTENT_ORIGIN, sessionHandler, apiHandler }),
     delegated,
   };
 };
@@ -53,6 +54,23 @@ describe('makeSiteHandler', () => {
     const { handler, delegated } = build(makeMemoryCatalog());
     const res = await handler(new Request('http://front.local/providers'));
     expect(await res.json()).toEqual({ ok: true });
+    expect(delegated.map((r) => new URL(r.url).pathname)).toEqual(['/providers']);
+  });
+
+  it('lets the session handler claim its own routes before the API ever sees them', async () => {
+    // A session route is answered by the session handler; the API handler is never reached for
+    // it. An unclaimed route (null from the session handler) still falls through to the API.
+    const sessionHandler = async (request: Request): Promise<Response | null> =>
+      new URL(request.url).pathname === '/session'
+        ? new Response(JSON.stringify({ identity: null }), { headers: { 'content-type': 'application/json' } })
+        : null;
+    const { handler, delegated } = build(makeMemoryCatalog(), sessionHandler);
+
+    const claimed = await handler(new Request('http://front.local/session'));
+    expect(await claimed.json()).toEqual({ identity: null });
+    expect(delegated).toHaveLength(0);
+
+    await handler(new Request('http://front.local/providers'));
     expect(delegated.map((r) => new URL(r.url).pathname)).toEqual(['/providers']);
   });
 

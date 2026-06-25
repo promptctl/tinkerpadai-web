@@ -46,7 +46,13 @@ describe('commons + sandboxed player over two real origins', () => {
 
     const apiHandler = async (): Promise<Response> => new Response('nope', { status: 404 });
     const site = await serve({
-      handler: makeSiteHandler({ page: PAGE, catalog, contentOrigin: content.url, apiHandler }),
+      handler: makeSiteHandler({
+        page: PAGE,
+        catalog,
+        contentOrigin: content.url,
+        sessionHandler: async () => null,
+        apiHandler,
+      }),
       port: 0,
     });
     servers.push(site);
@@ -96,6 +102,7 @@ describe('remix action over the composed front door', () => {
         page: PAGE,
         catalog,
         contentOrigin: 'http://content.local',
+        sessionHandler: async () => null,
         apiHandler: makeHttpHandler(service, localIdentityResolver),
       }),
       port: 0,

@@ -15,6 +15,7 @@ const summary = (over: Partial<Parameters<typeof renderCommons>[0][number]> = {}
   currentVersion: 'v' as never,
   forkedFrom: null,
   author: 'ada' as never,
+  recipe: ['a tiny counter'] as const,
   ...over,
 });
 
@@ -67,6 +68,13 @@ describe('renderCommons', () => {
     expect(html).not.toContain(XSS);
     expect(html).toContain('&lt;script&gt;');
   });
+
+  // The recipe surfaces as a step count on the row — iteration depth made visible (history
+  // layer A), pluralized as a value so a one-shot reads "1 step" and an iterated one "3 steps".
+  it('shows the iteration step count, pluralized, on the row', () => {
+    expect(renderCommons([summary({ recipe: ['describe'] })])).toContain('1 step');
+    expect(renderCommons([summary({ recipe: ['describe', 'refine', 'again'] })])).toContain('3 steps');
+  });
 });
 
 describe('renderPlayer', () => {
@@ -77,6 +85,7 @@ describe('renderPlayer', () => {
     providerId: 'p' as never,
     author: 'ada' as never,
     forkedFrom: null,
+    recipe: [XSS] as const,
   };
 
   it('escapes the prompt in its chrome but keeps the content src intact', () => {
@@ -126,6 +135,30 @@ describe('renderPlayer', () => {
   // The player chrome carries the SAME byline the commons row does. [LAW:one-source-of-truth]
   it('credits the author as a "by <author>" byline in the chrome', () => {
     expect(renderPlayer({ ...view, author: 'grace' as never })).toContain('by grace');
+  });
+
+  // The recipe (history layer A) surfaces the ordered prompts that built the playground in the
+  // chrome — the describe->refine story made visible, every prompt in order with its step count.
+  it('surfaces the ordered recipe prompts and their step count in the chrome', () => {
+    const html = renderPlayer({
+      ...view,
+      prompt: 'a color picker',
+      recipe: ['a color picker', 'add a hex readout', 'add a copy button'],
+    });
+    expect(html).toContain('Built in 3 steps');
+    const first = html.indexOf('add a hex readout');
+    const second = html.indexOf('add a copy button');
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(first);
+  });
+
+  // Every recipe prompt is outside data crossing the single enforcer, like every other value on
+  // this trusted origin — a hostile follow-up prompt renders as inert text, never as markup.
+  // [LAW:single-enforcer]
+  it('escapes a hostile recipe prompt rather than emitting it as markup', () => {
+    const html = renderPlayer({ ...view, prompt: 'safe title', recipe: ['safe title', XSS] });
+    expect(html).not.toContain(XSS);
+    expect(html).toContain('&lt;script&gt;');
   });
 
   // The playground id and its provider cross into the page as DATA (escaped attributes), so a

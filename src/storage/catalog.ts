@@ -9,6 +9,7 @@ import type {
   Playground,
   PlaygroundId,
   PlaygroundSummary,
+  Recipe,
   SessionRecord,
   TurnRecord,
   VersionId,
@@ -78,6 +79,18 @@ export const currentTurnOf = (session: SessionRecord): TurnRecord => {
 // The latest version of a playground — the newest turn's version. [LAW:one-source-of-truth]
 export const currentVersionOf = (session: SessionRecord): VersionId => currentTurnOf(session).version;
 
+// The read-path recipe projection (layer A of the history epic) — the ordered prompts that
+// built the playground, derived from turns in order. The single home for "how a playground
+// was built", mirroring currentVersionOf/forkAttributionOf as a pure single-playground
+// derivation of turns. Only the prompt crosses into the read path; the turnId stays generation
+// identity and the version stays the store's concern, the same discipline that keeps the
+// generation SessionId off the summary. Non-empty in, non-empty out — recipe[0] is always the
+// original describe, no nullable to guard. [LAW:one-source-of-truth] [LAW:no-defensive-null-guards]
+export const recipeOf = (session: SessionRecord): Recipe => {
+  const [first, ...rest] = session.turns;
+  return [first.prompt, ...rest.map((turn) => turn.prompt)];
+};
+
 // The fork-axis projection, kept deliberately apart from the version-axis projection below:
 // it reads ONLY lineage, never turns or versions, so the two axes cannot bleed into each
 // other in the read path any more than they do in storage. A non-fork projects to null (a
@@ -109,6 +122,7 @@ export const summarize = (
   currentVersion: currentVersionOf(playground.session),
   forkedFrom: forkAttributionOf(playground, resolveParent),
   author: playground.session.author,
+  recipe: recipeOf(playground.session),
 });
 
 // The single implementation of the catalog invariants over any CatalogStore. The

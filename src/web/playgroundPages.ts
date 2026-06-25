@@ -31,6 +31,29 @@ const forkedFromLabel = (parent: ParentRef | null): string =>
 // string, not a nullable fragment. [LAW:one-source-of-truth] [LAW:single-enforcer]
 const byline = (author: PlaygroundSummary['author']): string => `by ${escapeHtml(author)}`;
 
+// The step-count label — iteration depth as a pluralized phrase, shared by the commons row and
+// the player's recipe block so "how many steps" reads identically wherever a playground appears.
+// A pure count of the recipe; the plural suffix is a value, never a branch over whether markup
+// renders. [LAW:one-source-of-truth] [LAW:dataflow-not-control-flow]
+const stepLabel = (recipe: PlaygroundSummary['recipe']): string =>
+  `${recipe.length} step${recipe.length === 1 ? '' : 's'}`;
+
+// The recipe block (history layer A) — the ordered prompts that built this playground, the
+// describe->refine story made visible. Collapsed by default so provenance enriches the chrome
+// without crowding the live preview; the summary carries the step count. Every prompt is server
+// data crossing the single enforcer, like every other outside value on this trusted origin. The
+// non-empty recipe always lists at least the original describe, so the list is never an empty
+// special case. [LAW:single-enforcer] [LAW:one-source-of-truth] [LAW:dataflow-not-control-flow]
+const recipeBlock = (recipe: PlaygroundSummary['recipe']): string => {
+  const steps = recipe.map((prompt) => `    <li>${escapeHtml(prompt)}</li>`).join('\n');
+  return `<details class="recipe">
+  <summary>Built in ${stepLabel(recipe)}</summary>
+  <ol>
+${steps}
+  </ol>
+</details>`;
+};
+
 // Per-surface attribution fragments: a non-fork is the empty string (a value, never a branch
 // that skips markup), a fork is the shared label inside the surface's own element. The commons
 // row carries it as a meta line; the player header as its own row. [LAW:dataflow-not-control-flow]
@@ -77,7 +100,7 @@ export const renderCommons = (summaries: readonly PlaygroundSummary[]): string =
       (s) =>
         `  <li><a href="${playHref(s.id)}">${escapeHtml(s.prompt)}</a><div class="meta">${escapeHtml(
           s.providerId,
-        )} · ${byline(s.author)}</div>${commonsForkedFrom(s.forkedFrom)}</li>`,
+        )} · ${byline(s.author)} · ${stepLabel(s.recipe)}</div>${commonsForkedFrom(s.forkedFrom)}</li>`,
     )
     .join('\n');
   const list =
@@ -128,6 +151,11 @@ export interface PlayerView {
   // row carries, so attribution reads identically wherever a playground appears. It is rendered
   // as escaped chrome (a link/text), never interpolated into the client script. [LAW:one-source-of-truth]
   readonly forkedFrom: PlaygroundSummary['forkedFrom'];
+  // The iteration recipe — the ordered prompts that built this playground (history layer A),
+  // rendered as the "how this was built" block in the chrome. The SAME projected value the
+  // commons row counts, so provenance reads consistently wherever a playground appears. Escaped
+  // chrome (text), never interpolated into the client script. [LAW:one-source-of-truth]
+  readonly recipe: PlaygroundSummary['recipe'];
 }
 
 // The player client, inlined into the player chrome. It wires TWO actions onto the SAME
@@ -358,6 +386,10 @@ export const renderPlayer = (view: PlayerView): string =>
   header .byline { font-size:0.85rem; color:var(--muted); white-space:nowrap; }
   .forked-from { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
   .forked-from a { font-weight:600; }
+  .recipe { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
+  .recipe summary { cursor:pointer; }
+  .recipe ol { margin:0.4rem 0 0; padding-left:1.4rem; display:block; }
+  .recipe li { background:none; border:0; border-radius:0; padding:0.1rem 0; }
   iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
   footer { border-top:1px solid var(--line); padding:0.6rem 1rem; display:flex; flex-direction:column; gap:0.5rem; }
   footer form { display:flex; gap:0.6rem; }
@@ -379,6 +411,7 @@ export const renderPlayer = (view: PlayerView): string =>
   <h1>${escapeHtml(view.prompt)}</h1>
   <span class="byline">${byline(view.author)}</span>
   ${playerForkedFrom(view.forkedFrom)}
+  ${recipeBlock(view.recipe)}
 </header>
 <iframe
   title="${escapeHtml(view.prompt)}"

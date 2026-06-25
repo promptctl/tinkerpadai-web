@@ -13,6 +13,7 @@ export {
   makeCatalog,
   currentTurnOf,
   currentVersionOf,
+  recipeOf,
   summarize,
   forkAttributionOf,
   PlaygroundNotFoundError,
@@ -29,6 +30,7 @@ export type {
   ParentRef,
   Playground,
   PlaygroundSummary,
+  Recipe,
   SessionRecord,
   TurnRecord,
 } from './types.js';

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { makeGenerationService, makeHttpHandler } from '../api/index.js';
+import { localIdentityResolver, makeGenerationService, makeHttpHandler } from '../api/index.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { serve } from './server.js';
@@ -33,7 +33,7 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     page: PAGE,
     catalog,
     contentOrigin: 'http://content.local:9999',
-    apiHandler: makeHttpHandler(service),
+    apiHandler: makeHttpHandler(service, localIdentityResolver),
   });
   return serve({ handler, port: 0 });
 };

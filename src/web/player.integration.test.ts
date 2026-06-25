@@ -5,6 +5,7 @@ import { ProviderId, ProviderRegistry, SessionId, TurnId } from '../provider/ind
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { makeGenerationService } from '../api/generationService.js';
 import { makeHttpHandler } from '../api/httpHandler.js';
+import { localIdentityResolver } from '../api/identity.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
@@ -95,7 +96,7 @@ describe('remix action over the composed front door', () => {
         page: PAGE,
         catalog,
         contentOrigin: 'http://content.local',
-        apiHandler: makeHttpHandler(service),
+        apiHandler: makeHttpHandler(service, localIdentityResolver),
       }),
       port: 0,
     });

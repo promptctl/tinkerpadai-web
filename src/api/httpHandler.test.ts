@@ -5,12 +5,23 @@ import type { ContractProviderOptions } from '../provider/provider.contract.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
 import { makeGenerationService } from './generationService.js';
 import { makeHttpHandler } from './httpHandler.js';
+import { Subject } from './identity.js';
+import type { IdentityResolver } from './identity.js';
+
+// The resolvers the gate tests pin against: one that always grants the same principal (the
+// authenticated path), one that always returns null (the unauthenticated path). They stand in
+// for whatever real mechanism sits behind the seam — the enforcer only ever sees the value.
+const grantIdentity: IdentityResolver = () => ({ subject: Subject('tester') });
+const denyIdentity: IdentityResolver = () => null;
 
 // The HTTP surface's contract: it routes to the service, validates input at the boundary
 // (bad shape -> 400), and surfaces service failures loudly (-> non-2xx with a message).
 // It asserts the request/response behavior, not the service internals. [LAW:behavior-not-structure]
 
-const handlerFor = (opts: ContractProviderOptions): ((request: Request) => Promise<Response>) => {
+const handlerFor = (
+  opts: ContractProviderOptions,
+  resolveIdentity: IdentityResolver = grantIdentity,
+): ((request: Request) => Promise<Response>) => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
   const service = makeGenerationService({
@@ -19,7 +30,7 @@ const handlerFor = (opts: ContractProviderOptions): ((request: Request) => Promi
     catalog: makeMemoryCatalog(),
     disposeTurn: async () => undefined,
   });
-  return makeHttpHandler(service);
+  return makeHttpHandler(service, resolveIdentity);
 };
 
 const post = (path: string, body: unknown): Request =>
@@ -244,6 +255,54 @@ describe('service errors are surfaced loudly, never hidden behind a 200', () => 
     const res = await handler(post('/generations', { providerId: 'ghost', brief: { description: 'x' } }));
     expect(res.status).toBe(500);
     expect((await res.json()) as { error: string }).toMatchObject({ error: 'unknown provider: ghost' });
+  });
+});
+
+describe('the identity enforcement boundary — the write path is gated, the read path is not', () => {
+  // Exactly the routes the ticket names as the write path. Driven as data so the gate's reach
+  // is asserted as a set, not re-stated per case. [LAW:dataflow-not-control-flow]
+  const writeRoutes = [
+    '/generations',
+    '/generations/continue',
+    '/generations/fork',
+    '/poll',
+  ];
+
+  it.each(writeRoutes)(
+    'rejects an unauthenticated write to POST %s as a 401 value with a message',
+    async (path) => {
+      const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, denyIdentity);
+      const res = await handler(post(path, { providerId: 'fake', brief: { description: 'x' } }));
+      expect(res.status).toBe(401);
+      expect((await res.json()) as { error: string }).toMatchObject({ error: expect.any(String) });
+    },
+  );
+
+  it('gates before parsing — an unauthenticated write with a malformed body is 401, not 400', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, denyIdentity);
+    const res = await handler(post('/generations', 'not json{'));
+    expect(res.status).toBe(401);
+  });
+
+  it('lets an authenticated write through — the gate blocks absence, never presence', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, grantIdentity);
+    const res = await handler(
+      post('/generations', { providerId: 'fake', brief: { description: 'a tiny counter' } }),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it('leaves the read path credential-free — GET /providers is never gated, even with no identity', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, denyIdentity);
+    const res = await handler(new Request('http://tinkerpad.local/providers'));
+    expect(res.status).toBe(200);
+  });
+
+  it('leaves the availability read credential-free — GET /availability is never gated', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, denyIdentity);
+    const res = await handler(new Request('http://tinkerpad.local/availability?providerId=fake'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ state: 'available' });
   });
 });
 

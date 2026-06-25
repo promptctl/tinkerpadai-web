@@ -8,7 +8,7 @@ import {
 import type { TmuxDriverConfig } from './provider/index.js';
 import { makeFileArtifactStore, makeFileCatalog } from './storage/index.js';
 import type { ArtifactStore, Catalog } from './storage/index.js';
-import { makeGenerationService, makeHttpHandler } from './api/index.js';
+import { localIdentityResolver, makeGenerationService, makeHttpHandler } from './api/index.js';
 import type { GenerationService } from './api/index.js';
 
 // THE COMPOSITION ROOT. The one place that knows the concrete shape of the steel
@@ -55,5 +55,14 @@ export const makeApp = (config: AppConfig): App => {
   // provider-agnostic — the service releases settled turns without knowing it is tmux.
   // [LAW:dataflow-not-control-flow]
   const service = makeGenerationService({ registry, store, catalog, disposeTurn: cleanupTurn });
-  return { registry, service, store, catalog, handler: makeHttpHandler(service) };
+  // The default identity mechanism for the local single-user thread. The write-path enforcer
+  // lives in the handler; this is the swappable mechanism behind its seam — a session-backed
+  // resolver replaces it HERE, with the enforcer untouched. [LAW:locality-or-seam]
+  return {
+    registry,
+    service,
+    store,
+    catalog,
+    handler: makeHttpHandler(service, localIdentityResolver),
+  };
 };

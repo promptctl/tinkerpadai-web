@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { makeApp } from './app.js';
+import { Subject } from './api/index.js';
 import type { GenerationStatus } from './api/index.js';
 
 // A LIVE end-to-end smoke of the WHOLE composition: makeApp wires the real tmux/Claude
@@ -30,10 +31,13 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       if (provider === undefined) throw new Error('no provider registered');
       expect((await registry.availabilityOf(provider.id)).state).toBe('available');
 
-      const handle = await service.submit({
-        providerId: provider.id,
-        brief: { description: 'a tiny counter with a + and - button' },
-      });
+      const handle = await service.submit(
+        {
+          providerId: provider.id,
+          brief: { description: 'a tiny counter with a + and - button' },
+        },
+        Subject('live-tester'),
+      );
 
       let status: GenerationStatus = await service.poll(handle);
       while (status.state === 'pending' || status.state === 'running') {
@@ -80,7 +84,7 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       // service derives the first-turn prompt from the parent's original describe) and resolves
       // the provider from the parent's session. INDEPENDENT: the catalog gains a second
       // playground with a DISTINCT id, not another version of the parent. [LAW:verifiable-goals]
-      const forked = await service.fork(status.playgroundId);
+      const forked = await service.fork(status.playgroundId, Subject('live-tester'));
       let forkedStatus: GenerationStatus = await service.poll(forked);
       while (forkedStatus.state === 'pending' || forkedStatus.state === 'running') {
         forkedStatus = await service.poll(forked);

@@ -9,6 +9,7 @@ import type {
   SessionHandle,
   SessionStatus,
 } from '../provider/index.js';
+import type { Subject } from '../identity/index.js';
 import type { ArtifactStore, Catalog, Lineage, Playground, PlaygroundId, VersionId } from '../storage/index.js';
 import { currentTurnOf, currentVersionOf } from '../storage/index.js';
 
@@ -85,8 +86,10 @@ export interface GenerationService {
   availabilityOf(providerId: ProviderId): Promise<Availability>;
 
   // Submit a brief against a chosen provider; resolves once the turn EXISTS, not once it
-  // is done. The returned handle is what the caller polls.
-  submit(request: GenerationRequest): Promise<SessionHandle>;
+  // is done. The returned handle is what the caller polls. `author` is the authenticated
+  // principal the gated write path resolved — recorded as the new playground's author when the
+  // turn succeeds (the create write is the one place this identity is persisted).
+  submit(request: GenerationRequest, author: Subject): Promise<SessionHandle>;
 
   // Refine an existing playground: send a follow-up brief into its session, producing a
   // successive version. Symmetric with submit — it registers a turn and returns the handle
@@ -102,10 +105,12 @@ export interface GenerationService {
   // returns the handle to poll; like continue it resolves the parent and reads its current
   // artifact as the seed. The two differences from submit are both values, not branches: the
   // turn's create target carries fork lineage, and fork carries no user brief, so the new
-  // playground's first-turn prompt is the parent's original describe. An unknown id fails
-  // loudly (PlaygroundNotFoundError); a provider that can't fork fails loudly
+  // playground's first-turn prompt is the parent's original describe. `author` is the
+  // authenticated principal performing the fork — recorded as the NEW playground's author (a
+  // remix is "by the remixer"; the parent keeps its own author). An unknown id fails loudly
+  // (PlaygroundNotFoundError); a provider that can't fork fails loudly
   // (ProviderCannotForkError). [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
-  fork(playgroundId: PlaygroundId): Promise<SessionHandle>;
+  fork(playgroundId: PlaygroundId, author: Subject): Promise<SessionHandle>;
 
   // The point-in-time status of a turn. On the first observation of a succeeded provider
   // status it performs the one effectful transition (store the file, record the version on
@@ -121,8 +126,14 @@ export interface GenerationService {
 // (submit null, fork the parent reference) — not two kinds — so the one createPlayground
 // write serves both and a failed fork inherits create's failure-disposal for free.
 // [LAW:dataflow-not-control-flow] [LAW:one-type-per-behavior]
+// The author rides on the 'create' member ONLY: a create write records who authored the new
+// playground (submit's submitter, fork's forker), while an append extends a playground that
+// already has its author — so "an append carries an author" and "a create lacks one" are both
+// unrepresentable, and continue never threads an identity it would only discard. The author is
+// a value on the create target, dispatched at persist time, not a branch on which turn produced
+// it. [LAW:types-are-the-program] [LAW:dataflow-not-control-flow]
 type TurnTarget =
-  | { readonly kind: 'create'; readonly lineage: Lineage | null }
+  | { readonly kind: 'create'; readonly lineage: Lineage | null; readonly author: Subject }
   | { readonly kind: 'append'; readonly playgroundId: PlaygroundId };
 
 // Per-turn state the service owns: the brief the turn carried (the catalog needs the
@@ -183,7 +194,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   ): Promise<Playground> => {
     switch (target.kind) {
       case 'create':
-        return catalog.createPlayground({ handle, prompt, version, lineage: target.lineage });
+        return catalog.createPlayground({ handle, prompt, version, lineage: target.lineage, author: target.author });
       case 'append':
         return catalog.appendTurn(target.playgroundId, { handle, prompt, version });
       default: {
@@ -266,14 +277,14 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       return registry.availabilityOf(providerId);
     },
 
-    async submit(request: GenerationRequest): Promise<SessionHandle> {
+    async submit(request: GenerationRequest, author: Subject): Promise<SessionHandle> {
       // Resolve the selection by value: registry.get throws loudly on an unknown id, so
       // there is no null to branch on. [LAW:dataflow-not-control-flow]
       const provider = registry.get(request.providerId);
       const handle = await provider.startSession(request.brief);
       turns.set(handle.turnId, {
         brief: request.brief,
-        target: { kind: 'create', lineage: null },
+        target: { kind: 'create', lineage: null, author },
         terminal: null,
       });
       return handle;
@@ -314,7 +325,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       return handle;
     },
 
-    async fork(playgroundId: PlaygroundId): Promise<SessionHandle> {
+    async fork(playgroundId: PlaygroundId, author: Subject): Promise<SessionHandle> {
       // Resolve the parent first: an unknown id fails loudly with the typed
       // PlaygroundNotFoundError, never a fork of nothing. [LAW:no-silent-failure]
       const { session } = await catalog.getPlayground(playgroundId);
@@ -350,7 +361,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // distinguishing this create from submit's. [LAW:one-source-of-truth]
       const brief: Brief = { description: session.turns[0].prompt };
       const lineage: Lineage = { parentSession: session.sessionId, forkedFromVersion };
-      turns.set(handle.turnId, { brief, target: { kind: 'create', lineage }, terminal: null });
+      turns.set(handle.turnId, { brief, target: { kind: 'create', lineage, author }, terminal: null });
       return handle;
     },
 

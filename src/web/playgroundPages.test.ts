@@ -14,6 +14,7 @@ const summary = (over: Partial<Parameters<typeof renderCommons>[0][number]> = {}
   providerId: 'p' as never,
   currentVersion: 'v' as never,
   forkedFrom: null,
+  author: 'ada' as never,
   ...over,
 });
 
@@ -43,6 +44,17 @@ describe('renderCommons', () => {
     expect(renderCommons([summary()])).not.toContain('Forked from');
   });
 
+  // Authorship is the other half of provenance — every row credits its author as a byline.
+  it('credits the author as a "by <author>" byline', () => {
+    expect(renderCommons([summary({ author: 'grace' as never })])).toContain('by grace');
+  });
+
+  it('escapes a hostile author in the byline rather than emitting it as markup', () => {
+    const html = renderCommons([summary({ author: XSS as never })]);
+    expect(html).not.toContain(XSS);
+    expect(html).toContain('&lt;script&gt;');
+  });
+
   // A fork whose parent has left the commons keeps the durable fork fact, but offers no link
   // to a parent that is no longer browsable. [LAW:no-silent-failure]
   it('states the fork fact without a link when the parent is gone', () => {
@@ -63,6 +75,7 @@ describe('renderPlayer', () => {
     prompt: XSS,
     contentSrc: 'http://c.local/?id=abc',
     providerId: 'p' as never,
+    author: 'ada' as never,
     forkedFrom: null,
   };
 
@@ -108,6 +121,11 @@ describe('renderPlayer', () => {
 
   it('shows no attribution for a player that is not a fork', () => {
     expect(renderPlayer(view)).not.toContain('Forked from');
+  });
+
+  // The player chrome carries the SAME byline the commons row does. [LAW:one-source-of-truth]
+  it('credits the author as a "by <author>" byline in the chrome', () => {
+    expect(renderPlayer({ ...view, author: 'grace' as never })).toContain('by grace');
   });
 
   // The playground id and its provider cross into the page as DATA (escaped attributes), so a

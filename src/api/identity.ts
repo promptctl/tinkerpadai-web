@@ -5,15 +5,13 @@
 // that consumes it (httpHandler). This is the foundational seam every later auth slice
 // composes onto. [LAW:locality-or-seam] [LAW:decomposition]
 
-// Branded, matching the provider seam's id convention — a bare `string` would let a Subject be
-// passed where any other id is expected. [LAW:types-are-the-program]
-type Brand<T, B extends string> = T & { readonly __brand: B };
-
-// The stable id of an authenticated principal. Minted only through the constructor below, so
-// foreign input becomes a Subject at exactly one place rather than via scattered casts.
-// [LAW:single-enforcer]
-export type Subject = Brand<string, 'Subject'>;
-export const Subject = (raw: string): Subject => raw as Subject;
+// The principal id lives one layer down (src/identity) so storage can record it as a
+// playground's author without a dependency cycle back into this api layer. Imported for this
+// seam's own use (the Identity below) and re-exported so its existing consumers (the session
+// store, the session handler, tests) still import Subject from the identity boundary they
+// already know. [LAW:one-source-of-truth] [LAW:one-way-deps]
+import { Subject } from '../identity/index.js';
+export { Subject };
 
 // The authenticated principal of a write-path request. `subject` is all the domain knows today
 // — the stable id later slices thread into attribution and lineage (who generated/forked a

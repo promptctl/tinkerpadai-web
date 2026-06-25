@@ -24,6 +24,13 @@ const forkedFromLabel = (parent: ParentRef | null): string =>
     ? 'Forked from a playground no longer in the commons'
     : `Forked from <a href="${playHref(parent.id)}">${escapeHtml(parent.prompt)}</a>`;
 
+// The author byline — "by <author>", the visible half of provenance (the fork label is the
+// other half). It is the SAME on every surface, so it lives once; the author is server data and
+// crosses the single enforcer like every other outside value on this trusted origin. Unlike the
+// fork label, authorship is never absent — every playground has an author — so this is a total
+// string, not a nullable fragment. [LAW:one-source-of-truth] [LAW:single-enforcer]
+const byline = (author: PlaygroundSummary['author']): string => `by ${escapeHtml(author)}`;
+
 // Per-surface attribution fragments: a non-fork is the empty string (a value, never a branch
 // that skips markup), a fork is the shared label inside the surface's own element. The commons
 // row carries it as a meta line; the player header as its own row. [LAW:dataflow-not-control-flow]
@@ -70,7 +77,7 @@ export const renderCommons = (summaries: readonly PlaygroundSummary[]): string =
       (s) =>
         `  <li><a href="${playHref(s.id)}">${escapeHtml(s.prompt)}</a><div class="meta">${escapeHtml(
           s.providerId,
-        )}</div>${commonsForkedFrom(s.forkedFrom)}</li>`,
+        )} · ${byline(s.author)}</div>${commonsForkedFrom(s.forkedFrom)}</li>`,
     )
     .join('\n');
   const list =
@@ -111,6 +118,11 @@ export interface PlayerView {
   // capability), exactly as the front door gates submit on the selected provider. It rides
   // into the page as escaped data, never as JS. [LAW:decomposition]
   readonly providerId: PlaygroundSummary['providerId'];
+  // The principal who made this playground, rendered as a "by <author>" byline in the chrome —
+  // the SAME projected value the commons row carries, so attribution reads identically wherever a
+  // playground appears. Escaped chrome (text), never interpolated into the client script.
+  // [LAW:one-source-of-truth]
+  readonly author: PlaygroundSummary['author'];
   // The fork-axis attribution — null when this playground is not a fork, else the parent it was
   // remixed from (linked where the parent still browses). The SAME projected value the commons
   // row carries, so attribution reads identically wherever a playground appears. It is rendered
@@ -343,6 +355,7 @@ export const renderPlayer = (view: PlayerView): string =>
   header { padding:0.6rem 1rem; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:0.25rem 1rem; align-items:baseline; }
   header h1 { font-size:0.95rem; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   header a { font-size:0.85rem; white-space:nowrap; }
+  header .byline { font-size:0.85rem; color:var(--muted); white-space:nowrap; }
   .forked-from { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
   .forked-from a { font-weight:600; }
   iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
@@ -364,6 +377,7 @@ export const renderPlayer = (view: PlayerView): string =>
 <header>
   <a href="/commons">← Commons</a>
   <h1>${escapeHtml(view.prompt)}</h1>
+  <span class="byline">${byline(view.author)}</span>
   ${playerForkedFrom(view.forkedFrom)}
 </header>
 <iframe

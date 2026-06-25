@@ -14,3 +14,5 @@ export { makeMemorySessionStore } from './sessionStore.js';
 export type { SessionStore } from './sessionStore.js';
 export { makeSessionHandler, makeSessionResolver } from './session.js';
 export type { SessionHandlerDeps } from './session.js';
+export { makeGitHubOAuthProvider } from './oauth.js';
+export type { OAuthProvider, GitHubOAuthConfig } from './oauth.js';

@@ -15,7 +15,7 @@ import {
   makeSessionHandler,
   makeSessionResolver,
 } from './api/index.js';
-import type { GenerationService } from './api/index.js';
+import type { GenerationService, OAuthProvider } from './api/index.js';
 
 // THE COMPOSITION ROOT. The one place that knows the concrete shape of the steel
 // thread: that the provider is the local tmux/Claude-Code body, that storage is the
@@ -43,10 +43,14 @@ export interface App {
 export interface AppConfig {
   // Where the file artifact store and catalog live.
   readonly dataDir: string;
-  // The shared secret a dev login must present to establish a session. Required, not optional:
-  // there is no "auth off" mode — without a secret there is no working write path, so the app
-  // cannot be constructed without one and the gate is always real. [LAW:types-are-the-program]
-  readonly devSecret: string;
+  // The delegated identity provider behind the login seam (GitHub in production, a fake in tests).
+  // Required, not optional: there is no "auth off" mode — without a provider there is no working
+  // write path, so the app cannot be constructed without one and the gate is always real. The
+  // concrete provider (and its credentials/HTTP) is built by the caller at the true edge, so
+  // makeApp stays a pure graph builder a test can construct with a fake. [LAW:types-are-the-program]
+  readonly oauth: OAuthProvider;
+  // The absolute URL the identity provider redirects back to (this app's /session/callback).
+  readonly oauthCallbackUrl: string;
   readonly providerId?: string;
   readonly providerLabel?: string;
   readonly driver?: TmuxDriverConfig;
@@ -88,6 +92,11 @@ export const makeApp = (config: AppConfig): App => {
     store,
     catalog,
     handler: makeHttpHandler(service, resolveIdentity),
-    sessionHandler: makeSessionHandler({ store: sessionStore, resolveIdentity, secret: config.devSecret }),
+    sessionHandler: makeSessionHandler({
+      store: sessionStore,
+      resolveIdentity,
+      oauth: config.oauth,
+      callbackUrl: config.oauthCallbackUrl,
+    }),
   };
 };

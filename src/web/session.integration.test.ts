@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
 import {
+  Subject,
   makeGenerationService,
   makeHttpHandler,
   makeMemorySessionStore,
   makeSessionHandler,
   makeSessionResolver,
 } from '../api/index.js';
+import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { serve } from './server.js';
@@ -15,15 +17,18 @@ import type { RunningServer } from './server.js';
 
 // THE GENERATION GATE, proven end to end over a real socket. The session-backed resolver is wired
 // into the enforcer exactly as production does, and the session handler is composed onto the front
-// door. We drive the whole loop: a write is gated (401) until a dev login establishes a cookie,
-// then the SAME write succeeds — the credential carried by the cookie, no other change. This is
-// the ticket's acceptance: the enforcement boundary becomes a working generation gate. [LAW:verifiable-goals]
+// door. We drive the whole loop: a write is gated (401) until the OAuth login dance establishes a
+// session cookie, then the SAME write succeeds — the credential carried by the cookie, no other
+// change. The identity provider is a fake (no real GitHub), so the flow's CSRF state round-trip and
+// cookie minting are proven without the network. This is the ticket's acceptance: the enforcement
+// boundary is a working generation gate behind a real delegated-identity login. [LAW:verifiable-goals]
 
 const PAGE = '<!doctype html><title>front door</title>';
-const SECRET = 'sesame-secret';
+const SUBJECT = Subject('github:7');
 
 // Compose the front door the way main.ts does: one session store behind both the resolver (gate)
-// and the session handler (login/whoami), the fake provider so it runs with no tmux.
+// and the session handler (login/callback/whoami), the fake generation + oauth providers so it
+// runs with no tmux and no real GitHub.
 const startFrontDoor = async (): Promise<RunningServer> => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
@@ -41,10 +46,31 @@ const startFrontDoor = async (): Promise<RunningServer> => {
     page: PAGE,
     catalog,
     contentOrigin: 'http://content.local',
-    sessionHandler: makeSessionHandler({ store: sessionStore, resolveIdentity, secret: SECRET }),
+    sessionHandler: makeSessionHandler({
+      store: sessionStore,
+      resolveIdentity,
+      oauth: makeFakeOAuthProvider({ subject: SUBJECT }),
+      callbackUrl: 'http://app.local/session/callback',
+    }),
     apiHandler: makeHttpHandler(service, resolveIdentity),
   });
   return serve({ handler, port: 0 });
+};
+
+// Drive GET /session/login then GET /session/callback against the live server, returning the
+// session cookie a subsequent write must carry. Plays the identity provider's role: read the state
+// the login set, echo it back to the callback with the state cookie. `redirect: 'manual'` so fetch
+// hands back the 302 (with its Set-Cookie) instead of following it.
+const completeLogin = async (base: string): Promise<string> => {
+  const login = await fetch(`${base}/session/login`, { redirect: 'manual' });
+  const stateCookie = login.headers.getSetCookie().find((c) => c.startsWith('tp_oauth_state='))!;
+  const state = /tp_oauth_state=([^;]*)/.exec(stateCookie)![1]!;
+  const callback = await fetch(`${base}/session/callback?code=any&state=${state}`, {
+    headers: { cookie: `tp_oauth_state=${state}` },
+    redirect: 'manual',
+  });
+  const sessionCookie = callback.headers.getSetCookie().find((c) => c.startsWith('tp_session='))!;
+  return sessionCookie.split(';')[0]!;
 };
 
 let running: RunningServer | undefined;
@@ -72,20 +98,13 @@ describe('the generation gate over the composed front door', () => {
     // 2. whoami before login → identity null.
     expect(await (await fetch(`${base}/session`)).json()).toEqual({ identity: null });
 
-    // 3. Log in with the dev secret → 200 and a session cookie.
-    const loginRes = await fetch(`${base}/session`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ secret: SECRET }),
-    });
-    expect(loginRes.status).toBe(200);
-    const setCookie = loginRes.headers.get('set-cookie');
-    expect(setCookie).toContain('tp_session=');
-    const cookie = setCookie!.split(';')[0]!;
+    // 3. Complete the GitHub OAuth dance (login redirect → callback) → a session cookie.
+    const cookie = await completeLogin(base);
+    expect(cookie).toContain('tp_session=');
 
-    // 4. whoami with the cookie → the dev identity.
+    // 4. whoami with the cookie → the authenticated GitHub identity.
     const who = await fetch(`${base}/session`, { headers: { cookie } });
-    expect(await who.json()).toEqual({ identity: { subject: 'dev' } });
+    expect(await who.json()).toEqual({ identity: { subject: 'github:7' } });
 
     // 5. The SAME write, now carrying the cookie → 201, and the poll drives it to ready.
     const submit = await generate(cookie);
@@ -101,15 +120,15 @@ describe('the generation gate over the composed front door', () => {
     expect(typeof status.playgroundId).toBe('string');
   });
 
-  it('rejects a wrong dev secret as 401 and grants no usable cookie', async () => {
+  it('rejects a forged callback state as 400 and grants no usable session cookie', async () => {
     running = await startFrontDoor();
-    const res = await fetch(`${running.url}/session`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ secret: 'not-the-secret' }),
+    // A callback whose state does not match the cookie is a forged/CSRF attempt — no session minted.
+    const res = await fetch(`${running.url}/session/callback?code=any&state=forged`, {
+      headers: { cookie: 'tp_oauth_state=real' },
+      redirect: 'manual',
     });
-    expect(res.status).toBe(401);
-    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(res.status).toBe(400);
+    expect(res.headers.getSetCookie().some((c) => c.startsWith('tp_session='))).toBe(false);
   });
 
   it('leaves the read path credential-free — the commons and provider list need no session', async () => {

@@ -75,7 +75,12 @@ export const makeApp = (config: AppConfig): App => {
   // both gates the write path (in the handler) and answers whoami (in the session handler) — one
   // source of truth for "who is this request". Swapping the resolver here is the entire activation
   // of real auth: the enforcer (makeHttpHandler) is untouched. [LAW:locality-or-seam] [LAW:one-source-of-truth]
-  const sessionStore = makeMemorySessionStore();
+  // The store owns session lifecycle; the composition root states the policy it owns by: the real
+  // clock (Date.now is the world's clock, supplied here at the boundary rather than read inside the
+  // store) and the dev session lifetime. 6 hours — long enough to span a working session without
+  // re-auth, short enough that a session cannot live forever. [LAW:no-ambient-temporal-coupling]
+  const DEV_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
+  const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: DEV_SESSION_TTL_MS });
   const resolveIdentity = makeSessionResolver(sessionStore);
   return {
     registry,

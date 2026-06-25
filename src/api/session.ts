@@ -19,6 +19,12 @@ const DEV_SUBJECT = Subject('dev');
 // cannot drift to different names. [LAW:one-source-of-truth]
 const SESSION_COOKIE = 'tp_session';
 
+// The cookie's identity attributes — the ones a browser matches on to know two Set-Cookies name
+// the SAME cookie. Login sets the cookie with these; logout clears it by re-emitting them with an
+// empty value and Max-Age=0. They live once so the set and the clear cannot drift to a different
+// Path/SameSite and leave a logout that fails to replace the cookie it meant to. [LAW:one-source-of-truth]
+const SESSION_COOKIE_ATTRS = { httpOnly: true, sameSite: 'Strict', path: '/' } as const;
+
 // THE SWAP TARGET. A session-backed IdentityResolver: read the cookie, resolve the token to a
 // principal through the store, return the Identity or null. This replaces localIdentityResolver
 // at the composition root and nothing else changes — the enforcer branches on the returned
@@ -67,6 +73,8 @@ const json = (data: unknown, status: number, headers: Record<string, string> = {
 //   enforcer's WRITE_ROUTES — you cannot be authenticated to authenticate.
 // - GET /session (whoami): public and credential-free to call; returns the identity the resolver
 //   derives from this request, or null. The one read surface for "who am I".
+// - DELETE /session (logout): destroy the session in the store and clear the cookie. Idempotent and
+//   unauthenticated — also NOT in WRITE_ROUTES, resolved here before the enforcer.
 export const makeSessionHandler = (
   deps: SessionHandlerDeps,
 ): ((request: Request) => Promise<Response | null>) => {
@@ -90,17 +98,26 @@ export const makeSessionHandler = (
         // message, never a silent rejection or a 500. [LAW:no-silent-failure]
         if (!secretsMatch(provided, secret)) return json({ error: 'invalid secret' }, 401);
         const token = store.create(DEV_SUBJECT);
-        const cookie = serializeCookie(SESSION_COOKIE, token, {
-          httpOnly: true,
-          sameSite: 'Strict',
-          path: '/',
-        });
+        const cookie = serializeCookie(SESSION_COOKIE, token, SESSION_COOKIE_ATTRS);
         return json({ identity: { subject: DEV_SUBJECT } }, 200, { 'set-cookie': cookie });
       }
       case 'GET /session':
         // identity | null, derived by the SAME resolver the gate uses — whoami can never claim an
         // identity the write path would reject, or vice versa.
         return json({ identity: resolveIdentity(request) }, 200);
+      case 'DELETE /session': {
+        // Logout: end the session server-side and tell the browser to drop the cookie. The store is
+        // the lifecycle owner, so destroy() is the real end; the cleared cookie (empty value,
+        // Max-Age=0) is only the browser-side hint. Reading the cookie is the one trust-boundary
+        // place a token may legitimately be absent — no cookie means nothing to destroy, but we
+        // still clear and report identity:null, so logout is idempotent. NOT a WRITE_ROUTE: it is
+        // resolved here before the enforcer and needs no auth — logging out when already logged out
+        // is a harmless no-op. [LAW:no-ambient-temporal-coupling] [LAW:no-silent-failure]
+        const token = readCookie(request.headers.get('cookie'), SESSION_COOKIE);
+        if (token !== null) store.destroy(token);
+        const cleared = serializeCookie(SESSION_COOKIE, '', { ...SESSION_COOKIE_ATTRS, maxAge: 0 });
+        return json({ identity: null }, 200, { 'set-cookie': cleared });
+      }
       default:
         return null;
     }

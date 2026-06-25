@@ -44,6 +44,16 @@ describe('serializeCookie', () => {
     expect(cookie).toBe('tp_session=tok; Path=/; SameSite=Lax');
   });
 
+  it('emits Max-Age when given — Max-Age=0 with an empty value is how logout clears a cookie', () => {
+    const cleared = serializeCookie('tp_session', '', { httpOnly: true, sameSite: 'Strict', path: '/', maxAge: 0 });
+    expect(cleared).toBe('tp_session=; Path=/; Max-Age=0; SameSite=Strict; HttpOnly');
+  });
+
+  it('omits Max-Age entirely when absent — a session cookie the browser drops on close', () => {
+    const cookie = serializeCookie('tp_session', 'tok', { httpOnly: true, sameSite: 'Strict', path: '/' });
+    expect(cookie).not.toContain('Max-Age');
+  });
+
   it('round-trips: a serialized cookie value is readable back out of a Cookie header', () => {
     const setCookie = serializeCookie('tp_session', 'tok-xyz', { httpOnly: true, sameSite: 'Strict', path: '/' });
     const cookieHeader = setCookie.split(';')[0]!;

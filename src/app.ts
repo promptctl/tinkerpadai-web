@@ -8,7 +8,13 @@ import {
 import type { TmuxDriverConfig } from './provider/index.js';
 import { makeFileArtifactStore, makeFileCatalog } from './storage/index.js';
 import type { ArtifactStore, Catalog } from './storage/index.js';
-import { localIdentityResolver, makeGenerationService, makeHttpHandler } from './api/index.js';
+import {
+  makeGenerationService,
+  makeHttpHandler,
+  makeMemorySessionStore,
+  makeSessionHandler,
+  makeSessionResolver,
+} from './api/index.js';
 import type { GenerationService } from './api/index.js';
 
 // THE COMPOSITION ROOT. The one place that knows the concrete shape of the steel
@@ -28,11 +34,19 @@ export interface App {
   readonly store: ArtifactStore;
   readonly catalog: Catalog;
   readonly handler: (request: Request) => Promise<Response>;
+  // The session lifecycle surface (login + whoami), composed onto the app origin ahead of the
+  // generation API. It owns its own routes and returns null for everything else, so the front
+  // door composes it without enumerating auth routes. [LAW:decomposition]
+  readonly sessionHandler: (request: Request) => Promise<Response | null>;
 }
 
 export interface AppConfig {
   // Where the file artifact store and catalog live.
   readonly dataDir: string;
+  // The shared secret a dev login must present to establish a session. Required, not optional:
+  // there is no "auth off" mode — without a secret there is no working write path, so the app
+  // cannot be constructed without one and the gate is always real. [LAW:types-are-the-program]
+  readonly devSecret: string;
   readonly providerId?: string;
   readonly providerLabel?: string;
   readonly driver?: TmuxDriverConfig;
@@ -55,14 +69,20 @@ export const makeApp = (config: AppConfig): App => {
   // provider-agnostic — the service releases settled turns without knowing it is tmux.
   // [LAW:dataflow-not-control-flow]
   const service = makeGenerationService({ registry, store, catalog, disposeTurn: cleanupTurn });
-  // The default identity mechanism for the local single-user thread. The write-path enforcer
-  // lives in the handler; this is the swappable mechanism behind its seam — a session-backed
-  // resolver replaces it HERE, with the enforcer untouched. [LAW:locality-or-seam]
+
+  // THE IDENTITY MECHANISM, wired behind the seam. One store owns live sessions; the resolver
+  // reads a request's cookie THROUGH that store to a principal (or null), and the same resolver
+  // both gates the write path (in the handler) and answers whoami (in the session handler) — one
+  // source of truth for "who is this request". Swapping the resolver here is the entire activation
+  // of real auth: the enforcer (makeHttpHandler) is untouched. [LAW:locality-or-seam] [LAW:one-source-of-truth]
+  const sessionStore = makeMemorySessionStore();
+  const resolveIdentity = makeSessionResolver(sessionStore);
   return {
     registry,
     service,
     store,
     catalog,
-    handler: makeHttpHandler(service, localIdentityResolver),
+    handler: makeHttpHandler(service, resolveIdentity),
+    sessionHandler: makeSessionHandler({ store: sessionStore, resolveIdentity, secret: config.devSecret }),
   };
 };

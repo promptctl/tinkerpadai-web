@@ -109,19 +109,17 @@
       </div>
 
       <!-- The sign-in affordance. Hidden until a write is gated: generation requires an
-           authenticated session, so the first 401 on the write path reveals this, and a
-           successful sign-in retries the action the user was attempting. The secret is the
-           dev login printed in the server log at startup. -->
-      <form class="panel" id="signin" hidden>
+           authenticated session, so the first 401 on the write path reveals this. Signing in is a
+           full-page redirect to GitHub and back to the front door; on return the user re-runs the
+           action (the redirect reloads the page, so there is no in-memory action to replay). -->
+      <div class="panel" id="signin" hidden>
         <div class="row">
-          <label for="secret">Sign in to generate — dev secret (printed in the server log)</label>
-          <input id="secret" type="password" autocomplete="current-password" />
+          <span>Sign in with GitHub to generate.</span>
         </div>
         <div class="controls">
-          <button type="submit" id="signin-submit">Sign in</button>
+          <a id="signin-link" href="/session/login">Sign in with GitHub →</a>
         </div>
-        <div class="note bad" id="signin-note"></div>
-      </form>
+      </div>
 
       <div id="status" role="status" aria-live="polite"></div>
     </main>
@@ -228,57 +226,26 @@
         }
       };
 
-      const signinForm = $('signin');
-      const secretInput = $('secret');
-      const signinNote = $('signin-note');
+      const signinPanel = $('signin');
 
-      // The action the user attempted that got gated, held so a successful sign-in can replay it.
-      // null when nothing is waiting on auth. The gate is data-driven: a 401 stashes the retry and
-      // reveals the form; sign-in success runs it. No "are we mid-login" flag spread through the UI.
-      let pendingAfterAuth = null;
-
-      const requireSignin = (retry) => {
-        pendingAfterAuth = retry;
-        signinNote.textContent = '';
-        signinForm.hidden = false;
-        secretInput.focus();
-        setStatus('<span class="bad">Sign in to generate.</span>');
+      // Reveal the GitHub sign-in affordance. Signing in is a full-page redirect (the anchor's
+      // href is /session/login), so unlike the old secret form there is no in-memory action to
+      // replay on return — the user lands back signed in and re-runs their generate.
+      const requireSignin = () => {
+        signinPanel.hidden = false;
+        setStatus('<span class="bad">Sign in with GitHub to generate.</span>');
       };
-
-      signinForm.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        signinNote.textContent = '';
-        try {
-          await api('/session', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ secret: secretInput.value }),
-          });
-          secretInput.value = '';
-          signinForm.hidden = true;
-          const retry = pendingAfterAuth;
-          pendingAfterAuth = null;
-          if (retry) await retry();
-        } catch (error) {
-          // A bad secret comes back as 401; show it on the sign-in form, not the status region.
-          signinNote.textContent = error.message;
-        }
-      });
 
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         submitBtn.disabled = true;
-        // The whole attempt as a replayable thunk: if the write path gates it (401), sign in and
-        // run this exact action again. It re-reads the fields at call time, so the retry carries
-        // whatever the user typed.
-        const run = () => generate($('provider').value, $('description').value.trim());
         try {
-          await run();
+          await generate($('provider').value, $('description').value.trim());
         } catch (error) {
-          // An unauthenticated write is a value (401) the UI handles by asking to sign in, then
-          // retrying — distinct from any other failure (e.g. a poll on an "unknown turn" after a
-          // server restart), which is surfaced loudly so no dead spinner is left behind.
-          if (error.status === 401) requireSignin(run);
+          // An unauthenticated write is a value (401) the UI handles by revealing GitHub sign-in —
+          // distinct from any other failure (e.g. a poll on an "unknown turn" after a server
+          // restart), which is surfaced loudly so no dead spinner is left behind.
+          if (error.status === 401) requireSignin();
           else setStatus(`<span class="bad">${esc(error.message)}</span>`);
         } finally {
           submitBtn.disabled = false;

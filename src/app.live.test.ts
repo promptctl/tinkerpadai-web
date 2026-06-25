@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { makeApp } from './app.js';
 import { Subject } from './api/index.js';
+import { makeFakeOAuthProvider } from './api/__fixtures__/fakeOAuthProvider.js';
 import type { GenerationStatus } from './api/index.js';
 
 // A LIVE end-to-end smoke of the WHOLE composition: makeApp wires the real tmux/Claude
@@ -23,7 +24,8 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       const dataDir = await mkdtemp(join(tmpdir(), 'tinkerpad-app-live-'));
       const { service, registry, store, catalog } = makeApp({
         dataDir,
-        devSecret: 'live-test-secret',
+        oauth: makeFakeOAuthProvider({ subject: Subject('live-tester') }),
+        oauthCallbackUrl: 'http://127.0.0.1/session/callback',
         driver: { pollIntervalMs: 1000 },
       });
 

@@ -100,4 +100,21 @@ describe('serve — the front door over real HTTP', () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it('emits MULTIPLE Set-Cookie headers as distinct headers, not one folded value', async () => {
+    // The OAuth callback sets the session cookie AND clears the state cookie in one response. The
+    // bridge must carry both as separate Set-Cookie headers — folding them into one comma-joined
+    // value corrupts cookies, whose attributes contain commas. [LAW:no-silent-failure]
+    running = await serve({
+      port: 0,
+      handler: async () => {
+        const headers = new Headers();
+        headers.append('set-cookie', 'a=1; Path=/');
+        headers.append('set-cookie', 'b=2; Path=/');
+        return new Response(null, { status: 204, headers });
+      },
+    });
+    const cookies = (await fetch(running.url)).headers.getSetCookie();
+    expect(cookies).toEqual(['a=1; Path=/', 'b=2; Path=/']);
+  });
 });

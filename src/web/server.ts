@@ -47,10 +47,16 @@ const toRequest = async (req: IncomingMessage, origin: string): Promise<Request>
 };
 
 const writeResponse = async (response: Response, res: ServerResponse): Promise<void> => {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string | string[]> = {};
   response.headers.forEach((value, name) => {
-    headers[name] = value;
+    // Set-Cookie is the one header that legitimately repeats — a login can both set the session
+    // and clear the state cookie. forEach folds repeats into ONE comma-joined value, which
+    // corrupts cookies (their attributes contain commas), so it is carried separately as the
+    // distinct-headers array getSetCookie() preserves, not through this fold. [LAW:no-silent-failure]
+    if (name.toLowerCase() !== 'set-cookie') headers[name] = value;
   });
+  const setCookies = response.headers.getSetCookie();
+  if (setCookies.length > 0) headers['set-cookie'] = setCookies;
   res.writeHead(response.status, headers);
   res.end(Buffer.from(await response.arrayBuffer()));
 };

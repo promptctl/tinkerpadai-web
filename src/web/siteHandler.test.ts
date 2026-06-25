@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeMemoryCatalog, VersionId } from '../storage/index.js';
 import type { Catalog, PlaygroundId } from '../storage/index.js';
+import { Subject } from '../identity/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 
@@ -18,6 +19,7 @@ const seed = async (catalog: Catalog, prompt: string): Promise<PlaygroundId> => 
     prompt,
     version: VersionId('v1'),
     lineage: null,
+    author: Subject('ada'),
   });
   return playground.id;
 };
@@ -87,6 +89,8 @@ describe('makeSiteHandler', () => {
     const body = await (await handler(new Request('http://front.local/commons'))).text();
     expect(body).toContain('a tiny counter');
     expect(body).toContain(`/play?id=${encodeURIComponent(id)}`);
+    // Authorship is projected as a byline through the real catalog projection, not just stored.
+    expect(body).toContain('by ada');
   });
 
   it('renders an empty commons as data, not a thrown special case', async () => {
@@ -165,12 +169,14 @@ describe('makeSiteHandler', () => {
       prompt: 'the original counter',
       version: VersionId('v1'),
       lineage: null,
+      author: Subject('ada'),
     });
     const child = await catalog.createPlayground({
       handle: { providerId: ProviderId('p'), sessionId: SessionId('child-session'), turnId: TurnId('t1') },
       prompt: 'a remixed counter',
       version: VersionId('v2'),
       lineage: { parentSession: SessionId('parent-session'), forkedFromVersion: VersionId('v1') },
+      author: Subject('grace'),
     });
     const { handler } = build(catalog);
 
@@ -182,6 +188,8 @@ describe('makeSiteHandler', () => {
     const player = await (await handler(new Request(`http://front.local/play?id=${encodeURIComponent(child.id)}`))).text();
     expect(player).toContain('Forked from');
     expect(player).toContain(`/play?id=${encodeURIComponent(parent.id)}`);
+    // The remix's player credits the remixer (the forker), distinct from the parent's author.
+    expect(player).toContain('by grace');
 
     // The parent itself is not a fork — no attribution on its player.
     const parentPlayer = await (await handler(new Request(`http://front.local/play?id=${encodeURIComponent(parent.id)}`))).text();

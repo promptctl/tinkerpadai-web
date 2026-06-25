@@ -59,6 +59,7 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         prompt: summary.prompt,
         contentSrc,
         providerId: summary.providerId,
+        author: summary.author,
         forkedFrom: summary.forkedFrom,
       }),
     );

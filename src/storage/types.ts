@@ -4,6 +4,7 @@
 // residue once the shapes are right. See design-docs/PROJECT.md for why the commons
 // is the single source of truth and why a playground's file is "just a file".
 
+import type { Subject } from '../identity/index.js';
 import type { ProviderId, SessionHandle, SessionId } from '../provider/index.js';
 
 // Branded identifiers minted by THIS layer. The provider seam owns Session/Turn
@@ -57,6 +58,13 @@ export interface SessionRecord {
   readonly sessionId: SessionId;
   readonly providerId: ProviderId;
   readonly lineage: Lineage | null;
+  // WHO authored this playground — the authenticated principal who generated or forked it,
+  // recorded once at the create write and never re-derived. A property of the session as a
+  // whole, parallel to lineage: a session has exactly one author (its creator), so it is not
+  // null and is not per-turn. A follow-up turn appends a version, never a new author; a fork
+  // mints a new session whose author is the forker. The generation SessionId never crosses into
+  // the read projection, but the author does, as visible attribution. [LAW:one-source-of-truth]
+  readonly author: Subject;
   readonly turns: readonly [TurnRecord, ...TurnRecord[]];
 }
 
@@ -99,6 +107,11 @@ export interface PlaygroundSummary {
   readonly providerId: ProviderId;
   readonly currentVersion: VersionId;
   readonly forkedFrom: ForkAttribution | null;
+  // The principal who made this playground, projected for the read path as "by <author>" chrome
+  // alongside the fork attribution. The author (not the generation SessionId, which stays off
+  // this summary) is the public half of provenance. A derivation of the stored author, never a
+  // second copy. [LAW:one-source-of-truth]
+  readonly author: Subject;
 }
 
 // What p0v.4 hands the catalog on a succeeded turn: the provider's turn handle
@@ -111,6 +124,11 @@ export interface NewPlayground {
   readonly prompt: string;
   readonly version: VersionId;
   readonly lineage: Lineage | null;
+  // The authenticated principal creating this playground (the generation service resolves it at
+  // the gated write — the one place identity exists). Required: a playground with no author is
+  // not a representable state. A follow-up turn (NewTurn) has no author — appending never
+  // re-authors. [LAW:types-are-the-program]
+  readonly author: Subject;
 }
 
 // What a succeeded FOLLOW-UP turn hands the catalog to extend an existing playground

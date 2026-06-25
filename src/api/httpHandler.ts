@@ -3,6 +3,7 @@ import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { PlaygroundId, PlaygroundNotFoundError } from '../storage/index.js';
 import type { GenerationService } from './generationService.js';
 import { ProviderCannotContinueError, ProviderCannotForkError } from './generationService.js';
+import type { Subject } from '../identity/index.js';
 import type { IdentityResolver } from './identity.js';
 
 // THE HTTP SURFACE the front door calls (p0v.5). A runtime-agnostic Web fetch handler —
@@ -106,64 +107,85 @@ export const makeHttpHandler = (
   service: GenerationService,
   resolveIdentity: IdentityResolver,
 ): ((request: Request) => Promise<Response>) => {
+  // The credential-free read/use path: providers and the live availability toggle. No identity
+  // is resolved for these, so this dispatch never receives one — the read path stays
+  // credential-free by construction, not by a runtime check. An unmapped read is a 404.
+  const handleRead = async (route: string, request: Request): Promise<Response> => {
+    switch (route) {
+      case 'GET /providers':
+        return json(service.listProviders());
+      // A live availability read for the generation toggle. GET, not POST: it mutates
+      // nothing (unlike /poll, whose first success observation performs the store+catalog
+      // write), so it is safe and cacheless-by-default. The providerId rides as a query
+      // value and is branded here, at the trust boundary — the one place foreign input
+      // becomes a ProviderId. [LAW:single-enforcer]
+      case 'GET /availability': {
+        const providerId = ProviderId(requireString(new URL(request.url).searchParams.get('providerId'), 'providerId'));
+        return json(await service.availabilityOf(providerId));
+      }
+      default:
+        return json({ error: `no route: ${route}` }, 404);
+    }
+  };
+
+  // The write/generation path. It is reached ONLY past the single guard below, so `author` is a
+  // resolved Subject by TYPE, not by folklore — the create paths (submit, fork) record it as the
+  // new playground's author, while continue/poll act on a turn whose author was captured at
+  // create time and so take none. [LAW:types-are-the-program] [LAW:single-enforcer]
+  const handleWrite = async (route: string, request: Request, author: Subject): Promise<Response> => {
+    switch (route) {
+      case 'POST /generations': {
+        const handle = await service.submit(parseGenerationRequest(await readJson(request)), author);
+        return json({ handle }, 201);
+      }
+      // The continue path: a follow-up brief onto an existing playground. Symmetric with
+      // POST /generations — it returns a fresh SessionHandle (201) the client drives with
+      // the EXISTING POST /poll; no new poll surface. continue resolves and rejects the
+      // target (unknown playground, non-iterable provider) synchronously before any handle
+      // exists, so the catch below maps those failures and there is no half-state to poll.
+      case 'POST /generations/continue': {
+        const { playgroundId, brief } = parseContinueRequest(await readJson(request));
+        const handle = await service.continue(playgroundId, brief);
+        return json({ handle }, 201);
+      }
+      // The fork path: branch an existing playground at its current version into a NEW,
+      // independent session. Symmetric with POST /generations/continue — returns a fresh
+      // SessionHandle (201) the client drives with the EXISTING POST /poll; no new poll
+      // surface. fork takes no brief (see parseForkRequest). It resolves and rejects the
+      // target (unknown playground -> 404, non-forkable provider -> 422) synchronously
+      // before any handle exists, so the catch maps those and there is no half-state to poll.
+      case 'POST /generations/fork': {
+        const { playgroundId } = parseForkRequest(await readJson(request));
+        const handle = await service.fork(playgroundId, author);
+        return json({ handle }, 201);
+      }
+      // POST, not GET: a poll is not safe — the first observation of a succeeded turn
+      // performs the store+catalog write — so it must not be treated as cacheable.
+      case 'POST /poll':
+        return json(await service.poll(parseHandle(await readJson(request))));
+      default:
+        return json({ error: `no route: ${route}` }, 404);
+    }
+  };
+
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
-    // THE SINGLE WRITE-PATH GUARD. Identity is resolved as a value (Identity | null) and the
-    // write path is gated here, once, before any service call. An absent identity on a write
-    // route is a 401 returned as a Response — never a thrown special case the catch must
-    // reclassify — so "unauthenticated" flows as data down the same path every request takes.
-    // Read routes short-circuit the resolver entirely, staying credential-free. The MECHANISM
-    // is wholly behind resolveIdentity; this enforcer never changes when it is swapped.
-    // [LAW:single-enforcer] [LAW:dataflow-not-control-flow] [LAW:locality-or-seam]
-    if (WRITE_ROUTES.has(route) && resolveIdentity(request) === null) {
-      return json({ error: 'authentication required' }, 401);
-    }
     try {
-      switch (route) {
-        case 'GET /providers':
-          return json(service.listProviders());
-        // A live availability read for the generation toggle. GET, not POST: it mutates
-        // nothing (unlike /poll, whose first success observation performs the store+catalog
-        // write), so it is safe and cacheless-by-default. The providerId rides as a query
-        // value and is branded here, at the trust boundary — the one place foreign input
-        // becomes a ProviderId. [LAW:single-enforcer]
-        case 'GET /availability': {
-          const providerId = ProviderId(requireString(url.searchParams.get('providerId'), 'providerId'));
-          return json(await service.availabilityOf(providerId));
-        }
-        case 'POST /generations': {
-          const handle = await service.submit(parseGenerationRequest(await readJson(request)));
-          return json({ handle }, 201);
-        }
-        // The continue path: a follow-up brief onto an existing playground. Symmetric with
-        // POST /generations — it returns a fresh SessionHandle (201) the client drives with
-        // the EXISTING POST /poll; no new poll surface. continue resolves and rejects the
-        // target (unknown playground, non-iterable provider) synchronously before any handle
-        // exists, so the catch below maps those failures and there is no half-state to poll.
-        case 'POST /generations/continue': {
-          const { playgroundId, brief } = parseContinueRequest(await readJson(request));
-          const handle = await service.continue(playgroundId, brief);
-          return json({ handle }, 201);
-        }
-        // The fork path: branch an existing playground at its current version into a NEW,
-        // independent session. Symmetric with POST /generations/continue — returns a fresh
-        // SessionHandle (201) the client drives with the EXISTING POST /poll; no new poll
-        // surface. fork takes no brief (see parseForkRequest). It resolves and rejects the
-        // target (unknown playground -> 404, non-forkable provider -> 422) synchronously
-        // before any handle exists, so the catch maps those and there is no half-state to poll.
-        case 'POST /generations/fork': {
-          const { playgroundId } = parseForkRequest(await readJson(request));
-          const handle = await service.fork(playgroundId);
-          return json({ handle }, 201);
-        }
-        // POST, not GET: a poll is not safe — the first observation of a succeeded turn
-        // performs the store+catalog write — so it must not be treated as cacheable.
-        case 'POST /poll':
-          return json(await service.poll(parseHandle(await readJson(request))));
-        default:
-          return json({ error: `no route: ${route}` }, 404);
+      // THE SINGLE WRITE-PATH GUARD. WRITE_ROUTES is the one authority on what needs auth: a
+      // write route resolves identity once and gates here, before any parse or service call, so
+      // an unauthenticated write is a 401 even with a malformed body. The resolved Subject is
+      // then handed to the write dispatch, which therefore never sees an absent identity — the
+      // gate's early return narrows it, so authorship threads through WITHOUT a second null check
+      // or a non-null assertion. Read routes never reach the resolver. The MECHANISM is wholly
+      // behind resolveIdentity; this enforcer never changes when it is swapped.
+      // [LAW:single-enforcer] [LAW:dataflow-not-control-flow] [LAW:locality-or-seam]
+      if (WRITE_ROUTES.has(route)) {
+        const identity = resolveIdentity(request);
+        if (identity === null) return json({ error: 'authentication required' }, 401);
+        return await handleWrite(route, request, identity.subject);
       }
+      return await handleRead(route, request);
     } catch (error) {
       if (error instanceof BadRequest) return json({ error: error.message }, 400);
       // A well-formed request naming a playground that doesn't exist: a client error, not

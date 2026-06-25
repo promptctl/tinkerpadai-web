@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { makeApp } from '../app.js';
@@ -26,7 +27,17 @@ const main = async (): Promise<void> => {
   // config; override explicitly to place it elsewhere.
   const contentPort = Number(process.env.TINKERPAD_CONTENT_PORT ?? port + 1);
 
-  const app = makeApp({ dataDir });
+  // The dev login secret. Taken from the environment when set; otherwise minted fresh for this
+  // boot so the front door is usable with zero config — and logged once below so the operator can
+  // copy it into the sign-in field. A minted secret is random per process (not a predictable
+  // default), so leaving it unset is safe, not an open door. [LAW:no-silent-failure]
+  // `|| undefined`, not `??`: an empty TINKERPAD_DEV_SECRET is treated as unset, never as an
+  // empty secret that would open auth to an empty body — a misconfiguration must mint a real
+  // random secret, not silently disable the gate. [LAW:no-silent-failure]
+  const configuredSecret = process.env.TINKERPAD_DEV_SECRET || undefined;
+  const devSecret = configuredSecret ?? randomBytes(12).toString('base64url');
+
+  const app = makeApp({ dataDir, devSecret });
 
   // Bind the content origin FIRST: the player's iframe src needs its concrete URL, so that
   // URL must exist before the site handler is built. The dependency is a value passed in,
@@ -41,6 +52,7 @@ const main = async (): Promise<void> => {
     page,
     catalog: app.catalog,
     contentOrigin: content.url,
+    sessionHandler: app.sessionHandler,
     apiHandler: app.handler,
   });
   const { url } = await serve({ handler, port });
@@ -56,6 +68,11 @@ const main = async (): Promise<void> => {
   // The logs the operator needs: where each origin listens. [LAW:no-silent-failure]
   console.log(`TinkerPad front door listening on ${url} (data: ${dataDir})`);
   console.log(`TinkerPad playground content origin on ${content.url} (sandboxed, untrusted)`);
+  // The dev login secret the operator types to generate. Only printed when minted — a secret set
+  // explicitly in the environment is never echoed back to the logs.
+  if (configuredSecret === undefined) {
+    console.log(`TinkerPad dev login secret (set TINKERPAD_DEV_SECRET to pin it): ${devSecret}`);
+  }
 };
 
 // A boot failure must be loud and non-zero, never a silently dead process. [LAW:no-silent-failure]

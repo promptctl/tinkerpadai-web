@@ -33,6 +33,10 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     page: PAGE,
     catalog,
     contentOrigin: 'http://content.local:9999',
+    // This suite exercises the bridge and the always-open localIdentityResolver path, not
+    // sessions — a pass-through session handler models "no session routes here". The dedicated
+    // gate is proven in session.integration.test.
+    sessionHandler: async () => null,
     apiHandler: makeHttpHandler(service, localIdentityResolver),
   });
   return serve({ handler, port: 0 });

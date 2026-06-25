@@ -10,3 +10,7 @@ export type {
 export { makeHttpHandler } from './httpHandler.js';
 export { localIdentityResolver, Subject } from './identity.js';
 export type { Identity, IdentityResolver } from './identity.js';
+export { makeMemorySessionStore } from './sessionStore.js';
+export type { SessionStore } from './sessionStore.js';
+export { makeSessionHandler, makeSessionResolver } from './session.js';
+export type { SessionHandlerDeps } from './session.js';

@@ -29,10 +29,10 @@ export interface Identity {
 // case. [LAW:effects-at-boundaries] [LAW:dataflow-not-control-flow]
 export type IdentityResolver = (request: Request) => Identity | null;
 
-// The default mechanism for the single-user local thread: the operator IS the one principal,
-// so every request resolves to the same fixed identity and the write path is open in local
-// dev. It is honest, not a bypass — there genuinely is one local user — and it is a VALUE the
-// composition root wires in, so the session-backed resolver (a later slice) swaps it here
-// without the enforcer ever changing. [LAW:one-type-per-behavior] [LAW:no-silent-failure]
+// A fixed-identity resolver: every request resolves to the same single principal. It models the
+// honest case where there genuinely is exactly one user — used by tests that exercise non-auth
+// behavior and want the write path open without standing up a session. The production composition
+// root now wires the session-backed resolver instead; this stays as the value that says "one
+// principal, always present", swappable for any other resolver at the seam. [LAW:one-type-per-behavior]
 const LOCAL_SUBJECT = Subject('local');
 export const localIdentityResolver: IdentityResolver = () => ({ subject: LOCAL_SUBJECT });

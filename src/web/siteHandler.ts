@@ -25,7 +25,12 @@ export interface SiteHandlerDeps {
   // binds and passed in as a value — the cross-origin link is explicit, not ambient.
   // [LAW:no-ambient-temporal-coupling]
   readonly contentOrigin: string;
-  // The generation API handler (makeHttpHandler) — everything that is not an app page.
+  // The session lifecycle handler (login + whoami). Tried before the API on unmatched routes;
+  // it returns null for anything that is not its own, so this surface stays oblivious to which
+  // routes are auth routes — it composes the handler, it does not enumerate it. [LAW:decomposition]
+  readonly sessionHandler: (request: Request) => Promise<Response | null>;
+  // The generation API handler (makeHttpHandler) — everything that is not an app page or a
+  // session route.
   readonly apiHandler: (request: Request) => Promise<Response>;
 }
 
@@ -33,7 +38,7 @@ const html = (body: string, status = 200): Response =>
   new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
 
 export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => Promise<Response>) => {
-  const { page, catalog, contentOrigin, apiHandler } = deps;
+  const { page, catalog, contentOrigin, sessionHandler, apiHandler } = deps;
 
   const playPage = async (id: string): Promise<Response> => {
     // The player renders the SAME projected summary the commons does — including resolved fork
@@ -73,8 +78,13 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
           return html(renderNotice('Which playground?', 'Open a playground from the commons — no id was given.'), 400);
         return playPage(id);
       }
-      default:
-        return apiHandler(request);
+      default: {
+        // Session routes first, then the generation API. The session handler answers its own
+        // routes (login, whoami) and yields null for the rest, so the API sees only what is left.
+        // [LAW:dataflow-not-control-flow]
+        const session = await sessionHandler(request);
+        return session ?? apiHandler(request);
+      }
     }
   };
 };

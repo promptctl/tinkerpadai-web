@@ -35,7 +35,7 @@ const startFrontDoor = async (): Promise<RunningServer> => {
     disposeTurn: async () => undefined,
   });
 
-  const sessionStore = makeMemorySessionStore();
+  const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60 * 60 * 1000 });
   const resolveIdentity = makeSessionResolver(sessionStore);
   const handler = makeSiteHandler({
     page: PAGE,

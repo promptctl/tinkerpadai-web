@@ -28,14 +28,22 @@ export interface CookieAttributes {
   readonly httpOnly: boolean;
   readonly sameSite: 'Strict' | 'Lax' | 'None';
   readonly path: string;
+  // The cookie's max age in seconds, or absent for a SESSION cookie that the browser drops when it
+  // closes. Genuine optionality — its absence is the session-cookie semantics the login relies on,
+  // and Max-Age=0 is how logout tells the browser to drop the cookie immediately. The store owns
+  // server-side lifetime; this attribute is only the browser's hint, never the source of truth.
+  readonly maxAge?: number;
 }
 
-// Serialize a Set-Cookie header value. SameSite + Path + HttpOnly are always present; Domain is
-// never emitted (host-scoping, see above). SameSite=Strict is the CSRF defense — the browser
-// withholds this cookie from cross-site requests, so a forged write from another origin arrives
-// without it and is gated. No separate CSRF token is needed. [LAW:single-enforcer]
+// Serialize a Set-Cookie header value. SameSite + Path + HttpOnly are always present; Max-Age is
+// emitted only when given (a session cookie omits it); Domain is never emitted (host-scoping, see
+// above). SameSite=Strict is the CSRF defense — the browser withholds this cookie from cross-site
+// requests, so a forged write from another origin arrives without it and is gated. No separate
+// CSRF token is needed. [LAW:single-enforcer]
 export const serializeCookie = (name: string, value: string, attrs: CookieAttributes): string => {
-  const parts = [`${name}=${value}`, `Path=${attrs.path}`, `SameSite=${attrs.sameSite}`];
+  const parts = [`${name}=${value}`, `Path=${attrs.path}`];
+  if (attrs.maxAge !== undefined) parts.push(`Max-Age=${attrs.maxAge}`);
+  parts.push(`SameSite=${attrs.sameSite}`);
   if (attrs.httpOnly) parts.push('HttpOnly');
   return parts.join('; ');
 };

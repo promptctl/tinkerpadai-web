@@ -8,3 +8,5 @@ export type {
   GenerationStatus,
 } from './generationService.js';
 export { makeHttpHandler } from './httpHandler.js';
+export { localIdentityResolver, Subject } from './identity.js';
+export type { Identity, IdentityResolver } from './identity.js';

@@ -3,6 +3,7 @@ import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { PlaygroundId, PlaygroundNotFoundError } from '../storage/index.js';
 import type { GenerationService } from './generationService.js';
 import { ProviderCannotContinueError, ProviderCannotForkError } from './generationService.js';
+import type { IdentityResolver } from './identity.js';
 
 // THE HTTP SURFACE the front door calls (p0v.5). A runtime-agnostic Web fetch handler —
 // (Request) => Promise<Response> — so it runs on a Node server, a Cloudflare Worker, or
@@ -88,12 +89,36 @@ const json = (data: unknown, status = 200): Response =>
     headers: { 'content-type': 'application/json' },
   });
 
+// The write path: every route that drives generation or performs the store+catalog write
+// (POST /poll's first success observation). Membership in this set is the SINGLE source of
+// truth for "this route requires an authenticated identity"; the read/use path (GET /providers,
+// /availability — and the separate content origin) is absent and stays credential-free. Adding
+// a write route means adding it here, not adding another auth check at a callsite.
+// [LAW:single-enforcer] [LAW:one-source-of-truth]
+const WRITE_ROUTES: ReadonlySet<string> = new Set([
+  'POST /generations',
+  'POST /generations/continue',
+  'POST /generations/fork',
+  'POST /poll',
+]);
+
 export const makeHttpHandler = (
   service: GenerationService,
+  resolveIdentity: IdentityResolver,
 ): ((request: Request) => Promise<Response>) => {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
+    // THE SINGLE WRITE-PATH GUARD. Identity is resolved as a value (Identity | null) and the
+    // write path is gated here, once, before any service call. An absent identity on a write
+    // route is a 401 returned as a Response — never a thrown special case the catch must
+    // reclassify — so "unauthenticated" flows as data down the same path every request takes.
+    // Read routes short-circuit the resolver entirely, staying credential-free. The MECHANISM
+    // is wholly behind resolveIdentity; this enforcer never changes when it is swapped.
+    // [LAW:single-enforcer] [LAW:dataflow-not-control-flow] [LAW:locality-or-seam]
+    if (WRITE_ROUTES.has(route) && resolveIdentity(request) === null) {
+      return json({ error: 'authentication required' }, 401);
+    }
     try {
       switch (route) {
         case 'GET /providers':

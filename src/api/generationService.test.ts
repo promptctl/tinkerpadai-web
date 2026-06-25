@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Subject } from '../identity/index.js';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
@@ -55,8 +56,14 @@ const harnessFor = (
   return { service, store, catalog, disposed, providerId: ProviderId(opts.id) };
 };
 
+// The authenticated principal the gated write path would resolve. The service records it as the
+// new playground's author; FORKER stands in for a different principal remixing someone else's
+// playground, to prove a fork is authored by the forker, not the parent's author.
+const AUTHOR = Subject('ada');
+const FORKER = Subject('grace');
+
 const submit = (h: Harness, description: string): Promise<SessionHandle> =>
-  h.service.submit({ providerId: h.providerId, brief: { description } });
+  h.service.submit({ providerId: h.providerId, brief: { description } }, AUTHOR);
 
 describe('GenerationService.submit', () => {
   it('returns a handle pinned to the chosen provider', async () => {
@@ -68,7 +75,7 @@ describe('GenerationService.submit', () => {
   it('throws loudly when the chosen provider is unknown', async () => {
     const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' });
     await expect(
-      h.service.submit({ providerId: ProviderId('nope'), brief: { description: 'x' } }),
+      h.service.submit({ providerId: ProviderId('nope'), brief: { description: 'x' } }, AUTHOR),
     ).rejects.toThrow('unknown provider: nope');
   });
 });
@@ -86,6 +93,8 @@ describe('GenerationService.poll — success persists the file as a catalogued p
     expect(summaries).toHaveLength(1);
     expect(summaries[0]?.id).toBe(status.playgroundId);
     expect(summaries[0]?.prompt).toBe('a wave explorer');
+    // The authenticated principal passed to submit is recorded as the playground's author.
+    expect(summaries[0]?.author).toBe(AUTHOR);
 
     // The file actually landed in the store under the catalogued version.
     const version = summaries[0]?.currentVersion;
@@ -200,6 +209,7 @@ describe('GenerationService.continue — refine an existing playground into a ne
       prompt: 'a counter',
       version: seedVersion,
       lineage: null,
+      author: AUTHOR,
     });
 
     const handle = await h.service.continue(seed.id, { description: 'add a reset button' });
@@ -249,7 +259,7 @@ describe('GenerationService.fork — branch a playground into an independent lin
     const parent = await h.catalog.getPlayground(ready.playgroundId);
     const forkedFromVersion = currentVersionOf(parent.session);
 
-    const forkHandle = await h.service.fork(ready.playgroundId);
+    const forkHandle = await h.service.fork(ready.playgroundId, FORKER);
     const forked = await h.service.poll(forkHandle);
     if (forked.state !== 'ready') throw new Error('unreachable');
 
@@ -267,6 +277,10 @@ describe('GenerationService.fork — branch a playground into an independent lin
     });
     // The fork is its own independent session, distinct from the parent's.
     expect(child.session.sessionId).not.toBe(parent.session.sessionId);
+    // A remix is authored by the FORKER, not inherited from the parent's author — provenance
+    // credits who made this copy. The parent keeps its own author.
+    expect(child.session.author).toBe(FORKER);
+    expect(parent.session.author).toBe(AUTHOR);
     // It carries no version-history conflation — a fresh playground has a single first turn.
     expect(child.session.turns).toHaveLength(1);
     // fork carries no user brief, so the new playground's first-turn prompt is the parent's
@@ -276,7 +290,7 @@ describe('GenerationService.fork — branch a playground into an independent lin
 
   it('fails loudly for an unknown playground id', async () => {
     const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
-    await expect(h.service.fork(PlaygroundId('nope'))).rejects.toThrow(PlaygroundNotFoundError);
+    await expect(h.service.fork(PlaygroundId('nope'), FORKER)).rejects.toThrow(PlaygroundNotFoundError);
   });
 
   it('fails loudly when the playground provider cannot fork', async () => {
@@ -285,7 +299,7 @@ describe('GenerationService.fork — branch a playground into an independent lin
     const ready = await h.service.poll(first);
     if (ready.state !== 'ready') throw new Error('unreachable');
 
-    await expect(h.service.fork(ready.playgroundId)).rejects.toThrow(ProviderCannotForkError);
+    await expect(h.service.fork(ready.playgroundId, FORKER)).rejects.toThrow(ProviderCannotForkError);
   });
 
   it('a fork turn that fails creates nothing, leaves the parent untouched, and releases its own session', async () => {
@@ -299,9 +313,10 @@ describe('GenerationService.fork — branch a playground into an independent lin
       prompt: 'a counter',
       version: seedVersion,
       lineage: null,
+      author: AUTHOR,
     });
 
-    const forkHandle = await h.service.fork(parent.id);
+    const forkHandle = await h.service.fork(parent.id, FORKER);
     const status = await h.service.poll(forkHandle);
     expect(status).toEqual({ state: 'failed', error: 'fork crashed' });
 

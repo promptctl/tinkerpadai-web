@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { Subject } from '../identity/index.js';
 import type { SessionHandle } from '../provider/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import type { Catalog } from './catalog.js';
@@ -38,6 +39,10 @@ const handle = (provider: string, session: string, turn: string): SessionHandle 
   turnId: TurnId(turn),
 });
 
+// A fixed author for the create writes. Every playground has one; the contract proves it is
+// recorded, projected onto the summary, and preserved across an append (which never re-authors).
+const AUTHOR = Subject('ada');
+
 describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
   it('round-trips the full session → turn → version record', async () => {
     const { catalog, close } = await open();
@@ -47,6 +52,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         prompt: 'a bouncing ball',
         version: VersionId('version-1'),
         lineage: null,
+        author: AUTHOR,
       });
       const got = await catalog.getPlayground(created.id);
 
@@ -57,6 +63,8 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
       expect(got.session.turns[0].prompt).toBe('a bouncing ball');
       expect(got.session.turns[0].version).toBe(VersionId('version-1'));
       expect(got.session.lineage).toBeNull();
+      // The author is recorded on the session — who made this playground, stored once at create.
+      expect(got.session.author).toBe(AUTHOR);
     } finally {
       await close();
     }
@@ -70,12 +78,14 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         prompt: 'first',
         version: VersionId('version-1'),
         lineage: null,
+        author: AUTHOR,
       });
       const second = await catalog.createPlayground({
         handle: handle('tmux', 'session-2', 'turn-2'),
         prompt: 'second',
         version: VersionId('version-2'),
         lineage: null,
+        author: AUTHOR,
       });
 
       const list = await catalog.listPlaygrounds();
@@ -85,6 +95,8 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
       expect(summary?.prompt).toBe('first');
       expect(summary?.providerId).toBe(ProviderId('tmux'));
       expect(summary?.currentVersion).toBe(VersionId('version-1'));
+      // Authorship is projected onto the summary the commons reads — derived, never re-stored.
+      expect(summary?.author).toBe(AUTHOR);
     } finally {
       await close();
     }
@@ -98,6 +110,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         prompt: 'a counter',
         version: VersionId('version-1'),
         lineage: null,
+        author: AUTHOR,
       });
 
       const updated = await catalog.appendTurn(created.id, {
@@ -113,6 +126,8 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
       expect(currentVersionOf(updated.session)).toBe(VersionId('version-2'));
       // Appending a turn is the version-history axis, never the fork axis — lineage is untouched.
       expect(updated.session.lineage).toBeNull();
+      // Nor does appending re-author: a follow-up extends the original author's playground.
+      expect(updated.session.author).toBe(AUTHOR);
 
       const got = await catalog.getPlayground(created.id);
       expect(currentVersionOf(got.session)).toBe(VersionId('version-2'));
@@ -148,6 +163,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         prompt: 'a counter',
         version: VersionId('version-1'),
         lineage: null,
+        author: AUTHOR,
       });
       await expect(
         catalog.appendTurn(created.id, {
@@ -178,12 +194,14 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         prompt: 'the original',
         version: VersionId('parent-version'),
         lineage: null,
+        author: AUTHOR,
       });
       const child = await catalog.createPlayground({
         handle: handle('tmux', 'child-session', 'child-turn'),
         prompt: 'a remix',
         version: VersionId('child-version'),
         lineage: { parentSession: SessionId('parent-session'), forkedFromVersion: VersionId('parent-version') },
+        author: AUTHOR,
       });
 
       const list = await catalog.listPlaygrounds();
@@ -206,6 +224,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         prompt: 'a remix of a departed parent',
         version: VersionId('child-version'),
         lineage: { parentSession: SessionId('gone-session'), forkedFromVersion: VersionId('gone-version') },
+        author: AUTHOR,
       });
 
       const summary = (await catalog.listPlaygrounds()).find((s) => s.id === orphan.id);
@@ -228,6 +247,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         prompt: 'remix of the parent',
         version: VersionId('own-version'),
         lineage,
+        author: AUTHOR,
       });
       const got = await catalog.getPlayground(forked.id);
 

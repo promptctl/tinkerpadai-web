@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
 import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
+import { Subject } from '../identity/index.js';
 import { ProviderId, ProviderRegistry, SessionId, TurnId } from '../provider/index.js';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { makeGenerationService } from '../api/generationService.js';
@@ -26,6 +27,7 @@ const seed = async (catalog: Catalog, store: ArtifactStore): Promise<PlaygroundI
     prompt: 'a tiny counter',
     version,
     lineage: null,
+    author: Subject('ada'),
   });
   return playground.id;
 };
@@ -64,6 +66,8 @@ describe('commons + sandboxed player over two real origins', () => {
     const commons = await (await fetch(`${site.url}/commons`)).text();
     expect(commons).toContain('a tiny counter');
     expect(commons).toContain(`/play?id=${encodeURIComponent(id)}`);
+    // Authorship is projected over the real catalog onto the commons chrome, end to end.
+    expect(commons).toContain('by ada');
 
     // The player frames the foreign content origin in an allow-scripts (NOT same-origin) sandbox.
     const player = await (await fetch(`${site.url}/play?id=${encodeURIComponent(id)}`)).text();
@@ -140,5 +144,9 @@ describe('remix action over the composed front door', () => {
     const player = await (await fetch(`${site.url}/play?id=${encodeURIComponent(forkId)}`)).text();
     expect(player).toContain(`src="http://content.local/?id=${encodeURIComponent(forkId)}"`);
     expect(player).toContain('Remix this playground');
+    // Authorship threaded the WHOLE write path over real sockets: the enforcer resolved the
+    // identity (localIdentityResolver -> "local"), fork recorded it as the new playground's
+    // author, and the player projects it as a byline. [LAW:verifiable-goals]
+    expect(player).toContain('by local');
   });
 });

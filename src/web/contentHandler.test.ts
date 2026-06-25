@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeMemoryArtifactStore, makeMemoryCatalog, VersionId } from '../storage/index.js';
 import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
+import { Subject } from '../identity/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeContentHandler } from './contentHandler.js';
 
@@ -22,6 +23,7 @@ const seed = async (
     prompt: 'a thing',
     version,
     lineage: null,
+    author: Subject('ada'),
   });
   return playground.id;
 };
@@ -76,6 +78,7 @@ describe('makeContentHandler — the sandbox content origin', () => {
       prompt: 'a thing',
       version: VersionId('v1'),
       lineage: null,
+      author: Subject('ada'),
     });
     const failingStore: ArtifactStore = {
       put: async () => {

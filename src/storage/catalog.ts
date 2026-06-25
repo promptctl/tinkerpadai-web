@@ -108,6 +108,7 @@ export const summarize = (
   providerId: playground.session.providerId,
   currentVersion: currentVersionOf(playground.session),
   forkedFrom: forkAttributionOf(playground, resolveParent),
+  author: playground.session.author,
 });
 
 // The single implementation of the catalog invariants over any CatalogStore. The
@@ -146,6 +147,7 @@ export const makeCatalog = (store: CatalogStore): Catalog => {
             sessionId: input.handle.sessionId,
             providerId: input.handle.providerId,
             lineage: input.lineage,
+            author: input.author,
             turns: [{ turnId: input.handle.turnId, prompt: input.prompt, version: input.version }],
           },
         };

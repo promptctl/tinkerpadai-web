@@ -97,16 +97,33 @@ export interface ForkAttribution {
   readonly parent: ParentRef | null;
 }
 
+// The read-path projection of a session's turns: the ordered prompts that built the
+// playground — the describe->refine story made visible (layer A of the history epic).
+// Derived from turns (the single source of truth for version history), never stored.
+// Non-empty because turns is non-empty: every playground has at least its original
+// describe at recipe[0] (the same value PlaygroundSummary.prompt projects). Each step is
+// only its prompt — the human-readable recipe; the turnId is generation identity that
+// never crosses into the read path, and the version is the store's concern, with no
+// read-path consumer to justify exposing an opaque id. [LAW:one-source-of-truth]
+// [LAW:types-are-the-program]
+export type Recipe = readonly [string, ...string[]];
+
 // The derived, cheap view for rendering the commons list (p0v.6). `prompt` is the
 // original describe (the first turn); `currentVersion` is the latest version to run;
-// `forkedFrom` is the fork-axis attribution (null when this playground is not a fork).
-// A projection of Playground, never stored alongside it.
+// `forkedFrom` is the fork-axis attribution (null when this playground is not a fork);
+// `recipe` is the ordered prompts that built it. A projection of Playground, never stored
+// alongside it.
 export interface PlaygroundSummary {
   readonly id: PlaygroundId;
   readonly prompt: string;
   readonly providerId: ProviderId;
   readonly currentVersion: VersionId;
   readonly forkedFrom: ForkAttribution | null;
+  // The iteration recipe — the ordered prompts that built this playground, projected for the
+  // read path so a viewer/remixer can see HOW it was made. A derivation of the session's turns,
+  // never a second copy; recipe[0] is the same describe that `prompt` projects, from the same
+  // source, so the two cannot drift. [LAW:one-source-of-truth]
+  readonly recipe: Recipe;
   // The principal who made this playground, projected for the read path as "by <author>" chrome
   // alongside the fork attribution. The author (not the generation SessionId, which stays off
   // this summary) is the public half of provenance. A derivation of the stored author, never a

@@ -6,7 +6,7 @@ import { Subject } from '../identity/index.js';
 import type { SessionHandle } from '../provider/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import type { Catalog } from './catalog.js';
-import { currentVersionOf } from './catalog.js';
+import { currentVersionOf, recipeOf } from './catalog.js';
 import { makeFileCatalog } from './fileCatalog.js';
 import { makeMemoryCatalog } from './memoryCatalog.js';
 import type { Lineage } from './types.js';
@@ -131,10 +131,15 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
 
       const got = await catalog.getPlayground(created.id);
       expect(currentVersionOf(got.session)).toBe(VersionId('version-2'));
-      // The commons summary now reflects the latest version while keeping the original prompt.
+      // The recipe (history layer A) is the ordered prompts that built it, derived from turns —
+      // the describe followed by each refinement, never a stored second copy.
+      expect(recipeOf(got.session)).toEqual(['a counter', 'add a reset button']);
+      // The commons summary now reflects the latest version while keeping the original prompt,
+      // and projects the same ordered recipe for the read path.
       const summary = (await catalog.listPlaygrounds()).find((s) => s.id === created.id);
       expect(summary?.prompt).toBe('a counter');
       expect(summary?.currentVersion).toBe(VersionId('version-2'));
+      expect(summary?.recipe).toEqual(['a counter', 'add a reset button']);
     } finally {
       await close();
     }

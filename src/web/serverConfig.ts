@@ -3,10 +3,10 @@ import { fileURLToPath } from 'node:url';
 // [LAW:no-silent-failure] [LAW:types-are-the-program] Number() accepts any string and
 // silently produces NaN for non-numeric input, which cascades into listen() and callback URLs.
 function parsePort(value: string | undefined, name: string, fallback: number): number {
-  if (value === undefined) return fallback;
-  const n = Number(value);
+  const n = value !== undefined ? Number(value) : fallback;
   if (!Number.isSafeInteger(n) || n < 0 || n > 65535) {
-    throw new Error(`${name}=${JSON.stringify(value)} is not a valid port number (0-65535)`);
+    const source = value !== undefined ? `${name}=${JSON.stringify(value)}` : `default for ${name} (${fallback})`;
+    throw new Error(`${source} is not a valid port number (0-65535)`);
   }
   return n;
 }

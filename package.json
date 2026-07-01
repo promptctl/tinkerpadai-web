@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev": "tsx watch src/web/main.ts",
+    "dev": "tsx watch src/web/main.dev.ts",
     "start": "tsx src/web/main.ts"
   },
   "devDependencies": {

@@ -1,154 +1,765 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TinkerPad — spin up a playground</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <script>(function(){var t=localStorage.getItem('tp-theme');if(!t)t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)})()</script>
     <style>
+      /* ── DESIGN TOKENS ─────────────────────────── */
+      /* [LAW:one-source-of-truth] Every color flows from one of these two token blocks.
+         No hex values appear outside :root / [data-theme="dark"]. */
       :root {
-        color-scheme: light dark;
-        --bg: #0f1115;
-        --panel: #181b22;
-        --edge: #2a2f3a;
-        --text: #e7e9ee;
-        --muted: #9aa3b2;
-        --accent: #6ea8fe;
-        --bad: #ff8a8a;
-        --good: #7ee2a8;
+        color-scheme: light;
+        --bg:               #ffffff;
+        --surface:          #f8fafc;
+        --border:           #e2e8f0;
+        --border-2:         #cbd5e1;
+        --text:             #0f172a;
+        --text-2:           #334155;
+        --muted:            #64748b;
+        --muted-2:          #94a3b8;
+        --accent:           #6366f1;
+        --accent-dark:      #4f46e5;
+        --accent-light:     #818cf8;
+        --bad:              #ef4444;
+        --good:             #10b981;
+        --nav-bg:           rgba(255,255,255,0.92);
+        --widget-bg:        #ffffff;
+        --input-bg:         #f8fafc;
+        --input-focus-bg:   #ffffff;
+        --step-icon-bg:     rgba(99,102,241,0.08);
+        --step-icon-border: rgba(99,102,241,0.15);
+        --footer-bg:        #0f172a;
+        --footer-border:    #1e293b;
+        --footer-text:      #ffffff;
+        --footer-link:      #94a3b8;
+        --footer-dim:       #475569;
+        --shadow-widget:    0 4px 24px rgba(99,102,241,0.08), 0 1px 4px rgba(0,0,0,0.05);
+        --shadow-btn:       0 2px 8px rgba(99,102,241,0.3);
+        --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.4);
+        --radius-sm: 6px;
+        --radius-md: 12px;
+        --radius-lg: 16px;
       }
-      * { box-sizing: border-box; }
+
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg:               #0d1117;
+        --surface:          #161b27;
+        --border:           #21293a;
+        --border-2:         #30363d;
+        --text:             #e6edf3;
+        --text-2:           #c9d1d9;
+        --muted:            #8b949e;
+        --muted-2:          #6e7681;
+        --accent:           #818cf8;
+        --accent-dark:      #6366f1;
+        --accent-light:     #a5b4fc;
+        --bad:              #f87171;
+        --good:             #34d399;
+        --nav-bg:           rgba(13,17,23,0.92);
+        --widget-bg:        #161b27;
+        --input-bg:         #0d1117;
+        --input-focus-bg:   #0d1117;
+        --step-icon-bg:     rgba(129,140,248,0.1);
+        --step-icon-border: rgba(129,140,248,0.2);
+        --footer-bg:        #010409;
+        --footer-border:    #21293a;
+        --footer-text:      #e6edf3;
+        --footer-link:      #8b949e;
+        --footer-dim:       #6e7681;
+        --shadow-widget:    0 4px 24px rgba(129,140,248,0.1), 0 1px 4px rgba(0,0,0,0.3);
+        --shadow-btn:       0 2px 8px rgba(99,102,241,0.4);
+        --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.5);
+      }
+
+      /* ── RESET ─────────────────────────────────── */
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
       body {
-        margin: 0;
-        min-height: 100vh;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
         background: var(--bg);
         color: var(--text);
-        font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        display: grid;
-        place-items: start center;
-        padding: 8vh 1rem;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        transition: background 0.2s ease, color 0.2s ease;
       }
-      main { width: 100%; max-width: 640px; }
-      h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
-      p.lede { color: var(--muted); margin: 0 0 1.5rem; }
-      .panel {
-        background: var(--panel);
-        border: 1px solid var(--edge);
-        border-radius: 14px;
-        padding: 1.25rem;
+
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { color: var(--accent-dark); }
+
+      /* ── NAV ───────────────────────────────────── */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: var(--nav-bg);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border);
+        padding: 0 2rem;
+        height: 60px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 2rem;
+        transition: background 0.2s ease, border-color 0.2s ease;
       }
-      label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0 0 0.35rem; }
-      textarea, select, input {
-        width: 100%;
-        background: #0f1218;
-        color: var(--text);
-        border: 1px solid var(--edge);
-        border-radius: 10px;
-        padding: 0.7rem 0.8rem;
-        font: inherit;
+
+      .nav-logo {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        text-decoration: none;
+        flex-shrink: 0;
       }
-      textarea { resize: vertical; min-height: 90px; }
-      .row { margin-bottom: 1rem; }
-      .controls { display: flex; gap: 0.75rem; align-items: end; }
-      .controls .row { flex: 1; margin-bottom: 0; }
-      button {
-        background: var(--accent);
-        color: #0b1020;
-        border: 0;
-        border-radius: 10px;
-        padding: 0.7rem 1.2rem;
-        font: inherit;
+      .nav-logo-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        flex-shrink: 0;
+      }
+      .nav-logo-text {
         font-weight: 600;
-        cursor: pointer;
+        font-size: 1rem;
+        color: var(--text);
+        letter-spacing: -0.3px;
       }
-      button:disabled { opacity: 0.45; cursor: not-allowed; }
-      .note { font-size: 0.85rem; margin-top: 0.6rem; min-height: 1.2em; }
-      .note.bad { color: var(--bad); }
-      .note.muted { color: var(--muted); }
-      #status { margin-top: 1.25rem; min-height: 1.4em; }
-      #status .bad { color: var(--bad); }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        list-style: none;
+      }
+      .nav-links a {
+        text-decoration: none;
+        color: var(--muted);
+        font-size: 0.9rem;
+        font-weight: 500;
+        padding: 0.4rem 0.75rem;
+        border-radius: var(--radius-sm);
+        transition: color 0.15s, background 0.15s;
+      }
+      .nav-links a:hover { color: var(--text); background: var(--surface); }
+
+      .nav-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-shrink: 0;
+      }
+
+      .theme-toggle {
+        width: 34px;
+        height: 34px;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1rem;
+        line-height: 1;
+        padding: 0;
+        transition: background 0.15s, border-color 0.15s, color 0.15s;
+      }
+      .theme-toggle:hover { background: var(--surface); color: var(--text); border-color: var(--border-2); }
+      .icon-sun  { display: none; }
+      .icon-moon { display: block; }
+      [data-theme="dark"] .icon-sun  { display: block; }
+      [data-theme="dark"] .icon-moon { display: none; }
+
+      .nav-signin-link {
+        text-decoration: none;
+        color: var(--muted);
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: color 0.15s;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+        font-family: inherit;
+      }
+      .nav-signin-link:hover { color: var(--text); }
+
+      .nav-identity {
+        font-size: 0.85rem;
+        font-weight: 500;
+        color: var(--text-2);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 0.3rem 0.7rem;
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 0.45rem 1rem;
+        font: 500 0.9rem inherit;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-block;
+        transition: background 0.15s, transform 0.1s;
+      }
+      .btn-primary:hover { background: var(--accent-dark); color: white; transform: translateY(-1px); }
+
+      /* ── HERO ──────────────────────────────────── */
+      .hero {
+        position: relative;
+        overflow: hidden;
+        padding: 6rem 2rem 5rem;
+        text-align: center;
+        background: var(--bg);
+        transition: background 0.2s ease;
+      }
+      .hero::before {
+        content: '';
+        position: absolute;
+        top: -120px; right: -100px;
+        width: 600px; height: 600px;
+        background: radial-gradient(circle, rgba(99,102,241,0.09) 0%, rgba(139,92,246,0.05) 50%, transparent 70%);
+        pointer-events: none;
+      }
+      .hero::after {
+        content: '';
+        position: absolute;
+        bottom: -80px; left: -80px;
+        width: 400px; height: 400px;
+        background: radial-gradient(circle, rgba(6,182,212,0.07) 0%, transparent 70%);
+        pointer-events: none;
+      }
+      .hero-inner {
+        position: relative;
+        z-index: 1;
+        max-width: 720px;
+        margin: 0 auto;
+      }
+
+      .hero-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.08));
+        border: 1px solid rgba(99,102,241,0.2);
+        border-radius: 100px;
+        padding: 0.3rem 0.85rem;
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: var(--accent);
+        margin-bottom: 1.75rem;
+      }
+      .hero-badge-dot {
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+      }
+
+      .hero h1 {
+        font-size: clamp(2.6rem, 5vw, 4.2rem);
+        font-weight: 800;
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+        color: var(--text);
+        margin-bottom: 1.25rem;
+      }
+      .hero h1 .gradient-text {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6, #06b6d4);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .hero-sub {
+        font-size: 1.1rem;
+        color: var(--muted);
+        max-width: 520px;
+        margin: 0 auto 2.5rem;
+        line-height: 1.65;
+      }
+
+      /* ── CREATE WIDGET (wraps #create / #empty / #signin) ─ */
+      /* [LAW:decomposition] The widget is the visual container; the three JS-managed panels
+         live inside it. CSS owns the shell, JS owns which panel is visible. */
+      .widget-shell {
+        max-width: 660px;
+        margin: 0 auto;
+      }
+
+      /* #create and #signin share the card shell style */
+      #create, #signin, #empty {
+        background: var(--widget-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        padding: 1.25rem;
+        box-shadow: var(--shadow-widget);
+        text-align: left;
+        transition: background 0.2s ease, border-color 0.2s ease;
+        width: 100%;
+      }
+
+      #create label, #signin .widget-label, #empty .widget-label {
+        display: block;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.6rem;
+      }
+
+      textarea, select {
+        font-family: inherit;
+        font-size: inherit;
+        color: var(--text);
+      }
+
+      #description {
+        width: 100%;
+        background: var(--input-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 0.85rem 1rem;
+        font-size: 0.95rem;
+        line-height: 1.55;
+        resize: vertical;
+        min-height: 100px;
+        outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+      }
+      #description::placeholder { color: var(--muted-2); }
+      #description:focus {
+        border-color: var(--accent-light);
+        box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+        background: var(--input-focus-bg);
+      }
+
+      .widget-controls {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        margin-top: 0.85rem;
+      }
+      .widget-controls .row { flex: 1; margin-bottom: 0; }
+
+      #provider {
+        width: 100%;
+        background: var(--input-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 0.6rem 0.85rem;
+        font-size: 0.9rem;
+        outline: none;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+        appearance: auto;
+      }
+
+      #submit {
+        background: linear-gradient(135deg, #6366f1, #7c3aed);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.65rem 1.4rem;
+        font: 600 0.95rem inherit;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+        box-shadow: var(--shadow-btn);
+      }
+      #submit:hover {
+        opacity: 0.92;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-btn-h);
+      }
+      #submit:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+      #availability {
+        font-size: 0.8rem;
+        margin-top: 0.6rem;
+        min-height: 1.2em;
+        color: var(--muted-2);
+      }
+      #availability.bad { color: var(--bad); }
+      #availability.muted { color: var(--muted-2); }
+
+      /* Sign-in panel */
+      #signin .signin-body {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      #signin p {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .btn-signin {
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 0.55rem 1.1rem;
+        font: 500 0.9rem inherit;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-block;
+        white-space: nowrap;
+        transition: background 0.15s, transform 0.1s;
+      }
+      .btn-signin:hover { background: var(--accent-dark); color: white; transform: translateY(-1px); }
+
+      /* Empty-state panel */
+      #empty {
+        color: var(--muted);
+        font-size: 0.95rem;
+        text-align: center;
+        padding: 2rem 1.25rem;
+      }
+      #empty .bad { color: var(--bad); }
+
+      /* Status / generation progress */
+      #status {
+        margin-top: 1rem;
+        font-size: 0.9rem;
+        min-height: 1.4em;
+        color: var(--muted);
+      }
+      #status .bad  { color: var(--bad); }
       #status .good { color: var(--good); }
+      #status a     { color: var(--accent); }
+
       .spinner {
-        display: inline-block; width: 0.9em; height: 0.9em; vertical-align: -1px;
-        border: 2px solid var(--edge); border-top-color: var(--accent); border-radius: 50%;
-        animation: spin 0.8s linear infinite; margin-right: 0.5rem;
+        display: inline-block;
+        width: 0.85em; height: 0.85em;
+        vertical-align: -1px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin-right: 0.45rem;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
-      a { color: var(--accent); }
+
+      /* ── COMMONS CTA ───────────────────────────── */
+      .commons-cta {
+        padding: 4rem 2rem;
+        background: var(--surface);
+        border-top: 1px solid var(--border);
+        text-align: center;
+        transition: background 0.2s ease, border-color 0.2s ease;
+      }
+      .commons-cta h2 {
+        font-size: 1.4rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: var(--text);
+        margin-bottom: 0.5rem;
+      }
+      .commons-cta p {
+        color: var(--muted);
+        font-size: 0.95rem;
+        max-width: 480px;
+        margin: 0 auto 1.5rem;
+      }
+      .btn-outline {
+        display: inline-block;
+        border: 1px solid var(--accent);
+        color: var(--accent);
+        border-radius: 8px;
+        padding: 0.6rem 1.25rem;
+        font: 500 0.9rem inherit;
+        text-decoration: none;
+        transition: background 0.15s, color 0.15s;
+      }
+      .btn-outline:hover { background: var(--accent); color: white; }
+
+      /* ── HOW IT WORKS ──────────────────────────── */
+      .how {
+        padding: 4rem 2rem;
+        background: var(--bg);
+        border-top: 1px solid var(--border);
+        text-align: center;
+        transition: background 0.2s ease, border-color 0.2s ease;
+      }
+      .how h2 {
+        font-size: 1.4rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: var(--text);
+        margin-bottom: 0.4rem;
+      }
+      .how-sub {
+        color: var(--muted);
+        font-size: 0.92rem;
+        margin-bottom: 2.5rem;
+      }
+      .how-steps {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 2rem;
+        max-width: 860px;
+        margin: 0 auto;
+      }
+      @media (max-width: 680px) { .how-steps { grid-template-columns: 1fr; } }
+      .step { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
+      .step-icon {
+        width: 48px; height: 48px;
+        border-radius: 13px;
+        background: var(--step-icon-bg);
+        border: 1px solid var(--step-icon-border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.3rem;
+        transition: background 0.2s ease, border-color 0.2s ease;
+      }
+      .step h3 { font-size: 0.92rem; font-weight: 600; color: var(--text); }
+      .step p { font-size: 0.85rem; color: var(--muted); line-height: 1.55; }
+
+      /* ── FOOTER ────────────────────────────────── */
+      footer {
+        background: var(--footer-bg);
+        padding: 2.5rem 2rem 1.5rem;
+        transition: background 0.2s ease;
+      }
+      .footer-inner { max-width: 1100px; margin: 0 auto; }
+      .footer-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 2rem;
+      }
+      .footer-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        text-decoration: none;
+      }
+      .footer-brand-icon {
+        width: 26px; height: 26px;
+        border-radius: 7px;
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        flex-shrink: 0;
+      }
+      .footer-brand-text {
+        font-weight: 600;
+        font-size: 0.9rem;
+        color: var(--footer-text);
+      }
+      .footer-links { display: flex; gap: 1.5rem; list-style: none; }
+      .footer-links a {
+        color: var(--footer-link);
+        font-size: 0.85rem;
+        text-decoration: none;
+        transition: color 0.15s;
+      }
+      .footer-links a:hover { color: var(--footer-text); }
+      .footer-bottom {
+        border-top: 1px solid var(--footer-border);
+        padding-top: 1.25rem;
+        font-size: 0.78rem;
+        color: var(--footer-dim);
+      }
     </style>
   </head>
   <body>
-    <main>
-      <h1>TinkerPad</h1>
-      <p class="lede">Say what you want to tinker with. Get a working playground.
-        <a href="/commons">Browse the commons →</a></p>
 
-      <!-- The form is shown only when at least one provider exists. With an empty registry
-           the script replaces this panel with a "no generation available" message — that
-           is data driving the view, not a branch sprinkled through the UI. -->
-      <form class="panel" id="create" hidden>
-        <div class="row">
-          <label for="description">Describe your playground</label>
-          <textarea
-            id="description"
-            placeholder="e.g. a color palette explorer with live hex codes"
-            required
-          ></textarea>
+    <!-- NAV -->
+    <nav class="nav">
+      <a class="nav-logo" href="/">
+        <div class="nav-logo-icon">TP</div>
+        <span class="nav-logo-text">TinkerPad</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="/commons">Discover</a></li>
+        <li><a href="/">Build</a></li>
+        <li><a href="/commons">Remix</a></li>
+      </ul>
+      <div class="nav-actions">
+        <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode">
+          <span class="icon-moon">🌙</span>
+          <span class="icon-sun">☀️</span>
+        </button>
+        <!-- Signed-out state (default) -->
+        <a class="nav-signin-link" href="/session/login" id="nav-signin">Sign in</a>
+        <a class="btn-primary" href="/session/login" id="nav-get-started">Get started</a>
+        <!-- Signed-in state (hidden until session confirmed) -->
+        <span class="nav-identity" id="nav-identity" hidden></span>
+        <form method="DELETE" action="/session" id="nav-signout-form" hidden style="display:none">
+          <button type="button" class="nav-signin-link" id="nav-signout">Sign out</button>
+        </form>
+      </div>
+    </nav>
+
+    <!-- HERO -->
+    <section class="hero">
+      <div class="hero-inner">
+        <div class="hero-badge">
+          <span class="hero-badge-dot"></span>
+          Powered by Claude · Free to explore
         </div>
-        <div class="controls">
-          <div class="row">
-            <label for="provider">Provider</label>
-            <select id="provider"></select>
+        <h1>Spin up any playground,<br /><span class="gradient-text">instantly.</span></h1>
+        <p class="hero-sub">
+          Describe what you want to explore. Claude builds a working, shareable
+          playground in seconds. No code required.
+        </p>
+
+        <div class="widget-shell">
+          <!-- Shown when signed in and at least one provider exists. The script replaces
+               this with the empty or signin panel when the session or registry say otherwise.
+               [LAW:dataflow-not-control-flow] data drives the view, no branches in markup. -->
+          <form id="create" hidden>
+            <label for="description">Describe your playground</label>
+            <textarea
+              id="description"
+              placeholder="e.g. a Bezier curve explorer with interactive handles and live equation output…"
+              required
+            ></textarea>
+            <div class="widget-controls">
+              <div class="row">
+                <label for="provider">Provider</label>
+                <select id="provider"></select>
+              </div>
+              <button type="submit" id="submit">Generate →</button>
+            </div>
+            <div id="availability"></div>
+          </form>
+
+          <!-- No generation provider registered -->
+          <div id="empty" hidden>
+            <span class="widget-label">Generation unavailable</span>
+            No generation provider is available right now. Browsing and remixing existing
+            playgrounds still works. <a href="/commons">Browse the commons →</a>
           </div>
-          <button type="submit" id="submit">Generate</button>
-        </div>
-        <div class="note muted" id="availability"></div>
-      </form>
 
-      <div class="panel" id="empty" hidden>
-        No generation provider is available. Generation is off until one is registered.
+          <!-- Sign-in required — shown on boot when unauthenticated, or after a 401 on
+               the write path. Signing in is a full-page redirect; on return the user
+               re-runs their action. [LAW:no-ambient-temporal-coupling] -->
+          <div id="signin" hidden>
+            <span class="widget-label">Sign in to generate</span>
+            <div class="signin-body">
+              <p>Generate and publish playgrounds with a GitHub account.</p>
+              <a id="signin-link" href="/session/login" class="btn-signin">Sign in with GitHub →</a>
+            </div>
+          </div>
+        </div>
+
+        <div id="status" role="status" aria-live="polite"></div>
       </div>
+    </section>
 
-      <!-- The sign-in affordance. Hidden until a write is gated: generation requires an
-           authenticated session, so the first 401 on the write path reveals this. Signing in is a
-           full-page redirect to GitHub and back to the front door; on return the user re-runs the
-           action (the redirect reloads the page, so there is no in-memory action to replay). -->
-      <div class="panel" id="signin" hidden>
-        <div class="row">
-          <span>Sign in with GitHub to generate.</span>
+    <!-- COMMONS CTA -->
+    <section class="commons-cta">
+      <h2>From the commons</h2>
+      <p>Every playground anyone has ever generated — public, browsable, and remixable by all.</p>
+      <a class="btn-outline" href="/commons">Browse the commons →</a>
+    </section>
+
+    <!-- HOW IT WORKS -->
+    <section class="how">
+      <h2>How it works</h2>
+      <p class="how-sub">From idea to shareable playground in three steps.</p>
+      <div class="how-steps">
+        <div class="step">
+          <div class="step-icon">✏️</div>
+          <h3>Describe it</h3>
+          <p>Type what you want to explore — a tool, a visualizer, a concept. Plain English, no code.</p>
         </div>
-        <div class="controls">
-          <a id="signin-link" href="/session/login">Sign in with GitHub →</a>
+        <div class="step">
+          <div class="step-icon">⚡</div>
+          <h3>Claude builds it</h3>
+          <p>Claude generates a complete, self-contained playground — interactive controls and live preview in one file.</p>
+        </div>
+        <div class="step">
+          <div class="step-icon">🌍</div>
+          <h3>Share it with the world</h3>
+          <p>Your playground lands in the public commons — browsable, forkable, and remixable by anyone.</p>
         </div>
       </div>
+    </section>
 
-      <div id="status" role="status" aria-live="polite"></div>
-    </main>
+    <!-- FOOTER -->
+    <footer>
+      <div class="footer-inner">
+        <div class="footer-top">
+          <a class="footer-brand" href="/">
+            <div class="footer-brand-icon"></div>
+            <span class="footer-brand-text">TinkerPad</span>
+          </a>
+          <ul class="footer-links">
+            <li><a href="/commons">Commons</a></li>
+            <li><a href="/">Build</a></li>
+            <li><a href="#">GitHub</a></li>
+            <li><a href="#">Privacy</a></li>
+          </ul>
+        </div>
+        <div class="footer-bottom">© 2026 TinkerPad. All playgrounds are public by default.</div>
+      </div>
+    </footer>
 
     <script type="module">
-      // The front-door client. It reads the generation API and renders from what it reads:
-      // the dropdown is the provider list, the submit gate is the live availability, the
-      // progress view is the poll status. Every visible state is a value from the server,
-      // never an assumption baked into the page.
+      // ── THEME TOGGLE ────────────────────────────────────────────────────────
+      // Preference waterfall: localStorage → prefers-color-scheme → light.
+      // [LAW:one-source-of-truth] The data-theme attribute on <html> is the single
+      // source of truth for which token set is active; all CSS reads from it.
+      const root  = document.documentElement;
+      const PREF  = 'tp-theme';
+      const applyTheme = (t) => { root.setAttribute('data-theme', t); localStorage.setItem(PREF, t); };
+      // Initial resolution: set the attribute directly — no localStorage write — so the system
+      // preference change listener fires correctly for users who haven't set an explicit choice.
+      root.setAttribute('data-theme', localStorage.getItem(PREF) || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+      document.getElementById('themeToggle').addEventListener('click', () =>
+        applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        // No explicit choice stored: mirror the initial-resolution behaviour and set the
+        // attribute without persisting, so future system changes keep propagating.
+        if (!localStorage.getItem(PREF)) root.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+      });
+
+      // ── FRONT-DOOR CLIENT ───────────────────────────────────────────────────
+      // Reads the generation API and renders from what it reads: the dropdown is the
+      // provider list, the submit gate is live availability, the progress view is the poll
+      // status. Every visible state is a value from the server, never an assumption baked
+      // into the page. [LAW:dataflow-not-control-flow]
 
       const $ = (id) => document.getElementById(id);
-      const form = $('create');
-      const empty = $('empty');
-      const providerSelect = $('provider');
-      const submitBtn = $('submit');
+      const form            = $('create');
+      const empty           = $('empty');
+      const providerSelect  = $('provider');
+      const submitBtn       = $('submit');
       const availabilityNote = $('availability');
-      const statusEl = $('status');
+      const statusEl        = $('status');
+      const signinPanel     = $('signin');
 
       const api = async (path, init) => {
-        const res = await fetch(path, init);
-        // Every response in this system is JSON — success and error alike — so parse
-        // unconditionally. A body that does not parse is a real fault (a proxy page, a
-        // truncated response), not an empty object to read as data: let res.json() reject
-        // and surface loudly through the caller's catch, never a silent {}.
+        const res  = await fetch(path, init);
         const body = await res.json();
         if (!res.ok) {
-          // Carry the status on the error so callers can branch on the KIND of failure as a
-          // value — the write-gate distinguishes a 401 (sign in, then retry) from any other
-          // failure (surface it) without re-parsing a message string.
           const error = new Error(body.error ?? `request failed (${res.status})`);
           error.status = res.status;
           throw error;
@@ -158,8 +769,7 @@
 
       // The one HTML-escape enforcer. Every server-originating value interpolated into the
       // status region's markup passes through this before it becomes innerHTML, so a string
-      // like "<img onerror=…>" renders as text, never as an element. Structured data (the
-      // provider dropdown) is built with DOM nodes instead and never comes near here.
+      // like "<img onerror=…>" renders as text, never as an element. [LAW:single-enforcer]
       const esc = (value) =>
         String(value)
           .replaceAll('&', '&amp;')
@@ -168,33 +778,26 @@
           .replaceAll('"', '&quot;')
           .replaceAll("'", '&#39;');
 
-      const setStatus = (html) => {
-        statusEl.innerHTML = html;
-      };
+      const setStatus = (html) => { statusEl.innerHTML = html; };
 
-      // Live availability gate. Re-read on every provider change so the button reflects the
-      // real machine state at decision time, and render the reason when unavailable.
       const refreshAvailability = async (providerId) => {
         availabilityNote.textContent = 'Checking availability…';
-        availabilityNote.className = 'note muted';
+        availabilityNote.className = '';
         try {
-          const availability = await api(
-            `/availability?providerId=${encodeURIComponent(providerId)}`,
-          );
+          const availability = await api(`/availability?providerId=${encodeURIComponent(providerId)}`);
           const ok = availability.state === 'available';
           submitBtn.disabled = !ok;
           availabilityNote.textContent = ok ? '' : `Unavailable: ${availability.reason}`;
-          availabilityNote.className = ok ? 'note muted' : 'note bad';
+          availabilityNote.className = ok ? '' : 'bad';
         } catch (error) {
           submitBtn.disabled = true;
           availabilityNote.textContent = `Could not check availability: ${error.message}`;
-          availabilityNote.className = 'note bad';
+          availabilityNote.className = 'bad';
         }
       };
 
       // Drive one generation to a terminal state. The poll on a running turn blocks on the
-      // server (~750ms) by design, so this loop never spins and adds no sleep of its own —
-      // the provider owns the cadence.
+      // server (~750ms) by design, so this loop never spins. [LAW:no-ambient-temporal-coupling]
       const generate = async (providerId, description) => {
         setStatus('<span class="spinner"></span>Submitting…');
         const { handle } = await api('/generations', {
@@ -217,7 +820,7 @@
             const href = `/play?id=${encodeURIComponent(status.playgroundId)}`;
             setStatus(
               `<span class="good">Playground ready.</span> ` +
-                `<a href="${href}">Open it →</a> <code>${esc(status.playgroundId)}</code>`,
+              `<a href="${href}">Open it →</a> <code>${esc(status.playgroundId)}</code>`,
             );
             return;
           }
@@ -226,13 +829,14 @@
         }
       };
 
-      const signinPanel = $('signin');
-
-      // Reveal the GitHub sign-in affordance. Signing in is a full-page redirect (the anchor's
-      // href is /session/login), so unlike the old secret form there is no in-memory action to
-      // replay on return — the user lands back signed in and re-runs their generate.
       const requireSignin = () => {
+        // Revert the full auth UI: inverse of setNavSignedIn. [LAW:one-source-of-truth]
+        form.hidden = true;
         signinPanel.hidden = false;
+        $('nav-signin').hidden = false;
+        $('nav-get-started').hidden = false;
+        $('nav-identity').hidden = true;
+        $('nav-signout-form').hidden = true;
         setStatus('<span class="bad">Sign in with GitHub to generate.</span>');
       };
 
@@ -242,9 +846,6 @@
         try {
           await generate($('provider').value, $('description').value.trim());
         } catch (error) {
-          // An unauthenticated write is a value (401) the UI handles by revealing GitHub sign-in —
-          // distinct from any other failure (e.g. a poll on an "unknown turn" after a server
-          // restart), which is surfaced loudly so no dead spinner is left behind.
           if (error.status === 401) requireSignin();
           else setStatus(`<span class="bad">${esc(error.message)}</span>`);
         } finally {
@@ -254,8 +855,40 @@
 
       providerSelect.addEventListener('change', () => refreshAvailability(providerSelect.value));
 
-      // Boot: the provider list decides whether the front door shows a form at all.
+      // Nav auth state — a value from the session, not an assumption baked into the page.
+      // [LAW:dataflow-not-control-flow] The nav reflects the session value; the two signed-out
+      // elements hide and the two signed-in elements reveal when identity is confirmed.
+      const setNavSignedIn = (identity) => {
+        $('nav-signin').hidden       = true;
+        $('nav-get-started').hidden  = true;
+        const identEl = $('nav-identity');
+        identEl.textContent = identity;
+        identEl.hidden = false;
+        const signoutForm = $('nav-signout-form');
+        signoutForm.hidden = false;
+        signoutForm.style.display = '';
+        $('nav-signout').addEventListener('click', async () => {
+          try {
+            await api('/session', { method: 'DELETE' });
+            window.location.reload();
+          } catch (err) {
+            setStatus(`<span class="bad">Sign out failed: ${esc(err.message)}</span>`);
+          }
+        });
+      };
+
+      // Boot: session state drives what renders. [LAW:dataflow-not-control-flow]
       (async () => {
+        const session = await api('/session').catch((err) => {
+          setStatus(`<span class="bad">Could not reach server: ${esc(err.message)}</span>`);
+          return null; // [LAW:types-are-the-program] null ≠ { identity: null } — distinct states
+        });
+        if (session === null) return; // server error — status already shown above
+        if (session.identity === null) {
+          signinPanel.hidden = false;
+          return;
+        }
+        setNavSignedIn(session.identity.subject);
         try {
           const providers = await api('/providers');
           if (providers.length === 0) {
@@ -264,8 +897,6 @@
           }
           providerSelect.replaceChildren(
             ...providers.map((p) => {
-              // value/textContent as properties: the id and label stay data, never parsed
-              // as markup — no escaping to drift. [FRAMING:representation]
               const option = document.createElement('option');
               option.value = p.id;
               option.textContent = p.label;
@@ -275,8 +906,13 @@
           form.hidden = false;
           await refreshAvailability(providerSelect.value);
         } catch (error) {
+          const errMsg = document.createElement('p');
+          errMsg.className = 'bad';
+          errMsg.textContent = `Could not load providers: ${error.message}`;
+          const commonsP = document.createElement('p');
+          commonsP.innerHTML = '<a href="/commons">Browse the commons →</a>';
+          empty.replaceChildren(errMsg, commonsP);
           empty.hidden = false;
-          empty.textContent = `Could not load providers: ${error.message}`;
         }
       })();
     </script>

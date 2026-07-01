@@ -867,7 +867,7 @@
           signinPanel.hidden = false;
           return;
         }
-        setNavSignedIn(session.identity);
+        setNavSignedIn(session.identity.subject);
         try {
           const providers = await api('/providers');
           if (providers.length === 0) {

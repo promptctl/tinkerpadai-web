@@ -862,7 +862,10 @@
 
       // Boot: session state drives what renders. [LAW:dataflow-not-control-flow]
       (async () => {
-        const session = await api('/session').catch(() => ({ identity: null }));
+        const session = await api('/session').catch((err) => {
+          setStatus(`<span class="bad">Could not reach server: ${esc(err.message)}</span>`);
+          return { identity: null };
+        });
         if (session.identity === null) {
           signinPanel.hidden = false;
           return;

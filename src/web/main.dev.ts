@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { makeApp } from '../app.js';
 import { Subject } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
@@ -7,6 +6,7 @@ import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
+import { resolveServerConfig } from './serverConfig.js';
 
 // THE DEV ENTRY POINT — identical to main.ts except the external identity provider. Production
 // requires a registered GitHub OAuth app and hard-fails without one; that gate is correct for
@@ -31,11 +31,7 @@ const makeDevOAuthProvider = (subject: Subject): OAuthProvider => ({
 const pageUrl = new URL('./index.html', import.meta.url);
 
 const main = async (): Promise<void> => {
-  const dataDir = process.env.TINKERPAD_DATA_DIR ?? fileURLToPath(new URL('../../.tinkerpad-data', import.meta.url));
-  const port = Number(process.env.PORT ?? 8787);
-  const contentPort = Number(process.env.TINKERPAD_CONTENT_PORT ?? port + 1);
-  const oauthCallbackUrl =
-    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://127.0.0.1:${port}/session/callback`;
+  const { dataDir, port, contentPort, oauthCallbackUrl } = resolveServerConfig(import.meta.url);
 
   const app = makeApp({
     dataDir,

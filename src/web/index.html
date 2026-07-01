@@ -867,8 +867,12 @@
         signoutForm.hidden = false;
         signoutForm.style.display = '';
         $('nav-signout').addEventListener('click', async () => {
-          await fetch('/session', { method: 'DELETE' });
-          window.location.reload();
+          try {
+            await api('/session', { method: 'DELETE' });
+            window.location.reload();
+          } catch (err) {
+            setStatus(`<span class="bad">Sign out failed: ${esc(err.message)}</span>`);
+          }
         });
       };
 

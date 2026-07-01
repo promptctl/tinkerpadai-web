@@ -19,7 +19,10 @@ export function resolveServerConfig(importMetaUrl: string) {
     fileURLToPath(new URL('../../.tinkerpad-data', importMetaUrl));
   const port = parsePort(process.env.PORT, 'PORT', 8787);
   const contentPort = parsePort(process.env.TINKERPAD_CONTENT_PORT, 'TINKERPAD_CONTENT_PORT', port + 1);
+  // localhost, not 127.0.0.1: browsers scope cookies to the hostname, so 127.0.0.1 and
+  // localhost are distinct cookie domains. The callback must match the origin the browser
+  // uses or the CSRF state cookie will be absent on the callback request. [LAW:one-source-of-truth]
   const oauthCallbackUrl =
-    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://127.0.0.1:${port}/session/callback`;
+    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://localhost:${port}/session/callback`;
   return { dataDir, port, contentPort, oauthCallbackUrl };
 }

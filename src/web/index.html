@@ -7,6 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <script>(function(){var t=localStorage.getItem('tp-theme');if(!t)t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)})()</script>
     <style>
       /* ── DESIGN TOKENS ─────────────────────────── */
       /* [LAW:one-source-of-truth] Every color flows from one of these two token blocks.
@@ -900,7 +901,10 @@
           await refreshAvailability(providerSelect.value);
         } catch (error) {
           empty.hidden = false;
-          empty.textContent = `Could not load providers: ${error.message}`;
+          const errEl = document.createElement('p');
+          errEl.className = 'bad';
+          errEl.textContent = `Could not load providers: ${error.message}`;
+          empty.append(errEl);
         }
       })();
     </script>

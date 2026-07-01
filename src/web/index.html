@@ -874,8 +874,9 @@
       (async () => {
         const session = await api('/session').catch((err) => {
           setStatus(`<span class="bad">Could not reach server: ${esc(err.message)}</span>`);
-          return { identity: null };
+          return null; // [LAW:types-are-the-program] null ≠ { identity: null } — distinct states
         });
+        if (session === null) return; // server error — status already shown above
         if (session.identity === null) {
           signinPanel.hidden = false;
           return;

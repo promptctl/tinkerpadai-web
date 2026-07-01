@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 // silently produces NaN for non-numeric input, which cascades into listen() and callback URLs.
 function parsePort(value: string | undefined, name: string, fallback: number): number {
   const n = value !== undefined ? Number(value) : fallback;
-  if (!Number.isSafeInteger(n) || n < 0 || n > 65535) {
+  if (!Number.isSafeInteger(n) || n < 1 || n > 65535) {
     const source = value !== undefined ? `${name}=${JSON.stringify(value)}` : `default for ${name} (${fallback})`;
-    throw new Error(`${source} is not a valid port number (0-65535)`);
+    throw new Error(`${source} is not a valid port number (1-65535)`);
   }
   return n;
 }

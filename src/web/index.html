@@ -906,11 +906,13 @@
           form.hidden = false;
           await refreshAvailability(providerSelect.value);
         } catch (error) {
+          const errMsg = document.createElement('p');
+          errMsg.className = 'bad';
+          errMsg.textContent = `Could not load providers: ${error.message}`;
+          const commonsP = document.createElement('p');
+          commonsP.innerHTML = '<a href="/commons">Browse the commons →</a>';
+          empty.replaceChildren(errMsg, commonsP);
           empty.hidden = false;
-          const errEl = document.createElement('p');
-          errEl.className = 'bad';
-          errEl.textContent = `Could not load providers: ${error.message}`;
-          empty.append(errEl);
         }
       })();
     </script>

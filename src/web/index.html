@@ -733,7 +733,9 @@
       document.getElementById('themeToggle').addEventListener('click', () =>
         applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-        if (!localStorage.getItem(PREF)) applyTheme(e.matches ? 'dark' : 'light');
+        // No explicit choice stored: mirror the initial-resolution behaviour and set the
+        // attribute without persisting, so future system changes keep propagating.
+        if (!localStorage.getItem(PREF)) root.setAttribute('data-theme', e.matches ? 'dark' : 'light');
       });
 
       // ── FRONT-DOOR CLIENT ───────────────────────────────────────────────────
@@ -825,7 +827,13 @@
       };
 
       const requireSignin = () => {
+        // Revert the full auth UI: inverse of setNavSignedIn. [LAW:one-source-of-truth]
+        form.hidden = true;
         signinPanel.hidden = false;
+        $('nav-signin').hidden = false;
+        $('nav-get-started').hidden = false;
+        $('nav-identity').hidden = true;
+        $('nav-signout-form').hidden = true;
         setStatus('<span class="bad">Sign in with GitHub to generate.</span>');
       };
 

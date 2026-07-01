@@ -727,7 +727,9 @@
       const root  = document.documentElement;
       const PREF  = 'tp-theme';
       const applyTheme = (t) => { root.setAttribute('data-theme', t); localStorage.setItem(PREF, t); };
-      applyTheme(localStorage.getItem(PREF) ?? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+      // Initial resolution: set the attribute directly — no localStorage write — so the system
+      // preference change listener fires correctly for users who haven't set an explicit choice.
+      root.setAttribute('data-theme', localStorage.getItem(PREF) ?? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
       document.getElementById('themeToggle').addEventListener('click', () =>
         applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {

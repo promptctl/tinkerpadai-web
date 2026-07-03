@@ -1,0 +1,121 @@
+# TinkerPad — Two-Year Plan
+
+*Written 2026-07-03. This is a narrative snapshot of the roadmap, not the roadmap
+itself. The **lit backlog is the single source of truth** for what work exists, its
+order, and its detail — run `lit backlog` for the live queue. This document captures
+what the ticket queue cannot: the whole-picture rationale, the horizon story, and
+where each epic traces back to [`PROJECT.md`](./PROJECT.md). If this doc and lit
+disagree, lit wins; if this doc and PROJECT.md disagree on intent, PROJECT.md wins.*
+
+---
+
+## Where we are (verified, not assumed)
+
+The core loop — **describe → generate → store → discover → use → remix** — is
+**built and verified end-to-end** as of this writing. Driven live through a real
+browser against `just dev`:
+
+- Landing page (redesigned: design-token system, light/dark mode, nav, hero,
+  create widget) renders and functions.
+- Loopback dev login completes the real session dance (CSRF state round-trip,
+  cookie minting) with no GitHub app required.
+- A prompt typed into the box produced a working playground via the local tmux
+  driver running Claude Code: a bouncing-ball physics simulator with presets,
+  sliders, and live canvas — stored, served from the sandboxed content origin,
+  and playable.
+- Player chrome works: attribution, recipe display, Refine input, Remix button,
+  Copy Prompt.
+
+One real bug was found and fixed during verification: the OAuth callback URL
+defaulted to `127.0.0.1` while browsers visit `localhost`; cookies are
+hostname-scoped, so the CSRF state cookie never arrived at the callback and every
+dev login failed. The fix (one line in the shared server config) landed as its own
+commit.
+
+**Implication for the plan:** the foundation is real. Everything below is
+deepening, hardening, and reach — not rescue.
+
+---
+
+## The shape of two years
+
+The backlog holds **22 epics**. Every epic traces to one of PROJECT.md's two
+pillars (*frictionless creation*, *the commons*), its safety mandate, or one of
+its explicitly open decisions. Nothing was invented from thin air.
+
+Detail follows grooming discipline: near-term tickets are implementer-ready;
+far-term tickets are deliberately sparse (a sharp title and the capability, no
+file names, no designs) because detail written years early is fiction that rots.
+Detail gets added as work rises toward the top — never before.
+
+### Horizon 1 — now → ~3 months: finish the front door
+
+The groomed near-term queue, unchanged by this planning pass:
+
+| Epic | What it finishes |
+|---|---|
+| `design-pw7` | Apply the new design system everywhere it isn't yet: commons page, player chrome, homepage preview grid, error pages, favicon/metadata |
+| `discovery-rye` (near half) | Tags, search bar + tag filter, commons pagination |
+| `profile-ek4` | My-playgrounds page, OpenGraph cards, public creator pages |
+| `homelab-28m` | Deploy stage 2: two-origin server config, generation toggle |
+| `cloudflare-8le` | Deploy stage 3: Workers entry point, D1/R2/KV adapters, cookie hardening |
+| `history-3o7` (remainder) | Durable per-turn provider context (blocked on the deploy stages) |
+
+### Horizon 2 — ~3–9 months: make it real and safe
+
+The prerequisites of a genuinely public TinkerPad. Safety outranks social here
+because PROJECT.md says safety is designed in from day one, never bolted on.
+
+| Epic | Why it exists |
+|---|---|
+| `providers` | The tmux driver proves the provider seam but cannot run in the cloud. An API-based Claude driver behind the same seam makes cloud generation real; streaming progress makes the wait feel alive. |
+| `sandbox` | Adversarial audit of the one enforcement boundary (iframe sandbox, content-origin CSP, two-origin split) plus per-identity rate limits and quotas. Precedes broad public exposure. |
+| `quality` | Self-containment enforced, not hoped for: validation at the storage boundary rejects artifacts with external references. One enforcer, no per-feature checks. |
+| `ops` | A *tested* backup/restore path for the commons, logs, minimal metrics. The commons is the product; losing it is existential. |
+
+### Horizon 3 — ~9–18 months: deepen the loop
+
+| Epic | Why it exists |
+|---|---|
+| `moderation` | The sandbox contains what is *dangerous*; moderation catches what is *unwanted*. Report button, unlist state, admin review queue, prompt screening. |
+| `editing` | Resolves a PROJECT.md open decision (regenerate vs direct edit vs both). Baseline lands first: view-source and download — portability is the point of self-containment. |
+| `social` | Stars, view counts, remix lineage tree. Lineage is already tracked; it deserves a face. These signals feed trending. |
+| `versions` | The user surface over the history epic's provenance data: browse versions, view any, branch from one. |
+| `discovery-rye` (far half) | Preview thumbnails, the playground-types taxonomy from PROJECT.md (design / data-explorer / concept-map / document-critique / diff-review / code-map), trending, semantic search. |
+
+### Horizon 4 — ~18–24 months: reach and bets
+
+Deliberately sparse; these get detail when they get close.
+
+| Epic | The bet |
+|---|---|
+| `collections` | Curation compounds the commons: featured, playground-of-the-day, weekly tinker challenge. |
+| `embed` | A playground in a blog post is the same sandboxed iframe against the content origin — no new rules. Embed snippets + oEmbed. |
+| `onboarding` | Example gallery and prompt tips *beside* the box, never in front of it — creation stays frictionless. |
+| `a11y` | WCAG AA and keyboard operability on all chrome we own (playground content is user-generated and out of scope). |
+| `api` | The commons as a platform: public read API and an MCP server so agents can search and spin up playgrounds — agent-native creation matches how playgrounds were born. |
+| `accounts` | More identity providers, settings, deletion policy (the commons outlives its authors), the anonymous-creation decision. |
+| `economics` | **Decision-gated.** Who pays for generation — platform, BYOK, or credits — is the main cost lever and shapes the whole model. Decide before building. |
+| `education` | The speculative big bet: playgrounds as classroom instruments. Validate demand before writing code. |
+
+---
+
+## Structural facts worth knowing
+
+- **Cross-epic dependencies are explicit edges in lit**, not folklore: the
+  history epic blocks the versions surface; stars/views block trending. Within an
+  epic, rank (not dependency edges) carries the order.
+- **Two epics are decision-gated** (`economics`, and the deeper half of
+  `editing`): they need a product decision before implementation children exist.
+  These are the open decisions PROJECT.md left open on purpose.
+- **The deploy story is staged**: dev loopback (done) → homelab → Cloudflare.
+  Real cloud *generation* additionally needs the API provider driver — adapters
+  alone don't make generation work on Workers.
+
+## What this plan refuses to do
+
+Consistent with PROJECT.md's "what TinkerPad is NOT": no blank-canvas editor, no
+general app hosting, no private-by-default, no playground that needs a live
+backend. Any future epic that violates self-containment or splits the sandbox
+enforcement across features is wrong by construction, regardless of how
+attractive the feature is.

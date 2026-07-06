@@ -90,18 +90,28 @@ const expectStatus = async (response: Response, expected: number, what: string):
 // and redirects to the provider (the loopback provider redirects straight back), and
 // the callback verifies state and mints the session cookie. The same round-trip as
 // production, so seeding exercises the real write gate. [FRAMING:representation]
+// The per-REQUEST transport deadline: connection-refused fails a fetch on its own, but
+// a server that accepts TCP and never responds would hang it forever. This bounds one
+// HTTP request's liveness and nothing more — the GENERATION deadline stays solely the
+// server's; the two deadlines own different concerns and cannot disagree.
+// [LAW:single-enforcer] [LAW:no-silent-failure]
+const REQUEST_TIMEOUT_MS = 60 * 1000;
+
+const request = (url: string, init: RequestInit): Promise<Response> =>
+  fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+
 const login = async (base: string): Promise<string> => {
-  const start = await fetch(`${base}/session/login`, { redirect: 'manual' });
+  const start = await request(`${base}/session/login`, { redirect: 'manual' });
   await expectStatus(start, 302, 'GET /session/login');
   const location = start.headers.get('location');
   if (location === null) throw new Error('login: redirect carried no location header');
   const stateCookie = cookiePair(start.headers.getSetCookie(), 'tp_oauth_state');
 
-  const callback = await fetch(location, { redirect: 'manual', headers: { cookie: stateCookie } });
+  const callback = await request(location, { redirect: 'manual', headers: { cookie: stateCookie } });
   await expectStatus(callback, 302, 'GET /session/callback');
   const session = cookiePair(callback.headers.getSetCookie(), 'tp_session');
 
-  const whoami = await fetch(`${base}/session`, { headers: { cookie: session } });
+  const whoami = await request(`${base}/session`, { headers: { cookie: session } });
   await expectStatus(whoami, 200, 'GET /session');
   const identity: unknown = await whoami.json();
   if (!isRecord(identity) || !isRecord(identity.identity)) {
@@ -117,12 +127,20 @@ const postJson = async (
   path: string,
   body: unknown,
 ): Promise<{ readonly status: number; readonly data: unknown }> => {
-  const response = await fetch(`${base}${path}`, {
+  const response = await request(`${base}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify(body),
   });
-  return { status: response.status, data: (await response.json()) as unknown };
+  // Read the body once as text and parse it here, so a non-JSON error page (a proxy's
+  // HTML 502, a splash page) surfaces WITH its status and a snippet of what came back —
+  // never as a bare parse error that buries the real diagnosis. [LAW:no-silent-failure]
+  const text = await response.text();
+  try {
+    return { status: response.status, data: JSON.parse(text) as unknown };
+  } catch {
+    throw new Error(`POST ${path}: HTTP ${response.status} returned non-JSON body: ${text.slice(0, 200)}`);
+  }
 };
 
 // Client-side pacing between polls; the server additionally paces a running poll, so

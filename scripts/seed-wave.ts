@@ -160,6 +160,13 @@ const generateOne = async (base: string, cookie: string, entry: BriefEntry): Pro
     if (polled.data.state === 'failed') {
       return { state: 'failed', error: String(polled.data.error) };
     }
+    // The known non-terminal states are the ONLY continue path; anything else — a
+    // 'ready' missing its playgroundId, a state this client does not know — is a
+    // protocol mismatch that fails this brief loudly rather than spinning forever.
+    // [LAW:no-silent-failure] [LAW:types-are-the-program]
+    if (polled.data.state !== 'pending' && polled.data.state !== 'running') {
+      return { state: 'failed', error: `poll: unexpected response shape: ${JSON.stringify(polled.data)}` };
+    }
     await delay(POLL_INTERVAL_MS);
   }
 };
@@ -237,7 +244,9 @@ const main = async (): Promise<void> => {
     console.error(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
     process.exit(2);
   }
-  const base = process.env.TINKERPAD_URL ?? 'http://localhost:8787';
+  // Foreign input normalized once where it crosses the boundary: a trailing slash
+  // would smear '//' into every concatenated path downstream. [LAW:single-enforcer]
+  const base = (process.env.TINKERPAD_URL ?? 'http://localhost:8787').replace(/\/+$/, '');
 
   const entries = parseManifest(await readFile(manifestPath, 'utf8'), manifestPath);
   console.log(`seeding ${entries.length} briefs against ${base} (concurrency ${concurrency})`);

@@ -87,6 +87,7 @@ export const renderCommons = (summaries: readonly PlaygroundSummary[]): string =
       : `<div class="card-grid">\n${summaries.map(playgroundCard).join('\n')}\n</div>`;
   return renderPageShell(
     'The Commons — TinkerPad',
+    'Browse every playground the TinkerPad community has made. Open one to tinker, or remix it into your own.',
     `${siteNav()}
 <main class="container">
   <div class="page-head">
@@ -105,6 +106,7 @@ ${siteFooter()}`,
 export const renderNotice = (heading: string, message: string): string =>
   renderPageShell(
     `${heading} — TinkerPad`,
+    message,
     `${siteNav()}
 <main class="container">
   <div class="page-head">
@@ -374,6 +376,7 @@ const PLAYER_SCRIPT = `
 export const renderPlayer = (view: PlayerView): string =>
   renderPageShell(
     `${view.prompt} — TinkerPad`,
+    `${view.prompt} — a TinkerPad playground you can tinker with: adjust the controls, copy the prompt, and remix it into your own.`,
     `${siteNav()}
 <header class="player-head">
   <div class="player-head-main">

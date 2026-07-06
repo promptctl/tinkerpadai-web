@@ -9,8 +9,9 @@ import { escapeHtml } from './escapeHtml.js';
 // index.html is the deliberate, documented TWIN of these tokens — a hand-authored static file
 // that must be self-contained and paint pre-request with no build step, so it inlines its own
 // copy rather than importing this one. That is the single marked exception to the source-of-truth
-// above; the token blocks below are kept byte-identical to index.html's on purpose, and an edit
-// to one is an edit to both. [LAW:one-source-of-truth] exception: static file, no build step.
+// above; the token blocks below AND the favicon link (FAVICON_LINK) are kept byte-identical to
+// index.html's on purpose, and an edit to one is an edit to both.
+// [LAW:one-source-of-truth] exception: static file, no build step.
 //
 // This module knows NOTHING about playgrounds — it is generic chrome that any page composes.
 // The playground-shaped fragments (cards, bylines, recipes) live in playgroundPages, which
@@ -272,27 +273,40 @@ export const siteFooter = (): string => `<footer class="site-footer">
   </div>
 </footer>`;
 
+// The favicon — the brand mark (the nav-logo-icon: a 135deg #6366f1→#8b5cf6 rounded square with a
+// white "TP") expressed as an inline SVG data URI. It is the SAME mark, not a second asset that can
+// drift from it, and it needs no binary file and no static-file route on this handler — the icon
+// travels in the head as source. This link is the byte-identical twin of index.html's own copy.
+// [LAW:one-source-of-truth]
+const FAVICON_LINK = `<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23g)'/%3E%3Ctext x='16' y='22' font-family='system-ui,-apple-system,sans-serif' font-size='14' font-weight='700' fill='white' text-anchor='middle'%3ETP%3C/text%3E%3C/svg%3E" />`;
+
 // The page shell — doctype, head (title, tokens, theme resolver), and body. Callers compose the
 // body from siteNav + their content + siteFooter (the player omits the chrome and passes its own
 // full-height layout). `head` is the one per-page slot for page-specific CSS/meta.
 //
-// TRUST CONTRACT: `title` is the ONE raw value the shell receives, so the shell escapes it through
-// the single enforcer. `body` and `head` are TRUSTED app-origin markup — every outside value they
-// contain has ALREADY crossed escapeHtml at the point it was interpolated by the caller — so the
-// shell injects them verbatim. That asymmetry is the invariant, not an oversight: the escape lives
-// once, at the boundary where the outside value enters, never a second time here. This contract is
-// carried in prose rather than a branded `SafeHtml` type on purpose — escapeHtml returns `string`
-// and every fragment builder in this layer returns `string`, so a brand at this one seam would be
-// laundered by casts (false safety); a real brand would have to span the whole layer as an
-// html-tagged-template enforcer, which would duplicate the single escape mechanism. That is a
+// Every server page declares BOTH a title and a description: a page with no description is not a
+// legal page (the first impression a search result or a shared link paints), so `description` is a
+// required parameter, not an optional slot a page can silently forget. [LAW:types-are-the-program]
+//
+// TRUST CONTRACT: `title` and `description` are the TWO raw values the shell receives, so the shell
+// escapes both through the single enforcer. `body` and `head` are TRUSTED app-origin markup — every
+// outside value they contain has ALREADY crossed escapeHtml at the point it was interpolated by the
+// caller — so the shell injects them verbatim. That asymmetry is the invariant, not an oversight:
+// the escape lives once, at the boundary where the outside value enters, never a second time here.
+// This contract is carried in prose rather than a branded `SafeHtml` type on purpose — escapeHtml
+// returns `string` and every fragment builder in this layer returns `string`, so a brand at this one
+// seam would be laundered by casts (false safety); a real brand would have to span the whole layer as
+// an html-tagged-template enforcer, which would duplicate the single escape mechanism. That is a
 // deliberate, separate decision. [LAW:types-are-the-program] [LAW:single-enforcer] [LAW:one-source-of-truth]
-export const renderPageShell = (title: string, body: string, head = ''): string =>
+export const renderPageShell = (title: string, description: string, body: string, head = ''): string =>
   `<!doctype html>
 <html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(title)}</title>
+<meta name="description" content="${escapeHtml(description)}" />
+${FAVICON_LINK}
 ${THEME_RESOLVER}
 <style>${SHELL_STYLES}</style>
 ${head}

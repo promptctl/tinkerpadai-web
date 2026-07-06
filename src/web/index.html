@@ -730,9 +730,11 @@
       const root  = document.documentElement;
       const PREF  = 'tp-theme';
       const applyTheme = (t) => { root.setAttribute('data-theme', t); localStorage.setItem(PREF, t); };
-      // Initial resolution: set the attribute directly — no localStorage write — so the system
-      // preference change listener fires correctly for users who haven't set an explicit choice.
-      root.setAttribute('data-theme', localStorage.getItem(PREF) || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+      // Initial resolution already happened: the inline <head> script is the single resolver
+      // of the preference waterfall (it must run pre-paint to prevent FOUC), and the attribute
+      // it set is the value this module reads. No localStorage write on resolution — storage
+      // records only explicit choices, so the system-preference listener below keeps working
+      // for users who never chose. [LAW:one-source-of-truth] [LAW:no-ambient-temporal-coupling]
       document.getElementById('themeToggle').addEventListener('click', () =>
         applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -867,15 +869,19 @@
         const signoutForm = $('nav-signout-form');
         signoutForm.hidden = false;
         signoutForm.style.display = '';
-        $('nav-signout').addEventListener('click', async () => {
-          try {
-            await api('/session', { method: 'DELETE' });
-            window.location.reload();
-          } catch (err) {
-            setStatus(`<span class="bad">Sign out failed: ${esc(err.message)}</span>`);
-          }
-        });
       };
+
+      // Registered once at init, like every other listener — setNavSignedIn only applies
+      // state. The button is hidden while signed out, so firing is gated by visibility,
+      // not by registration timing. [LAW:effects-at-boundaries]
+      $('nav-signout').addEventListener('click', async () => {
+        try {
+          await api('/session', { method: 'DELETE' });
+          window.location.reload();
+        } catch (err) {
+          setStatus(`<span class="bad">Sign out failed: ${esc(err.message)}</span>`);
+        }
+      });
 
       // Boot: session state drives what renders. [LAW:dataflow-not-control-flow]
       (async () => {
@@ -906,12 +912,15 @@
           form.hidden = false;
           await refreshAvailability(providerSelect.value);
         } catch (error) {
+          const label = document.createElement('span');
+          label.className = 'widget-label';
+          label.textContent = 'Generation unavailable';
           const errMsg = document.createElement('p');
           errMsg.className = 'bad';
           errMsg.textContent = `Could not load providers: ${error.message}`;
           const commonsP = document.createElement('p');
           commonsP.innerHTML = '<a href="/commons">Browse the commons →</a>';
-          empty.replaceChildren(errMsg, commonsP);
+          empty.replaceChildren(label, errMsg, commonsP);
           empty.hidden = false;
         }
       })();

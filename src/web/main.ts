@@ -1,11 +1,11 @@
 import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { makeApp } from '../app.js';
 import { makeGitHubOAuthProvider } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
+import { resolveServerConfig } from './serverConfig.js';
 
 // THE FRONT-DOOR ENTRY POINT — the effectful top of the steel thread. It is the only place
 // that reads the environment, loads the page from disk, and binds sockets; everything it
@@ -21,24 +21,14 @@ import { serve } from './server.js';
 const pageUrl = new URL('./index.html', import.meta.url);
 
 const main = async (): Promise<void> => {
-  const dataDir = process.env.TINKERPAD_DATA_DIR ?? fileURLToPath(new URL('../../.tinkerpad-data', import.meta.url));
-  const port = Number(process.env.PORT ?? 8787);
-  // Default the content origin to the next port so a fresh checkout gets two origins with no
-  // config; override explicitly to place it elsewhere.
-  const contentPort = Number(process.env.TINKERPAD_CONTENT_PORT ?? port + 1);
+  const { dataDir, port, contentPort, oauthCallbackUrl } = resolveServerConfig(import.meta.url);
 
-  // The GitHub OAuth app credentials and the callback URL the login flow needs. These CANNOT be
-  // minted (unlike a dev secret) — a real identity provider requires a registered OAuth app — so
-  // their absence is a hard, loud boot failure, never a silent fallback to an open or dev gate.
-  // `|| undefined` so an empty string is treated as unset, not as an empty credential.
-  // [LAW:no-silent-failure]
+  // The GitHub OAuth app credentials. These CANNOT be minted (unlike a dev secret) — a real
+  // identity provider requires a registered OAuth app — so their absence is a hard, loud boot
+  // failure, never a silent fallback to an open or dev gate. `|| undefined` so an empty string
+  // is treated as unset, not as an empty credential. [LAW:no-silent-failure]
   const clientId = process.env.GITHUB_CLIENT_ID || undefined;
   const clientSecret = process.env.GITHUB_CLIENT_SECRET || undefined;
-  // The callback URL the GitHub OAuth app must have registered. Defaults to this origin's
-  // /session/callback for local dev; pin it explicitly behind a proxy/CDN where request.url is
-  // not the public origin. [LAW:one-source-of-truth]
-  const oauthCallbackUrl =
-    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://127.0.0.1:${port}/session/callback`;
   if (clientId === undefined || clientSecret === undefined) {
     throw new Error(
       'GitHub OAuth is required: set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET. ' +

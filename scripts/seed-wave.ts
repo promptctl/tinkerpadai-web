@@ -192,12 +192,18 @@ const POLL_INTERVAL_MS = 2000;
 // [LAW:no-silent-failure] [LAW:one-source-of-truth]
 const POLL_CEILING_MS = 30 * 60 * 1000;
 
-// Submit one brief and poll it to a terminal Outcome. Pure orchestration over the
-// injected driver: it maps the wire responses onto the Outcome union and owns the
-// poll loop, knowing nothing about fetch or timers. [LAW:effects-at-boundaries]
-export const generateOne = async (entry: BriefEntry, driver: BriefDriver): Promise<Outcome> => {
+// Submit one brief against a chosen provider and poll it to a terminal Outcome. Pure
+// orchestration over the injected driver: it maps the wire responses onto the Outcome
+// union and owns the poll loop, knowing nothing about fetch or timers. The providerId is
+// a value threaded in (discovered from the server, never hardcoded), so this body does
+// not mirror the app's provider registry. [LAW:effects-at-boundaries] [LAW:one-source-of-truth]
+export const generateOne = async (
+  entry: BriefEntry,
+  providerId: string,
+  driver: BriefDriver,
+): Promise<Outcome> => {
   const submitted = await driver.post('/generations', {
-    providerId: 'claude-code-tmux',
+    providerId,
     brief: { description: entry.description },
   });
   if (submitted.status !== 201 || !isRecord(submitted.data) || !isRecord(submitted.data.handle)) {
@@ -346,16 +352,61 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   return { manifestPath, concurrency, base };
 };
 
-// Run one wave end to end against a live server: validate the manifest, complete the
-// login dance, drain the briefs, and return the exit code. The effects it needs (reading
-// the manifest file, the real HTTP+clock driver) are threaded from the entry, so this
-// orchestration stays free of process/global reaches. [LAW:effects-at-boundaries]
+// The server's provider registry is the single source of truth for which providers exist;
+// the seeder reads it rather than mirroring app.ts's default id. Choosing among the list is
+// PURE, so the selection contract is verified without a server: zero providers is a loud
+// misconfiguration; an explicit TINKERPAD_PROVIDER must be one the server actually offers;
+// a lone provider is used unasked; genuine ambiguity fails loudly rather than guessing.
+// [LAW:one-source-of-truth] [LAW:no-silent-failure]
+export const chooseProvider = (
+  providers: readonly { readonly id: string }[],
+  env: NodeJS.ProcessEnv,
+): string => {
+  const ids = providers.map((provider) => provider.id);
+  if (ids.length === 0) {
+    throw new Error('the server exposes no providers to generate with (GET /providers was empty)');
+  }
+  const configured = env.TINKERPAD_PROVIDER;
+  if (configured !== undefined) {
+    if (!ids.includes(configured)) {
+      throw new Error(`TINKERPAD_PROVIDER=${configured} is not among the server's providers: ${ids.join(', ')}`);
+    }
+    return configured;
+  }
+  if (ids.length === 1) return ids[0] as string;
+  throw new Error(`the server exposes multiple providers (${ids.join(', ')}); set TINKERPAD_PROVIDER to choose one`);
+};
+
+// The effect behind chooseProvider: read the server's provider list from the credential-free
+// GET /providers — the same surface the front door reads. [LAW:effects-at-boundaries]
+export const fetchProviders = async (base: string): Promise<readonly { readonly id: string }[]> => {
+  const response = await request(`${base}/providers`, { headers: { accept: 'application/json' } });
+  await expectStatus(response, 200, 'GET /providers');
+  const data: unknown = await response.json();
+  if (!Array.isArray(data)) throw new Error(`GET /providers: expected a JSON array, got ${JSON.stringify(data)}`);
+  return data.map((provider: unknown, index) => {
+    if (!isRecord(provider) || typeof provider.id !== 'string') {
+      throw new Error(`GET /providers[${index}]: provider has no string id: ${JSON.stringify(provider)}`);
+    }
+    return { id: provider.id };
+  });
+};
+
+// Run one wave end to end against a live server: validate the manifest, discover the
+// provider from the server, complete the login dance, drain the briefs, and return the exit
+// code. The effects it needs (reading the manifest file, discovering providers, the real
+// HTTP+clock driver) are threaded from the entry, so this orchestration stays free of
+// process/global reaches. [LAW:effects-at-boundaries]
 export const runSeed = async (
   config: WaveConfig,
+  env: NodeJS.ProcessEnv,
   read: (path: string) => Promise<string>,
 ): Promise<number> => {
   const entries = parseManifest(await read(config.manifestPath), config.manifestPath);
-  console.log(`seeding ${entries.length} briefs against ${config.base} (concurrency ${config.concurrency})`);
+  const providerId = chooseProvider(await fetchProviders(config.base), env);
+  console.log(
+    `seeding ${entries.length} briefs against ${config.base} via ${providerId} (concurrency ${config.concurrency})`,
+  );
 
   const cookie = await login(config.base);
   const driver: BriefDriver = {
@@ -363,7 +414,7 @@ export const runSeed = async (
     delay,
     now: () => Date.now(),
   };
-  const results = await runWave(entries, config.concurrency, (entry) => generateOne(entry, driver));
+  const results = await runWave(entries, config.concurrency, (entry) => generateOne(entry, providerId, driver));
   return summarize(results);
 };
 

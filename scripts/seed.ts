@@ -16,7 +16,7 @@ import { readManifest, resolveConfig, runSeed, UsageError } from './seed-wave.js
 // event loop flushes stdout first. [LAW:no-silent-failure]
 const main = async (): Promise<void> => {
   const config = resolveConfig(process.argv, process.env);
-  process.exitCode = await runSeed(config, readManifest);
+  process.exitCode = await runSeed(config, process.env, readManifest);
 };
 
 // The failure's exit code is a VALUE derived from its type, applied once — no fallthrough

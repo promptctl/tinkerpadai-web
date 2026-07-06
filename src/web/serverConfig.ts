@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_PORT, FRONT_DOOR_HOST } from './frontDoorDefaults.js';
 
 // [LAW:no-silent-failure] [LAW:types-are-the-program] Number() accepts any string and
 // silently produces NaN for non-numeric input, which cascades into listen() and callback URLs.
@@ -16,21 +17,6 @@ function parsePort(value: string | undefined, name: string, fallback: number): n
   }
   return n;
 }
-
-// The default port the dev front door listens on, and the single source of that number.
-// The seeding script's default target URL references this so `just seed` (no TINKERPAD_URL)
-// cannot drift onto a stale port if this default changes. [LAW:one-source-of-truth]
-export const DEFAULT_PORT = 8787;
-
-// The single source of the DEV front door's host. It governs the dev entry only: the callback
-// URL default derives from it, and that default fires just when TINKERPAD_OAUTH_CALLBACK_URL is
-// unset — the dev case. main.dev.ts binds and logs this same host, so the dev bind, logged URL,
-// and callback origin cannot disagree. Production sets TINKERPAD_OAUTH_CALLBACK_URL explicitly
-// (real GitHub OAuth) and binds via deploy config — it must not bind here, since localhost would
-// be unreachable. localhost, not 127.0.0.1: cookies scope to the exact hostname, so a session
-// begun on one is absent on the other — a bind/callback origin mismatch would drop the login's
-// CSRF state cookie on the callback. [LAW:one-source-of-truth]
-export const FRONT_DOOR_HOST = 'localhost';
 
 // Single source of truth for runtime config shared by main.ts and main.dev.ts.
 // [LAW:one-source-of-truth] [LAW:effects-at-boundaries]

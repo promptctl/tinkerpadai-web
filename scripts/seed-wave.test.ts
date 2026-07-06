@@ -292,17 +292,23 @@ describe('resolveConfig', () => {
 // A scripted BriefDriver: `post` returns the next queued response per path, `delay` is a
 // no-op so the poll loop runs at full speed. This is the injected world seam, so the
 // terminal enumeration is exercised with zero fetches and zero real waits.
-const scriptedDriver = (script: {
-  generations?: readonly { status: number; data: unknown }[];
-  poll?: readonly { status: number; data: unknown }[];
-  now?: () => number;
-}): BriefDriver => {
+const scriptedDriver = (
+  script: {
+    generations?: readonly { status: number; data: unknown }[];
+    poll?: readonly { status: number; data: unknown }[];
+    now?: () => number;
+  },
+  // Optional sink that records every (path, body) posted, so a test can assert the exact
+  // request shape generateOne sends, not just how it reacts to responses.
+  posted?: { path: string; body: unknown }[],
+): BriefDriver => {
   const queues: Record<string, { status: number; data: unknown }[]> = {
     '/generations': [...(script.generations ?? [{ status: 201, data: { handle: { turnId: 't1' } } }])],
     '/poll': [...(script.poll ?? [])],
   };
   return {
-    post: (path) => {
+    post: (path, body) => {
+      posted?.push({ path, body });
       const next = queues[path]?.shift();
       if (next === undefined) throw new Error(`scripted driver exhausted for ${path}`);
       return Promise.resolve(next);
@@ -324,6 +330,23 @@ describe('generateOne — terminal enumeration', () => {
       ],
     });
     await expect(generateOne(entry, 'claude-code-tmux', driver)).resolves.toEqual({ state: 'ready', playgroundId: 'pg-1' });
+  });
+
+  it('sends the chosen provider and the brief to /generations, then the returned handle to /poll', async () => {
+    const posted: { path: string; body: unknown }[] = [];
+    const driver = scriptedDriver(
+      {
+        generations: [{ status: 201, data: { handle: { turnId: 't1', sessionId: 's1' } } }],
+        poll: [{ status: 200, data: { state: 'ready', playgroundId: 'pg-1' } }],
+      },
+      posted,
+    );
+    await generateOne(entry, 'provider-x', driver);
+    expect(posted[0]).toEqual({
+      path: '/generations',
+      body: { providerId: 'provider-x', brief: { description: 'a card' } },
+    });
+    expect(posted[1]).toEqual({ path: '/poll', body: { handle: { turnId: 't1', sessionId: 's1' } } });
   });
 
   it('fails the brief when submit is not a 201-with-handle', async () => {

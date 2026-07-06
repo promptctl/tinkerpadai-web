@@ -1,5 +1,6 @@
 import type { ForkAttribution, ParentRef, PlaygroundId, PlaygroundSummary } from '../storage/index.js';
 import { escapeHtml } from './escapeHtml.js';
+import { renderPageShell, siteFooter, siteNav } from './pageShell.js';
 
 // THE APP-ORIGIN "USE" PAGES, as pure string builders. Given already-read data they return
 // html; they read no files, touch no catalog, bind no socket — the effects live in the
@@ -56,77 +57,63 @@ ${steps}
 
 // Per-surface attribution fragments: a non-fork is the empty string (a value, never a branch
 // that skips markup), a fork is the shared label inside the surface's own element. The commons
-// row carries it as a meta line; the player header as its own row. [LAW:dataflow-not-control-flow]
-const commonsForkedFrom = (forkedFrom: ForkAttribution | null): string =>
-  forkedFrom === null ? '' : `<div class="meta fork">↳ ${forkedFromLabel(forkedFrom.parent)}</div>`;
+// card carries it as its own line; the player header as its own row. [LAW:dataflow-not-control-flow]
+const cardForkedFrom = (forkedFrom: ForkAttribution | null): string =>
+  forkedFrom === null ? '' : `<div class="card-fork">↳ ${forkedFromLabel(forkedFrom.parent)}</div>`;
 const playerForkedFrom = (forkedFrom: ForkAttribution | null): string =>
   forkedFrom === null ? '' : `<p class="forked-from">↳ ${forkedFromLabel(forkedFrom.parent)}</p>`;
 
-const shell = (title: string, body: string): string =>
-  `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${escapeHtml(title)}</title>
-<style>
-  :root { color-scheme: dark; --bg:#0b0c10; --fg:#e8e8ea; --muted:#9aa0a6; --card:#16181d; --line:#272b33; --accent:#7c9cff; }
-  * { box-sizing: border-box; }
-  body { margin:0; font:16px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
-  a { color:var(--accent); }
-  .wrap { max-width:46rem; margin:0 auto; padding:2rem 1.25rem; }
-  h1 { font-size:1.4rem; margin:0 0 0.25rem; }
-  .lede { color:var(--muted); margin:0 0 1.5rem; }
-  ul { list-style:none; margin:0; padding:0; display:grid; gap:0.75rem; }
-  li { background:var(--card); border:1px solid var(--line); border-radius:0.6rem; padding:0.9rem 1rem; }
-  li a { font-weight:600; text-decoration:none; }
-  li a:hover { text-decoration:underline; }
-  .meta { color:var(--muted); font-size:0.8rem; margin-top:0.3rem; }
-  .meta.fork a { font-weight:600; }
-  .empty { color:var(--muted); }
-</style>
-</head>
-<body>
-${body}
-</body>
-</html>
-`;
+// One playground rendered as a design-system card — the reusable unit of the commons grid. It is
+// exported because the same card is what the "my playgrounds" profile page (blocked on this
+// ticket) will render, so a playground reads identically wherever it is listed; the discovery
+// filters (also blocked here) reorder these same cards, never a second shape. The card is a
+// container (not a wrapping anchor) so the fork line's link-back is a real nested link, never an
+// illegal anchor-in-anchor. Every outside value crosses the single enforcer. [LAW:one-source-of-truth]
+// [LAW:single-enforcer] [LAW:composability]
+export const playgroundCard = (s: PlaygroundSummary): string =>
+  `  <article class="card">
+    <a class="card-title" href="${playHref(s.id)}">${escapeHtml(s.prompt)}</a>
+    <div class="card-meta">${escapeHtml(s.providerId)} · ${byline(s.author)} · ${stepLabel(s.recipe)}</div>
+    ${cardForkedFrom(s.forkedFrom)}
+  </article>`;
 
-// The commons listing — the product surface. An empty catalog is a value (an empty list),
+// The commons listing — the product surface, now the design-system page: the shared site chrome
+// (nav + footer) wrapping a responsive card grid. An empty catalog is a value (an empty list),
 // rendered as an empty state, never a thrown special case. [LAW:dataflow-not-control-flow]
 export const renderCommons = (summaries: readonly PlaygroundSummary[]): string => {
-  const items = summaries
-    .map(
-      (s) =>
-        `  <li><a href="${playHref(s.id)}">${escapeHtml(s.prompt)}</a><div class="meta">${escapeHtml(
-          s.providerId,
-        )} · ${byline(s.author)} · ${stepLabel(s.recipe)}</div>${commonsForkedFrom(s.forkedFrom)}</li>`,
-    )
-    .join('\n');
-  const list =
+  const grid =
     summaries.length === 0
-      ? `<p class="empty">No playgrounds yet. <a href="/">Describe one →</a></p>`
-      : `<ul>\n${items}\n</ul>`;
-  return shell(
+      ? `<div class="empty">No playgrounds yet. <a href="/">Describe one →</a></div>`
+      : `<div class="card-grid">\n${summaries.map(playgroundCard).join('\n')}\n</div>`;
+  return renderPageShell(
     'The Commons — TinkerPad',
-    `<div class="wrap">
-  <h1>The Commons</h1>
-  <p class="lede">Every playground anyone has made. Open one to tinker. <a href="/">Make your own →</a></p>
-  ${list}
-</div>`,
+    `${siteNav()}
+<main class="container">
+  <div class="page-head">
+    <h1>The Commons</h1>
+    <p class="lede">Every playground anyone has made. Open one to tinker. <a href="/">Make your own →</a></p>
+  </div>
+  ${grid}
+</main>
+${siteFooter()}`,
   );
 };
 
-// A plain notice page — for the read path's loud-but-friendly dead ends (unknown id,
-// missing id). Both values are escaped; the page always offers a way back. [LAW:no-silent-failure]
+// A plain notice page — for the read path's loud-but-friendly dead ends (unknown id, missing id).
+// The same site chrome as the commons, so a dead end still feels like the product. Both values are
+// escaped; the page always offers a way back. [LAW:no-silent-failure]
 export const renderNotice = (heading: string, message: string): string =>
-  shell(
+  renderPageShell(
     `${heading} — TinkerPad`,
-    `<div class="wrap">
-  <h1>${escapeHtml(heading)}</h1>
-  <p class="lede">${escapeHtml(message)}</p>
+    `${siteNav()}
+<main class="container">
+  <div class="page-head">
+    <h1>${escapeHtml(heading)}</h1>
+    <p class="lede">${escapeHtml(message)}</p>
+  </div>
   <p><a href="/commons">← The Commons</a> · <a href="/">Make your own →</a></p>
-</div>`,
+</main>
+${siteFooter()}`,
   );
 
 export interface PlayerView {
@@ -376,37 +363,9 @@ const PLAYER_SCRIPT = `
 // and its CSP (contentHandler), is the whole sandbox. The src is a URL value, not html, so
 // nothing untrusted is interpolated into this trusted page. [LAW:single-enforcer]
 export const renderPlayer = (view: PlayerView): string =>
-  shell(
+  renderPageShell(
     `${view.prompt} — TinkerPad`,
-    `<style>
-  body { display:flex; flex-direction:column; height:100vh; }
-  header { padding:0.6rem 1rem; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:0.25rem 1rem; align-items:baseline; }
-  header h1 { font-size:0.95rem; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  header a { font-size:0.85rem; white-space:nowrap; }
-  header .byline { font-size:0.85rem; color:var(--muted); white-space:nowrap; }
-  .forked-from { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
-  .forked-from a { font-weight:600; }
-  .recipe { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
-  .recipe summary { cursor:pointer; }
-  .recipe ol { margin:0.4rem 0 0; padding-left:1.4rem; display:block; }
-  .recipe li { background:none; border:0; border-radius:0; padding:0.1rem 0; }
-  iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
-  footer { border-top:1px solid var(--line); padding:0.6rem 1rem; display:flex; flex-direction:column; gap:0.5rem; }
-  footer form { display:flex; gap:0.6rem; }
-  footer input { flex:1 1 auto; background:#0f1218; color:var(--fg); border:1px solid var(--line); border-radius:0.5rem; padding:0.5rem 0.7rem; font:inherit; }
-  footer button { background:var(--accent); color:#0b1020; border:0; border-radius:0.5rem; padding:0.5rem 1.1rem; font:inherit; font-weight:600; cursor:pointer; }
-  footer button:disabled { opacity:0.45; cursor:not-allowed; }
-  #remix-bar { display:flex; align-items:center; gap:0.6rem; }
-  /* Remix is a DIFFERENT kind of action from refine (branch off vs change in place), so it
-     reads as a secondary, outlined control rather than the primary accent button. */
-  #remix-submit { background:transparent; color:var(--accent); border:1px solid var(--accent); }
-  .refine-note { font-size:0.8rem; color:var(--muted); min-height:1.1em; }
-  .refine-note.bad { color:#ff8a8a; }
-  .refine-note.good { color:#7ee2a8; }
-  .spin { display:inline-block; width:0.85em; height:0.85em; vertical-align:-1px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin-right:0.4rem; }
-  @keyframes spin { to { transform:rotate(360deg); } }
-</style>
-<header>
+    `<header>
   <a href="/commons">← Commons</a>
   <h1>${escapeHtml(view.prompt)}</h1>
   <span class="byline">${byline(view.author)}</span>
@@ -431,4 +390,36 @@ export const renderPlayer = (view: PlayerView): string =>
   <div class="refine-note" id="refine-note" role="status" aria-live="polite"></div>
 </footer>
 <script type="module">${PLAYER_SCRIPT}</script>`,
+    // The player's bespoke full-height layout, passed as the page's head CSS. It now reads the
+    // SHARED design tokens (no private color set), so its chrome tracks the same light/dark system
+    // as every other page. The full player visual redesign is its own ticket (pw7.4); this ticket
+    // only moves it onto the one shell so no second token block survives. [LAW:one-source-of-truth]
+    `<style>
+  body { display:flex; flex-direction:column; height:100vh; }
+  header { padding:0.6rem 1rem; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:0.25rem 1rem; align-items:baseline; }
+  header h1 { font-size:0.95rem; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  header a { font-size:0.85rem; white-space:nowrap; }
+  header .byline { font-size:0.85rem; color:var(--muted); white-space:nowrap; }
+  .forked-from { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
+  .forked-from a { font-weight:600; }
+  .recipe { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
+  .recipe summary { cursor:pointer; }
+  .recipe ol { margin:0.4rem 0 0; padding-left:1.4rem; display:block; }
+  .recipe li { background:none; border:0; border-radius:0; padding:0.1rem 0; }
+  iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
+  footer { border-top:1px solid var(--border); padding:0.6rem 1rem; display:flex; flex-direction:column; gap:0.5rem; }
+  footer form { display:flex; gap:0.6rem; }
+  footer input { flex:1 1 auto; background:var(--input-bg); color:var(--text); border:1px solid var(--border); border-radius:0.5rem; padding:0.5rem 0.7rem; font:inherit; }
+  footer button { background:var(--accent); color:#fff; border:0; border-radius:0.5rem; padding:0.5rem 1.1rem; font:inherit; font-weight:600; cursor:pointer; }
+  footer button:disabled { opacity:0.45; cursor:not-allowed; }
+  #remix-bar { display:flex; align-items:center; gap:0.6rem; }
+  /* Remix is a DIFFERENT kind of action from refine (branch off vs change in place), so it
+     reads as a secondary, outlined control rather than the primary accent button. */
+  #remix-submit { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  .refine-note { font-size:0.8rem; color:var(--muted); min-height:1.1em; }
+  .refine-note.bad { color:var(--bad); }
+  .refine-note.good { color:var(--good); }
+  .spin { display:inline-block; width:0.85em; height:0.85em; vertical-align:-1px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin-right:0.4rem; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>`,
   );

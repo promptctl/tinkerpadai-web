@@ -106,12 +106,14 @@ const dirExists = async (dir: string): Promise<boolean> => {
   }
 };
 
-// The one closing instruction every turn's prompt ends with. The playground skill
-// tells the agent to open the finished file in a browser — correct for a human's
-// desktop, hostile when this driver runs headless turns in the background (a seeding
-// wave would pop one window per brief on whatever machine hosts the provider) — so
-// the headless contract is stated here, once, for every prompt shape.
-// [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
+// The one closing instruction every turn's prompt ends with. EVERY generation this driver
+// runs — user-triggered or seeded, new/refine/fork — executes headless in a detached tmux
+// pane, so the headless contract is universal to the driver, not specific to seeding. The
+// playground skill tells the agent to open the finished file in a browser: correct for a
+// human's desktop, but in a headless pane that `open` can only fail or (on a provider host
+// with a display) pop a spurious window — a seeding wave being the acute case, one per brief.
+// The directive suppresses only that wasted action; it never changes what the agent builds.
+// Stated here once, for every prompt shape. [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
 const PROMPT_CLOSING =
   'Write nothing else to that path. Do NOT open the file in a browser or run the open command — ' +
   'you are running headless; the platform serves the file itself. When the file is written, you are done.';

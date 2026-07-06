@@ -137,10 +137,12 @@ export const login = async (base: string): Promise<string> => {
   const whoami = await request(`${base}/session`, { headers: { cookie: session } });
   await expectStatus(whoami, 200, 'GET /session');
   const identity: unknown = await whoami.json();
-  if (!isRecord(identity) || !isRecord(identity.identity)) {
-    throw new Error(`login: session did not resolve an identity: ${JSON.stringify(identity)}`);
+  // Require the subject the log and the session depend on, not merely that identity is an
+  // object — otherwise {identity:{}} passes and logs "logged in as undefined". [LAW:no-silent-failure]
+  if (!isRecord(identity) || !isRecord(identity.identity) || typeof identity.identity.subject !== 'string') {
+    throw new Error(`login: session did not resolve an identity with a subject: ${JSON.stringify(identity)}`);
   }
-  console.log(`logged in as ${String(identity.identity.subject)}`);
+  console.log(`logged in as ${identity.identity.subject}`);
   return session;
 };
 
@@ -225,7 +227,7 @@ export const generateOne = async (
     if (polled.status !== 200 || !isRecord(polled.data) || typeof polled.data.state !== 'string') {
       return { state: 'failed', error: `poll: HTTP ${polled.status}: ${JSON.stringify(polled.data)}` };
     }
-    if (polled.data.state === 'ready' && typeof polled.data.playgroundId === 'string') {
+    if (polled.data.state === 'ready' && typeof polled.data.playgroundId === 'string' && polled.data.playgroundId !== '') {
       return { state: 'ready', playgroundId: polled.data.playgroundId };
     }
     if (polled.data.state === 'failed') {

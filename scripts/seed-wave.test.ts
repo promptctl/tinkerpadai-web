@@ -164,6 +164,11 @@ describe('login', () => {
     await expect(login('http://test.local')).rejects.toThrow(/did not resolve an identity/);
   });
 
+  it('fails loudly when the identity carries no subject rather than logging "undefined"', async () => {
+    stubLoginFetch({ start: okStart, whoami: () => withCookies(200, [], { body: { identity: {} } }) });
+    await expect(login('http://test.local')).rejects.toThrow(/did not resolve an identity with a subject/);
+  });
+
   it('fails loudly when a step returns the wrong status', async () => {
     stubLoginFetch({ start: () => withCookies(500, []) });
     await expect(login('http://test.local')).rejects.toThrow(/expected HTTP 302, got 500/);
@@ -298,6 +303,13 @@ describe('generateOne — terminal enumeration', () => {
 
   it('fails loudly on a ready without a playgroundId rather than spinning forever', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'ready' } }] });
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    expect(outcome.state).toBe('failed');
+    expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);
+  });
+
+  it('rejects a ready with an empty-string playgroundId rather than reporting a hollow success', async () => {
+    const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'ready', playgroundId: '' } }] });
     const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);

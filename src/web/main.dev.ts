@@ -39,7 +39,7 @@ const pageUrl = new URL('./index.html', import.meta.url);
 const DEV_GENERATION_TIMEOUT_MS = 10 * 60 * 1000;
 
 const main = async (): Promise<void> => {
-  const { dataDir, port, contentPort, oauthCallbackUrl } = resolveServerConfig(import.meta.url);
+  const { dataDir, port, contentPort, oauthCallbackUrl, frontDoorHost } = resolveServerConfig(import.meta.url);
 
   const app = makeApp({
     dataDir,
@@ -61,7 +61,11 @@ const main = async (): Promise<void> => {
     sessionHandler: app.sessionHandler,
     apiHandler: app.handler,
   });
-  const { url } = await serve({ handler, port });
+  // Bind and report the front door on FRONT_DOOR_HOST — the same origin the OAuth callback
+  // is scoped to — so the logged URL a developer opens carries the CSRF state cookie through
+  // to the callback. The content origin stays on its own host for sandbox isolation.
+  // [LAW:one-source-of-truth]
+  const { url } = await serve({ handler, port, host: frontDoorHost });
 
   startWorkdirJanitor();
 

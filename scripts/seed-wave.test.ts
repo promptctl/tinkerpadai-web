@@ -4,6 +4,7 @@ import {
   cookiePair,
   generateOne,
   login,
+  mapWithConcurrency,
   parseManifest,
   resolveConfig,
   runWave,
@@ -233,6 +234,10 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig(argv(), {})).toThrow(UsageError);
   });
 
+  it('treats an empty-string manifest path as missing', () => {
+    expect(() => resolveConfig(argv(''), {})).toThrow(UsageError);
+  });
+
   it('defaults the base URL to localhost', () => {
     expect(resolveConfig(argv('m.json'), {}).base).toBe('http://localhost:8787');
   });
@@ -342,6 +347,38 @@ describe('generateOne — terminal enumeration', () => {
     const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/never reported a terminal state/);
+  });
+});
+
+describe('mapWithConcurrency', () => {
+  it('returns results in input order regardless of completion order', async () => {
+    // Later items resolve sooner, so completion order is reversed from input order.
+    const items = [0, 1, 2, 3, 4];
+    const results = await mapWithConcurrency(items, 3, async (n) => {
+      await new Promise((resolve) => setTimeout(resolve, (items.length - n) * 2));
+      return n * 10;
+    });
+    expect(results).toEqual([0, 10, 20, 30, 40]);
+  });
+
+  it('caps in-flight work at the concurrency limit', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    await mapWithConcurrency(Array.from({ length: 12 }, (_, i) => i), 4, async (n) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await Promise.resolve();
+      await Promise.resolve();
+      inFlight -= 1;
+      return n;
+    });
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it('propagates a rejection — containment is the caller\'s job, not the primitive\'s', async () => {
+    await expect(
+      mapWithConcurrency([1, 2, 3], 2, (n) => (n === 2 ? Promise.reject(new Error('boom')) : Promise.resolve(n))),
+    ).rejects.toThrow('boom');
   });
 });
 

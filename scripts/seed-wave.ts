@@ -139,6 +139,11 @@ const request = (url: string, init: Omit<RequestInit, 'signal'>): Promise<Respon
 // and redirects to the provider (the loopback provider redirects straight back), and
 // the callback verifies state and mints the session cookie. The same round-trip as
 // production, so seeding exercises the real write gate. [FRAMING:representation]
+// One session is minted here and shared across the whole wave; this assumes the server's
+// session lifetime exceeds the wave's duration (the dev TTL is 6h, far beyond even a
+// hundred-brief wave). If a session ever did expire mid-wave, each remaining brief fails
+// loudly on its 401 rather than silently — the wave is never left in a false-success state.
+// [LAW:no-silent-failure]
 export const login = async (base: string): Promise<string> => {
   const start = await request(`${base}/session/login`, { redirect: 'manual' });
   await expectStatus(start, 302, 'GET /session/login');
@@ -269,7 +274,10 @@ export const runWave = async (
   concurrency: number,
   generate: (entry: BriefEntry) => Promise<Outcome>,
 ): Promise<readonly BriefResult[]> => {
-  const results: BriefResult[] = new Array<BriefResult>(entries.length);
+  // Workers push into this dense array (append-only, never sparse), so its BriefResult type
+  // never lies about an intermediate hole; the manifest order is restored by the index sort at
+  // the end. [LAW:types-are-the-program]
+  const collected: { readonly index: number; readonly result: BriefResult }[] = [];
   // One iterator shared by all workers: each worker's for-of pulls the next [index, entry]
   // via a synchronous .next(), so the lock-free draining holds and `entry` is typed
   // BriefEntry — no `entries[index]` that could be undefined, hence no guard skipping an
@@ -291,7 +299,7 @@ export const runWave = async (
           error: `transport: ${error instanceof Error ? error.message : String(error)}`,
         }),
       );
-      results[index] = { entry, outcome };
+      collected.push({ index, result: { entry, outcome } });
       console.log(
         outcome.state === 'ready'
           ? `[${index + 1}/${entries.length}] ready: ${outcome.playgroundId} (${entry.type})`
@@ -300,7 +308,7 @@ export const runWave = async (
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, worker));
-  return results;
+  return collected.sort((a, b) => a.index - b.index).map((entry) => entry.result);
 };
 
 // The wave's summary and exit code: 0 iff every brief became a playground. Pure over the
@@ -355,12 +363,19 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
     throw new UsageError(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
   }
-  // Foreign input normalized once where it crosses the boundary: a trailing slash would
-  // smear '//' into every concatenated path downstream. Both the host and port of the default
-  // target derive from the server's own constants (FRONT_DOOR_HOST, DEFAULT_PORT), so the
-  // seeder's default origin tracks the front door rather than drifting. [LAW:single-enforcer]
-  // [LAW:one-source-of-truth]
-  const base = (env.TINKERPAD_URL ?? `http://${FRONT_DOOR_HOST}:${DEFAULT_PORT}`).replace(/\/+$/, '');
+  // Foreign input canonicalized once where it crosses the boundary: the base must be an
+  // ORIGIN (scheme://host:port), since every route below is concatenated onto it root-relative
+  // (`${base}/session/login`). new URL(..).origin drops any path and trailing slashes and
+  // throws on a malformed URL — so junk fails loudly here rather than silently routing to the
+  // wrong endpoint. The default's host and port derive from the server's own constants so the
+  // seeder's default origin tracks the front door. [LAW:single-enforcer] [LAW:no-silent-failure]
+  const rawUrl = env.TINKERPAD_URL ?? `http://${FRONT_DOOR_HOST}:${DEFAULT_PORT}`;
+  let base: string;
+  try {
+    base = new URL(rawUrl).origin;
+  } catch {
+    throw new UsageError(`TINKERPAD_URL is not a valid URL: ${rawUrl}`);
+  }
   return { manifestPath, concurrency, base };
 };
 

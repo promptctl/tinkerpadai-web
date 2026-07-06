@@ -241,6 +241,15 @@ describe('resolveConfig', () => {
     const config = resolveConfig(argv('m.json'), { TINKERPAD_URL: 'http://example.com/' });
     expect(config.base).toBe('http://example.com');
   });
+
+  it('reduces a base URL with a path to its origin, so routes stay root-relative', () => {
+    const config = resolveConfig(argv('m.json'), { TINKERPAD_URL: 'http://example.com:9000/path//' });
+    expect(config.base).toBe('http://example.com:9000');
+  });
+
+  it('fails loudly on a malformed base URL rather than routing silently', () => {
+    expect(() => resolveConfig(argv('m.json'), { TINKERPAD_URL: 'not a url' })).toThrow(UsageError);
+  });
 });
 
 // A scripted BriefDriver: `post` returns the next queued response per path, `delay` is a

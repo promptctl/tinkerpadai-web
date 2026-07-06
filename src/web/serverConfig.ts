@@ -22,11 +22,14 @@ function parsePort(value: string | undefined, name: string, fallback: number): n
 // cannot drift onto a stale port if this default changes. [LAW:one-source-of-truth]
 export const DEFAULT_PORT = 8787;
 
-// The single source of the dev front door's host. The bind (main.dev.ts), the URL logged to
-// the developer, and the OAuth callback origin all derive from this one value, so they cannot
-// disagree. localhost, not 127.0.0.1: cookies scope to the exact hostname, so a session that
-// began on one is absent on the other — if the bound/logged origin and the callback origin
-// differed, the login's CSRF state cookie would vanish on the callback. [LAW:one-source-of-truth]
+// The single source of the DEV front door's host. It governs the dev entry only: the callback
+// URL default derives from it, and that default fires just when TINKERPAD_OAUTH_CALLBACK_URL is
+// unset — the dev case. main.dev.ts binds and logs this same host, so the dev bind, logged URL,
+// and callback origin cannot disagree. Production sets TINKERPAD_OAUTH_CALLBACK_URL explicitly
+// (real GitHub OAuth) and binds via deploy config — it must not bind here, since localhost would
+// be unreachable. localhost, not 127.0.0.1: cookies scope to the exact hostname, so a session
+// begun on one is absent on the other — a bind/callback origin mismatch would drop the login's
+// CSRF state cookie on the callback. [LAW:one-source-of-truth]
 export const FRONT_DOOR_HOST = 'localhost';
 
 // Single source of truth for runtime config shared by main.ts and main.dev.ts.

@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { DEFAULT_PORT } from '../src/web/serverConfig.js';
+import { DEFAULT_PORT, FRONT_DOOR_HOST } from '../src/web/serverConfig.js';
 
 // THE SEEDING DRIVER CORE: turn a briefs manifest into commons playgrounds by driving
 // the real public write path — loopback login, POST /generations, POST /poll — exactly
@@ -356,10 +356,11 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
     throw new UsageError(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
   }
   // Foreign input normalized once where it crosses the boundary: a trailing slash would
-  // smear '//' into every concatenated path downstream. The default targets the dev front
-  // door's port through the shared DEFAULT_PORT constant, so it tracks the server's default
-  // rather than drifting. [LAW:single-enforcer] [LAW:one-source-of-truth]
-  const base = (env.TINKERPAD_URL ?? `http://localhost:${DEFAULT_PORT}`).replace(/\/+$/, '');
+  // smear '//' into every concatenated path downstream. Both the host and port of the default
+  // target derive from the server's own constants (FRONT_DOOR_HOST, DEFAULT_PORT), so the
+  // seeder's default origin tracks the front door rather than drifting. [LAW:single-enforcer]
+  // [LAW:one-source-of-truth]
+  const base = (env.TINKERPAD_URL ?? `http://${FRONT_DOOR_HOST}:${DEFAULT_PORT}`).replace(/\/+$/, '');
   return { manifestPath, concurrency, base };
 };
 

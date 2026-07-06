@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PlaygroundId } from '../storage/index.js';
-import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
+import { playgroundCard, renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 
 // The pure renderers' contract: trusted app-origin chrome with EVERY outside value escaped,
 // while the playground's own html stays elsewhere (the content origin). The hostile-prompt
@@ -74,6 +74,38 @@ describe('renderCommons', () => {
   it('shows the iteration step count, pluralized, on the row', () => {
     expect(renderCommons([summary({ recipe: ['describe'] })])).toContain('1 step');
     expect(renderCommons([summary({ recipe: ['describe', 'refine', 'again'] })])).toContain('3 steps');
+  });
+
+  // The commons is now the design-system page: the site chrome wraps it so a viewer can navigate
+  // away (build, discover), and the theme system rides along so the page honors dark mode.
+  it('wraps the list in the shared site chrome with a way to build and browse', () => {
+    const html = renderCommons([summary()]);
+    expect(html).toContain('nav-logo');
+    expect(html).toContain('site-footer');
+    expect(html).toContain('id="themeToggle"');
+  });
+
+  it('links each playground to its player from the card', () => {
+    expect(renderCommons([summary({ id: PlaygroundId('xyz') })])).toContain(
+      `/play?id=${encodeURIComponent('xyz')}`,
+    );
+  });
+});
+
+// The card is exported because the profile "my playgrounds" page (blocked on this ticket) renders
+// the SAME unit, so a playground reads identically wherever it is listed. Its safety contract
+// travels with it: every outside value is escaped. [LAW:one-source-of-truth] [LAW:single-enforcer]
+describe('playgroundCard', () => {
+  it('renders the prompt as a link to its player', () => {
+    const html = playgroundCard(summary({ id: PlaygroundId('xyz'), prompt: 'a tiny counter' }));
+    expect(html).toContain('a tiny counter');
+    expect(html).toContain(`/play?id=${encodeURIComponent('xyz')}`);
+  });
+
+  it('escapes a hostile prompt into inert text', () => {
+    const html = playgroundCard(summary({ prompt: XSS }));
+    expect(html).not.toContain(XSS);
+    expect(html).toContain('&lt;script&gt;');
   });
 });
 

@@ -343,8 +343,17 @@ describe('generateOne — terminal enumeration', () => {
     const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     const error = (outcome as Extract<Outcome, { state: 'failed' }>).error;
-    expect(error).toMatch(/no error message/);
+    expect(error).toMatch(/non-string error/);
     expect(error).not.toBe('undefined');
+  });
+
+  it('emits the payload when a failed state carries an object error rather than "[object Object]"', async () => {
+    const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'failed', error: { code: 42 } } }] });
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    expect(outcome.state).toBe('failed');
+    const error = (outcome as Extract<Outcome, { state: 'failed' }>).error;
+    expect(error).toMatch(/non-string error/);
+    expect(error).not.toContain('[object Object]');
   });
 
   it('fails loudly on a ready without a playgroundId rather than spinning forever', async () => {

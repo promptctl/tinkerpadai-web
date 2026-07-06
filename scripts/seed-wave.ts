@@ -245,13 +245,13 @@ export const generateOne = async (
       return { state: 'ready', playgroundId: polled.data.playgroundId };
     }
     if (polled.data.state === 'failed') {
-      // A failed poll SHOULD carry an error message; if the server omits it, say so
-      // rather than stringify undefined into the literal "undefined", which a reader
-      // cannot tell from a real message. [LAW:no-silent-failure]
+      // A failed poll SHOULD carry a string error message; if it is missing or not a string,
+      // emit the whole payload rather than stringify it into "undefined"/"[object Object]",
+      // which a reader cannot tell from a real message. One check covers both. [LAW:no-silent-failure]
       const message =
-        polled.data.error === undefined
-          ? `(server reported failed with no error message: ${JSON.stringify(polled.data)})`
-          : String(polled.data.error);
+        typeof polled.data.error === 'string'
+          ? polled.data.error
+          : `(server reported failed with a non-string error: ${JSON.stringify(polled.data)})`;
       return { state: 'failed', error: message };
     }
     // The known non-terminal states are the ONLY continue path; anything else — a

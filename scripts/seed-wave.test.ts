@@ -176,6 +176,10 @@ describe('resolveConfig', () => {
     expect(resolveConfig(argv('m.json'), {}).concurrency).toBe(3);
   });
 
+  it('defaults concurrency to 3 for an empty string, independent of how just passes the token', () => {
+    expect(resolveConfig(argv('m.json', ''), {}).concurrency).toBe(3);
+  });
+
   it('parses an explicit concurrency', () => {
     expect(resolveConfig(argv('m.json', '7'), {}).concurrency).toBe(7);
   });

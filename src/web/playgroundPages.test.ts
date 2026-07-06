@@ -160,12 +160,15 @@ describe('renderPlayer', () => {
   };
 
   // A shared player link is a first impression, so its meta description names THIS playground —
-  // and the prompt is outside data, so it crosses the single enforcer on the way in.
+  // and the prompt is outside data, so it crosses the single enforcer on the way in. The
+  // assertions target the meta tag's own content, not the whole page, so the escaping is verified
+  // where it is claimed (the fixture also carries XSS in the recipe and h1). [LAW:behavior-not-structure]
+  const metaDescription = (html: string): string =>
+    /<meta name="description" content="([^"]*)"/.exec(html)?.[1] ?? '';
+
   it('describes the specific playground in an escaped meta description', () => {
-    const html = renderPlayer({ ...view, prompt: 'a tiny counter' });
-    expect(html).toContain('<meta name="description"');
-    expect(html).toContain('a tiny counter');
-    const hostile = renderPlayer(view);
+    expect(metaDescription(renderPlayer({ ...view, prompt: 'a tiny counter' }))).toContain('a tiny counter');
+    const hostile = metaDescription(renderPlayer(view));
     expect(hostile).not.toContain(XSS);
     expect(hostile).toContain('&lt;script&gt;');
   });

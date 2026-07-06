@@ -159,6 +159,17 @@ describe('renderPlayer', () => {
     recipe: [XSS] as const,
   };
 
+  // A shared player link is a first impression, so its meta description names THIS playground —
+  // and the prompt is outside data, so it crosses the single enforcer on the way in.
+  it('describes the specific playground in an escaped meta description', () => {
+    const html = renderPlayer({ ...view, prompt: 'a tiny counter' });
+    expect(html).toContain('<meta name="description"');
+    expect(html).toContain('a tiny counter');
+    const hostile = renderPlayer(view);
+    expect(hostile).not.toContain(XSS);
+    expect(hostile).toContain('&lt;script&gt;');
+  });
+
   it('escapes the prompt in its chrome but keeps the content src intact', () => {
     const html = renderPlayer(view);
     expect(html).not.toContain(XSS);
@@ -248,5 +259,11 @@ describe('renderNotice', () => {
     const html = renderNotice(XSS, XSS);
     expect(html).not.toContain(XSS);
     expect(html).toContain('href="/commons"');
+  });
+
+  // The notice's message is also its page summary — it rides into the meta description, escaped.
+  it('carries the message as the page meta description', () => {
+    const html = renderNotice('Playground not found', 'No playground has that id.');
+    expect(html).toContain('<meta name="description" content="No playground has that id." />');
   });
 });

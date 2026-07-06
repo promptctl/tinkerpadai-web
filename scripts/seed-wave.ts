@@ -265,51 +265,57 @@ export const generateOne = async (
   }
 };
 
-// A fixed pool of workers draining one shared queue, each applying `generate` to the
-// brief it picks up. Concurrency is a value and the generate step is a parameter, so this
-// owns exactly one thing — the draining — asking nothing about how a brief becomes an
-// outcome. [LAW:composability] [LAW:dataflow-not-control-flow]
-export const runWave = async (
+// The reusable concurrency primitive: apply `fn` to every item with at most `concurrency`
+// in flight, returning the results in INPUT order. One iterator is shared by all workers, so
+// each for-of pulls the next [index, item] via a synchronous .next() — lock-free draining, and
+// `item` is typed T, never a possibly-undefined indexed access. Results are pushed into a dense
+// (append-only, never sparse) array and reordered by index at the end, so the R[] type never
+// describes a hole. It knows nothing about what fn does; if fn rejects, that rejection
+// propagates (the caller owns any per-item containment). [LAW:composability] [LAW:decomposition]
+// [LAW:types-are-the-program]
+export const mapWithConcurrency = async <T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<readonly R[]> => {
+  const collected: { readonly index: number; readonly result: R }[] = [];
+  const queue = items.entries();
+  const worker = async (): Promise<void> => {
+    for (const [index, item] of queue) {
+      collected.push({ index, result: await fn(item, index) });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return collected.sort((a, b) => a.index - b.index).map((entry) => entry.result);
+};
+
+// Drain a wave's briefs through mapWithConcurrency, supplying the brief-specific mapper:
+// progress logging and the containment seam. That .catch is the one place ANY escape from a
+// brief's generate path — a fetch rejection, a non-JSON proxy body, a parse throw — becomes
+// THAT brief's failed outcome, so one bad response can never reject the pool and discard the
+// wave's ledger. It lives here (the caller), not in the generic primitive, and not in generate.
+// Wave-level preconditions (manifest, login) sit outside and still fail the wave loudly.
+// [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:dataflow-not-control-flow]
+export const runWave = (
   entries: readonly BriefEntry[],
   concurrency: number,
   generate: (entry: BriefEntry) => Promise<Outcome>,
-): Promise<readonly BriefResult[]> => {
-  // Workers push into this dense array (append-only, never sparse), so its BriefResult type
-  // never lies about an intermediate hole; the manifest order is restored by the index sort at
-  // the end. [LAW:types-are-the-program]
-  const collected: { readonly index: number; readonly result: BriefResult }[] = [];
-  // One iterator shared by all workers: each worker's for-of pulls the next [index, entry]
-  // via a synchronous .next(), so the lock-free draining holds and `entry` is typed
-  // BriefEntry — no `entries[index]` that could be undefined, hence no guard skipping an
-  // impossible case. [LAW:no-defensive-null-guards] [LAW:dataflow-not-control-flow]
-  const queue = entries.entries();
-  const worker = async (): Promise<void> => {
-    for (const [index, entry] of queue) {
-      console.log(`[${index + 1}/${entries.length}] generating (${entry.type}): ${entry.description.slice(0, 80)}...`);
-      // The one containment seam for a brief: ANY escape from its generate path — a
-      // fetch rejection, a non-JSON body from a proxy, a parse throw — becomes THAT
-      // brief's failed outcome, so one bad response can never reject the workers'
-      // Promise.all and discard the whole wave's ledger. This protects the pool, so it
-      // lives here rather than inside generate. Wave-level preconditions (manifest,
-      // login) sit outside the workers and still fail the wave loudly.
-      // [LAW:single-enforcer] [LAW:no-silent-failure]
-      const outcome = await generate(entry).catch(
-        (error: unknown): Outcome => ({
-          state: 'failed',
-          error: `transport: ${error instanceof Error ? error.message : String(error)}`,
-        }),
-      );
-      collected.push({ index, result: { entry, outcome } });
-      console.log(
-        outcome.state === 'ready'
-          ? `[${index + 1}/${entries.length}] ready: ${outcome.playgroundId} (${entry.type})`
-          : `[${index + 1}/${entries.length}] FAILED (${entry.type}): ${outcome.error}`,
-      );
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, worker));
-  return collected.sort((a, b) => a.index - b.index).map((entry) => entry.result);
-};
+): Promise<readonly BriefResult[]> =>
+  mapWithConcurrency(entries, concurrency, async (entry, index): Promise<BriefResult> => {
+    console.log(`[${index + 1}/${entries.length}] generating (${entry.type}): ${entry.description.slice(0, 80)}...`);
+    const outcome = await generate(entry).catch(
+      (error: unknown): Outcome => ({
+        state: 'failed',
+        error: `transport: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+    );
+    console.log(
+      outcome.state === 'ready'
+        ? `[${index + 1}/${entries.length}] ready: ${outcome.playgroundId} (${entry.type})`
+        : `[${index + 1}/${entries.length}] FAILED (${entry.type}): ${outcome.error}`,
+    );
+    return { entry, outcome };
+  });
 
 // The wave's summary and exit code: 0 iff every brief became a playground. Pure over the
 // results — it prints the per-type tally and each failure, and returns the code the entry
@@ -347,8 +353,10 @@ export class UsageError extends Error {}
 // contract (concurrency default and validation, base URL normalization) is verified
 // without a process. [LAW:effects-at-boundaries]
 export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): WaveConfig => {
+  // Absent OR empty is a missing manifest path — an empty string would otherwise slip into
+  // readFile('') as an opaque failure instead of the usage message. [LAW:no-silent-failure]
   const manifestPath = argv[2];
-  if (manifestPath === undefined) {
+  if (manifestPath === undefined || manifestPath === '') {
     throw new UsageError('usage: tsx scripts/seed.ts <briefs-manifest.json> [concurrency]');
   }
   // Concurrency unspecified — absent, or the empty string — uses the default; the fallback

@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   chooseProvider,
   cookiePair,
+  fetchProviders,
   generateOne,
   login,
   mapWithConcurrency,
   parseManifest,
   resolveConfig,
+  runSeed,
   runWave,
   summarize,
   UsageError,
@@ -173,6 +175,36 @@ describe('login', () => {
   it('fails loudly when a step returns the wrong status', async () => {
     stubLoginFetch({ start: () => withCookies(500, []) });
     await expect(login('http://test.local')).rejects.toThrow(/expected HTTP 302, got 500/);
+  });
+});
+
+describe('fetchProviders', () => {
+  const stubProviders = (make: () => Response): void => {
+    vi.stubGlobal('fetch', (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/providers')) return Promise.resolve(make());
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+  };
+
+  it('parses the provider list down to ids', async () => {
+    stubProviders(() => new Response(JSON.stringify([{ id: 'p1', label: 'P1' }, { id: 'p2' }]), { status: 200 }));
+    await expect(fetchProviders('http://test.local')).resolves.toEqual([{ id: 'p1' }, { id: 'p2' }]);
+  });
+
+  it('rejects a non-array body', async () => {
+    stubProviders(() => new Response(JSON.stringify({ not: 'an array' }), { status: 200 }));
+    await expect(fetchProviders('http://test.local')).rejects.toThrow(/expected a JSON array/);
+  });
+
+  it('rejects an element without a string id', async () => {
+    stubProviders(() => new Response(JSON.stringify([{ label: 'no id here' }]), { status: 200 }));
+    await expect(fetchProviders('http://test.local')).rejects.toThrow(/no string id/);
+  });
+
+  it('fails loudly on a non-200', async () => {
+    stubProviders(() => new Response('service unavailable', { status: 503 }));
+    await expect(fetchProviders('http://test.local')).rejects.toThrow(/expected HTTP 200, got 503/);
   });
 });
 
@@ -456,5 +488,50 @@ describe('summarize — exit code contract', () => {
 
   it('returns 1 when any brief failed', () => {
     expect(summarize([ok('design'), bad('code-map')])).toBe(1);
+  });
+});
+
+describe('runSeed — the on-ramp wiring', () => {
+  // Stub the whole HTTP surface a wave touches, so runSeed's composition
+  // (parseManifest -> fetchProviders -> chooseProvider -> login -> runWave -> summarize) is
+  // exercised end to end without a server. A wiring regression fails here.
+  const stubWave = (): void => {
+    vi.stubGlobal('fetch', (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/providers')) return Promise.resolve(new Response(JSON.stringify([{ id: 'p1' }]), { status: 200 }));
+      if (url.endsWith('/session/login')) {
+        return Promise.resolve(withCookies(302, ['tp_oauth_state=nonce'], { location: 'http://test.local/session/callback?code=c&state=nonce' }));
+      }
+      if (url.includes('/session/callback')) return Promise.resolve(withCookies(302, ['tp_session=sess'], { location: '/' }));
+      if (url.endsWith('/session')) return Promise.resolve(withCookies(200, [], { body: { identity: { subject: 'dev' } } }));
+      if (url.endsWith('/generations')) return Promise.resolve(new Response(JSON.stringify({ handle: { turnId: 't1' } }), { status: 201 }));
+      if (url.endsWith('/poll')) return Promise.resolve(new Response(JSON.stringify({ state: 'ready', playgroundId: 'pg1' }), { status: 200 }));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+  };
+
+  it('drives a manifest through the full loop to exit code 0', async () => {
+    stubWave();
+    const config = { manifestPath: 'm.json', concurrency: 1, base: 'http://test.local' };
+    const read = (): Promise<string> => Promise.resolve(JSON.stringify([{ type: 'design', description: 'a card' }]));
+    await expect(runSeed(config, {}, read)).resolves.toBe(0);
+  });
+
+  it('returns exit code 1 when a brief fails in the loop', async () => {
+    vi.stubGlobal('fetch', (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/providers')) return Promise.resolve(new Response(JSON.stringify([{ id: 'p1' }]), { status: 200 }));
+      if (url.endsWith('/session/login')) {
+        return Promise.resolve(withCookies(302, ['tp_oauth_state=nonce'], { location: 'http://test.local/session/callback?code=c&state=nonce' }));
+      }
+      if (url.includes('/session/callback')) return Promise.resolve(withCookies(302, ['tp_session=sess'], { location: '/' }));
+      if (url.endsWith('/session')) return Promise.resolve(withCookies(200, [], { body: { identity: { subject: 'dev' } } }));
+      if (url.endsWith('/generations')) return Promise.resolve(new Response(JSON.stringify({ handle: { turnId: 't1' } }), { status: 201 }));
+      if (url.endsWith('/poll')) return Promise.resolve(new Response(JSON.stringify({ state: 'failed', error: 'generation timed out' }), { status: 200 }));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const config = { manifestPath: 'm.json', concurrency: 1, base: 'http://test.local' };
+    const read = (): Promise<string> => Promise.resolve(JSON.stringify([{ type: 'design', description: 'a card' }]));
+    await expect(runSeed(config, {}, read)).resolves.toBe(1);
   });
 });

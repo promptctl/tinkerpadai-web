@@ -259,6 +259,15 @@ describe('generateOne — terminal enumeration', () => {
     await expect(generateOne(entry, driver)).resolves.toEqual({ state: 'failed', error: 'timed out' });
   });
 
+  it('says so when a failed state carries no error message rather than reporting "undefined"', async () => {
+    const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'failed' } }] });
+    const outcome = await generateOne(entry, driver);
+    expect(outcome.state).toBe('failed');
+    const error = (outcome as Extract<Outcome, { state: 'failed' }>).error;
+    expect(error).toMatch(/no error message/);
+    expect(error).not.toBe('undefined');
+  });
+
   it('fails loudly on a ready without a playgroundId rather than spinning forever', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'ready' } }] });
     const outcome = await generateOne(entry, driver);

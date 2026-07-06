@@ -219,7 +219,14 @@ export const generateOne = async (entry: BriefEntry, driver: BriefDriver): Promi
       return { state: 'ready', playgroundId: polled.data.playgroundId };
     }
     if (polled.data.state === 'failed') {
-      return { state: 'failed', error: String(polled.data.error) };
+      // A failed poll SHOULD carry an error message; if the server omits it, say so
+      // rather than stringify undefined into the literal "undefined", which a reader
+      // cannot tell from a real message. [LAW:no-silent-failure]
+      const message =
+        polled.data.error === undefined
+          ? `(server reported failed with no error message: ${JSON.stringify(polled.data)})`
+          : String(polled.data.error);
+      return { state: 'failed', error: message };
     }
     // The known non-terminal states are the ONLY continue path; anything else — a
     // 'ready' missing its playgroundId, a state this client does not know — is a

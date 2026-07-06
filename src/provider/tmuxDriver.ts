@@ -113,7 +113,7 @@ const dirExists = async (dir: string): Promise<boolean> => {
 // the headless contract is stated here, once, for every prompt shape.
 // [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
 const PROMPT_CLOSING =
-  'Write nothing else to that path. Do NOT open the file in a browser or run `open` — ' +
+  'Write nothing else to that path. Do NOT open the file in a browser or run the open command — ' +
   'you are running headless; the platform serves the file itself. When the file is written, you are done.';
 
 // The instruction handed to Claude Code. The brief reaches the agent only via this

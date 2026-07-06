@@ -376,7 +376,7 @@ const PLAYER_SCRIPT = `
 export const renderPlayer = (view: PlayerView): string =>
   renderPageShell(
     `${view.prompt} — TinkerPad`,
-    `Tinker with "${view.prompt}" on TinkerPad — adjust the controls, copy the prompt, and remix it into your own playground.`,
+    `${view.prompt} — a TinkerPad playground you can tinker with: adjust the controls, copy the prompt, and remix it into your own.`,
     `${siteNav()}
 <header class="player-head">
   <div class="player-head-main">

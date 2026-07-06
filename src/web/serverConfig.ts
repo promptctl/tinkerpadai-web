@@ -18,9 +18,20 @@ function parsePort(value: string | undefined, name: string, fallback: number): n
   return n;
 }
 
+// The resolved runtime config the entries consume. Declared explicitly so the shape is a stated
+// contract — a field added or removed is a deliberate, visible edit, not a silent inference
+// change. [LAW:types-are-the-program]
+export interface ServerConfig {
+  readonly dataDir: string;
+  readonly port: number;
+  readonly contentPort: number;
+  readonly oauthCallbackUrl: string;
+  readonly frontDoorHost: string;
+}
+
 // Single source of truth for runtime config shared by main.ts and main.dev.ts.
 // [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
-export function resolveServerConfig(importMetaUrl: string) {
+export function resolveServerConfig(importMetaUrl: string): ServerConfig {
   const dataDir =
     process.env.TINKERPAD_DATA_DIR ??
     fileURLToPath(new URL('../../.tinkerpad-data', importMetaUrl));

@@ -50,8 +50,10 @@ export interface BriefResult {
   readonly outcome: Outcome;
 }
 
+// A non-array object. Arrays are excluded so the Record<string, unknown> narrowing is honest —
+// every callsite means "a JSON object", never an array. [LAW:types-are-the-program]
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
+  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isPlaygroundType = (value: unknown): value is PlaygroundType =>
   typeof value === 'string' && (PLAYGROUND_TYPES as readonly string[]).includes(value);

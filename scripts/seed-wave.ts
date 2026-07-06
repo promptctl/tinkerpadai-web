@@ -183,7 +183,18 @@ const runWave = async (
       const entry = entries[index];
       if (entry === undefined) return;
       console.log(`[${index + 1}/${entries.length}] generating (${entry.type}): ${entry.description.slice(0, 80)}...`);
-      const outcome = await generateOne(base, cookie, entry);
+      // The one containment seam for a brief: ANY escape from its submit/poll path — a
+      // fetch rejection, a non-JSON body from a proxy, a parse throw — becomes THAT
+      // brief's failed outcome, so one bad response can never reject the workers'
+      // Promise.all and discard the whole wave's ledger. Wave-level preconditions
+      // (manifest, login) sit outside the workers and still fail the wave loudly.
+      // [LAW:single-enforcer] [LAW:no-silent-failure]
+      const outcome = await generateOne(base, cookie, entry).catch(
+        (error: unknown): Outcome => ({
+          state: 'failed',
+          error: `transport: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+      );
       results[index] = { entry, outcome };
       console.log(
         outcome.state === 'ready'

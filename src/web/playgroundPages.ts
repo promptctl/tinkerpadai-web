@@ -356,19 +356,30 @@ const PLAYER_SCRIPT = `
   })();
 `;
 
-// The player: trusted chrome (title from the original describe, a way back) wrapping ONE
-// sandboxed iframe. The iframe is `allow-scripts` and DELIBERATELY NOT `allow-same-origin`,
-// so the framed document gets a unique opaque origin with no access to the app's origin,
-// cookies, storage, or DOM — and no top-navigation. That, plus the foreign content origin
-// and its CSP (contentHandler), is the whole sandbox. The src is a URL value, not html, so
-// nothing untrusted is interpolated into this trusted page. [LAW:single-enforcer]
+// The player: trusted chrome wrapping ONE sandboxed iframe. The iframe is `allow-scripts` and
+// DELIBERATELY NOT `allow-same-origin`, so the framed document gets a unique opaque origin with no
+// access to the app's origin, cookies, storage, or DOM — and no top-navigation. That, plus the
+// foreign content origin and its CSP (contentHandler), is the whole sandbox. The src is a URL
+// value, not html, so nothing untrusted is interpolated into this trusted page. [LAW:single-enforcer]
+//
+// DESIGN STANCE (the player is an IMMERSIVE ARTIFACT VIEWER): the sandboxed playground is the star
+// and fills the viewport, so the chrome around it is deliberately asymmetric with the content
+// pages. It ADOPTS the shared siteNav — the one slim top bar that fits a full-height layout and,
+// with it, the theme toggle the player would otherwise lack (the shared toggle script binds a
+// #themeToggle, which only siteNav provides). Its "Discover" link is the way back to the commons,
+// so no bespoke back-link is minted. It OMITS the marketing siteFooter — tall scroll-page chrome
+// that below a full-height iframe would only shove it off-screen; the player's real footer is its
+// own actions bar (refine in place / remix into a new fork). That omission is the cut, not a gap.
+// [LAW:decomposition] [LAW:one-source-of-truth] [LAW:composability]
 export const renderPlayer = (view: PlayerView): string =>
   renderPageShell(
     `${view.prompt} — TinkerPad`,
-    `<header>
-  <a href="/commons">← Commons</a>
-  <h1>${escapeHtml(view.prompt)}</h1>
-  <span class="byline">${byline(view.author)}</span>
+    `${siteNav()}
+<header class="player-head">
+  <div class="player-head-main">
+    <h1>${escapeHtml(view.prompt)}</h1>
+    <span class="byline">${byline(view.author)}</span>
+  </div>
   ${playerForkedFrom(view.forkedFrom)}
   ${recipeBlock(view.recipe)}
 </header>
@@ -390,32 +401,60 @@ export const renderPlayer = (view: PlayerView): string =>
   <div class="refine-note" id="refine-note" role="status" aria-live="polite"></div>
 </footer>
 <script type="module">${PLAYER_SCRIPT}</script>`,
-    // The player's bespoke full-height layout, passed as the page's head CSS. It now reads the
+    // The player's bespoke full-height layout, passed as the page's head CSS. It reads only the
     // SHARED design tokens (no private color set), so its chrome tracks the same light/dark system
-    // as every other page. The full player visual redesign is its own ticket (pw7.4); this ticket
-    // only moves it onto the one shell so no second token block survives. [LAW:one-source-of-truth]
+    // as every page, and it echoes the front door's control language — the refine button is the
+    // same gradient primary as index.html's Generate, its input the same focus-ring field — so a
+    // playground reads as the same product wherever it appears. The immersive column (nav, then a
+    // playground identity toolbar, the iframe filling the rest, and the actions bar) is what makes
+    // the artifact the star; only the trusted chrome is styled here, never the sandboxed frame.
+    // [LAW:one-source-of-truth]
     `<style>
   body { display:flex; flex-direction:column; height:100vh; }
-  header { padding:0.6rem 1rem; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:0.25rem 1rem; align-items:baseline; }
-  header h1 { font-size:0.95rem; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  header a { font-size:0.85rem; white-space:nowrap; }
-  header .byline { font-size:0.85rem; color:var(--muted); white-space:nowrap; }
+
+  /* Playground identity toolbar — a slim sub-bar under the site nav carrying THIS playground's
+     title, byline, provenance, and recipe. Surface-tinted so it reads as a toolbar distinct from
+     both the nav above and the artifact below. */
+  .player-head { padding:0.7rem 2rem; background:var(--surface); border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; align-items:baseline; gap:0.35rem 1rem; }
+  .player-head-main { flex:1 1 auto; min-width:0; display:flex; align-items:baseline; gap:0.8rem; }
+  .player-head h1 { font-size:1rem; font-weight:700; letter-spacing:-0.01em; margin:0; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .player-head .byline { font-size:0.8rem; color:var(--muted); white-space:nowrap; flex-shrink:0; }
   .forked-from { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
   .forked-from a { font-weight:600; }
-  .recipe { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
-  .recipe summary { cursor:pointer; }
-  .recipe ol { margin:0.4rem 0 0; padding-left:1.4rem; display:block; }
-  .recipe li { background:none; border:0; border-radius:0; padding:0.1rem 0; }
+
+  /* Recipe — the describe->refine story as an INTENTIONAL collapse, not a browser default: the
+     summary is a pill (the same step-icon accent the landing page uses), the steps a proper card. */
+  .recipe { flex-basis:100%; margin:0; font-size:0.8rem; }
+  .recipe > summary { cursor:pointer; list-style:none; display:inline-flex; align-items:center; gap:0.4rem; color:var(--muted); font-weight:500; padding:0.25rem 0.7rem; border-radius:100px; background:var(--step-icon-bg); border:1px solid var(--step-icon-border); transition:color 0.15s; }
+  .recipe > summary:hover { color:var(--text); }
+  .recipe > summary::-webkit-details-marker { display:none; }
+  .recipe > summary::before { content:'▸'; font-size:0.7em; transition:transform 0.15s; }
+  .recipe[open] > summary::before { transform:rotate(90deg); }
+  .recipe ol { margin:0.6rem 0 0; padding:0.7rem 1rem 0.7rem 2.4rem; list-style:decimal; background:var(--widget-bg); border:1px solid var(--border); border-radius:var(--radius-md); box-shadow:var(--shadow-widget); }
+  .recipe li { padding:0.15rem 0; color:var(--text-2); }
+
   iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
-  footer { border-top:1px solid var(--border); padding:0.6rem 1rem; display:flex; flex-direction:column; gap:0.5rem; }
-  footer form { display:flex; gap:0.6rem; }
-  footer input { flex:1 1 auto; background:var(--input-bg); color:var(--text); border:1px solid var(--border); border-radius:0.5rem; padding:0.5rem 0.7rem; font:inherit; }
-  footer button { background:var(--accent); color:#fff; border:0; border-radius:0.5rem; padding:0.5rem 1.1rem; font:inherit; font-weight:600; cursor:pointer; }
-  footer button:disabled { opacity:0.45; cursor:not-allowed; }
-  #remix-bar { display:flex; align-items:center; gap:0.6rem; }
+
+  /* Actions bar — the player's real footer: refine in place (primary) and remix into a new fork
+     (secondary). The input and buttons mirror the front door's controls. */
+  /* :not([hidden]) so the UA [hidden] rule wins until the client gate reveals the bar — an author
+     display would otherwise beat [hidden]{display:none} and show the actions when generation is off. */
+  #actions:not([hidden]) { border-top:1px solid var(--border); background:var(--surface); padding:0.8rem 2rem; display:flex; flex-direction:column; gap:0.6rem; }
+  #refine { display:flex; gap:0.7rem; }
+  #refine-input { flex:1 1 auto; background:var(--input-bg); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-md); padding:0.6rem 0.9rem; font:inherit; outline:none; transition:border-color 0.15s, box-shadow 0.15s, background 0.15s; }
+  #refine-input::placeholder { color:var(--muted-2); }
+  #refine-input:focus { border-color:var(--accent-light); box-shadow:0 0 0 3px rgba(99,102,241,0.12); background:var(--input-focus-bg); }
+  #refine-submit { background:linear-gradient(135deg, #6366f1, #7c3aed); color:#fff; border:0; border-radius:10px; padding:0.6rem 1.4rem; font:600 0.95rem inherit; cursor:pointer; white-space:nowrap; box-shadow:var(--shadow-btn); transition:opacity 0.15s, transform 0.1s, box-shadow 0.15s; }
+  #refine-submit:hover:not(:disabled) { opacity:0.92; transform:translateY(-1px); box-shadow:var(--shadow-btn-h); }
+  #refine-submit:disabled { opacity:0.4; cursor:not-allowed; transform:none; box-shadow:none; }
+
+  #remix-bar:not([hidden]) { display:flex; align-items:center; gap:0.8rem; }
   /* Remix is a DIFFERENT kind of action from refine (branch off vs change in place), so it
-     reads as a secondary, outlined control rather than the primary accent button. */
-  #remix-submit { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+     reads as a secondary, outlined control rather than the primary gradient button. */
+  #remix-submit { background:transparent; color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:0.5rem 1.1rem; font:600 0.9rem inherit; cursor:pointer; white-space:nowrap; transition:background 0.15s, color 0.15s; }
+  #remix-submit:hover:not(:disabled) { background:var(--accent); color:#fff; }
+  #remix-submit:disabled { opacity:0.45; cursor:not-allowed; }
+
   .refine-note { font-size:0.8rem; color:var(--muted); min-height:1.1em; }
   .refine-note.bad { color:var(--bad); }
   .refine-note.good { color:var(--good); }

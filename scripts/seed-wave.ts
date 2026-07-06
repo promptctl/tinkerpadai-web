@@ -58,7 +58,16 @@ const isPlaygroundType = (value: unknown): value is PlaygroundType =>
 // The manifest crosses a trust boundary (a file on disk); it is validated and shaped
 // here, once, so everything downstream assumes a well-formed wave. [LAW:single-enforcer]
 export const parseManifest = (raw: string, path: string): readonly BriefEntry[] => {
-  const data: unknown = JSON.parse(raw);
+  // JSON.parse's SyntaxError names no file; rethrow with the path so a malformed
+  // manifest is diagnosable exactly like every other validation error below, rather
+  // than surfacing a bare parse error the reader must trace back to a file.
+  // [FRAMING:representation] [LAW:no-silent-failure]
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${path}: not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error(`${path}: manifest must be a non-empty JSON array`);
   }

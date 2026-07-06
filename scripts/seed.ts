@@ -15,11 +15,15 @@ const main = async (): Promise<void> => {
   process.exit(await runSeed(config, readManifest));
 };
 
+// The failure's exit code is a VALUE derived from its type, then applied once — no
+// fallthrough to reason about. A bad invocation (UsageError) is exit 2 with just its
+// usage message; any other fault is exit 1 with the surfaced error.
+// [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
 main().catch((error: unknown) => {
-  if (error instanceof UsageError) {
-    console.error(error.message);
-    process.exit(2);
-  }
-  console.error('seed wave failed:', error);
-  process.exit(1);
+  const failure =
+    error instanceof UsageError
+      ? { message: error.message, code: 2 }
+      : { message: `seed wave failed: ${String(error instanceof Error ? error.stack ?? error.message : error)}`, code: 1 };
+  console.error(failure.message);
+  process.exit(failure.code);
 });

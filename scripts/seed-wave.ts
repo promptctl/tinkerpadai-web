@@ -126,11 +126,13 @@ const postJson = async (
 };
 
 // Client-side pacing between polls; the server additionally paces a running poll, so
-// this loop never spins. The ceiling exists so a dead server cannot hang the wave
-// forever — the provider's own 5-minute timeout is the real per-turn deadline and
-// fires well inside it. [LAW:no-ambient-temporal-coupling] [LAW:no-silent-failure]
+// this loop never spins. There is deliberately NO client-side deadline: the driver is
+// the single enforcer of the generation deadline and always reports a terminal state
+// within it, while a dead or misbehaving server already surfaces loudly as a failed
+// fetch or a malformed poll response. A second, independent deadline here could only
+// disagree with the real one — wave 1 lost a finished turn to exactly that.
+// [LAW:single-enforcer] [LAW:one-source-of-truth] [LAW:no-silent-failure]
 const POLL_INTERVAL_MS = 2000;
-const POLL_CEILING_MS = 8 * 60 * 1000;
 
 const generateOne = async (base: string, cookie: string, entry: BriefEntry): Promise<Outcome> => {
   const submitted = await postJson(base, cookie, '/generations', {
@@ -141,9 +143,13 @@ const generateOne = async (base: string, cookie: string, entry: BriefEntry): Pro
     return { state: 'failed', error: `submit: HTTP ${submitted.status}: ${JSON.stringify(submitted.data)}` };
   }
   const handle = submitted.data.handle;
+  // The handle is the only key to a live turn; print it so a wave interrupted at the
+  // client (crash, ctrl-C) can still be recovered by polling the handle by hand — a
+  // turn's store+catalog write happens on the first poll that observes success.
+  // [LAW:no-silent-failure]
+  console.log(`  handle: ${JSON.stringify(handle)}`);
 
-  const deadline = Date.now() + POLL_CEILING_MS;
-  while (Date.now() < deadline) {
+  for (;;) {
     const polled = await postJson(base, cookie, '/poll', { handle });
     if (polled.status !== 200 || !isRecord(polled.data) || typeof polled.data.state !== 'string') {
       return { state: 'failed', error: `poll: HTTP ${polled.status}: ${JSON.stringify(polled.data)}` };
@@ -156,7 +162,6 @@ const generateOne = async (base: string, cookie: string, entry: BriefEntry): Pro
     }
     await delay(POLL_INTERVAL_MS);
   }
-  return { state: 'failed', error: `poll: no terminal state within ${POLL_CEILING_MS}ms` };
 };
 
 // A fixed pool of workers draining one shared queue: concurrency is a value, and each

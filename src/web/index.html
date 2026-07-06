@@ -1017,6 +1017,12 @@
         const meta = document.createElement('div');
         meta.className = 'pg-card-meta';
         const steps = summary.recipe.length;
+        // The byline and step-count formats here reproduce the server-rendered commons card's, and
+        // can drift from it. That duplication is forced, not accidental: this page paints
+        // pre-request with no build step and no shared runtime, so it cannot import the server's
+        // format helpers. The single-source fix is the shared-static-asset consolidation the design
+        // epic already tracks, not a presentation string folded into the JSON data seam (that would
+        // bake one consumer's view choice into a shape three consumers share). [LAW:one-source-of-truth]
         meta.textContent = `by ${summary.author} · ${steps} step${steps === 1 ? '' : 's'}`;
 
         body.replaceChildren(title, meta);

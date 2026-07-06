@@ -75,6 +75,7 @@ the front-door surfaces are designed against that real content.
 | Epic | What it delivers |
 |---|---|
 | `seeding` (top of queue) | First wave of 25 playgrounds across all six types — as much a generation stress test as a content drop; every loop failure becomes a filed ticket. Then scale to 100. Seeding IS loop-hardening. |
+| `quality-ppu.1`: self-containment validation | The contract enforced at the storage boundary before the catalog scales to 100 — an explicit lit edge blocks the scale-up on it, so validation lands after the 25-wave stress test but before mass generation |
 | `design-pw7` | Design system applied everywhere it isn't: commons page, player chrome, homepage grid, error pages, favicon — now built against real content |
 | `discovery-rye` (near half) | Tags, search, thumbnails, types filter, pagination — meaningful only with a seeded catalog |
 | `profile-ek4` | My-playgrounds, OpenGraph cards, public creator pages |
@@ -88,11 +89,10 @@ them stay in Gate 4.
 | Gate item | Why it gates launch |
 |---|---|
 | Generation economics **decision** (`economics-k91`) | Who pays — platform, BYOK, credits — shapes the provider driver, rate limits, and accounts. The decision lands in PROJECT.md; the build epic stays later. |
-| `quality`: self-containment validation | The contract enforced at the storage boundary before the catalog grows large |
 | `sandbox`: adversarial audit + rate limits | PROJECT.md: safety designed in from day one. Audit blocks public exposure as a structural edge. |
 | `moderation`: report + unlist | A public UGC platform with no takedown path is an incident with a countdown. Review-queue polish can follow launch; the minimal pair cannot. |
 | `legal`: terms, privacy, DMCA | Safe harbor requires the agent and procedure before the complaint arrives |
-| `homelab-28m` → `cloudflare-8le` | The staged deploys themselves |
+| `cloudflare-8le`: the public deploy | The launch edge itself. `homelab-28m` rehearses the deploy earlier by rank as a staging step — it is not a launch edge in lit. |
 | **`launch-nkn`** | The gate ticket. Blocked by all of the above plus the seeded commons. Closing it is launching. |
 
 ## Gate 4 — the loop deepens
@@ -129,8 +129,9 @@ Deliberately sparse; these get detail when they get close.
 
 - **Launch is a ticket, not a date.** `tinkerpadai-launch-nkn` is blocked by the
   sandbox audit, both moderation slices, both legal slices, the economics
-  decision, the seeded commons, and the Cloudflare deploy. `lit doctor` verifies
-  the graph stays coherent.
+  decision, the seeded commons, and the Cloudflare deploy. Self-containment
+  validation gates launch transitively: it blocks the scale-to-100, which blocks
+  launch. `lit doctor` verifies the graph stays coherent.
 - **Decisions precede builds as edges**: the economics decision ticket blocks
   the economics build epic. The editing epic carries the same decision-gated
   note internally.

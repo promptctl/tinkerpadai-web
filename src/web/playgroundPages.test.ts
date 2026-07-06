@@ -107,6 +107,45 @@ describe('playgroundCard', () => {
     expect(html).not.toContain(XSS);
     expect(html).toContain('&lt;script&gt;');
   });
+
+  // The card's provenance contract, tested directly on the reusable unit (not only via
+  // renderCommons) so a future direct consumer keeps the safety net. [LAW:behavior-not-structure]
+  it('credits the author as a "by <author>" byline', () => {
+    expect(playgroundCard(summary({ author: 'grace' as never }))).toContain('by grace');
+  });
+
+  it('shows the provider and the pluralized iteration step count', () => {
+    expect(playgroundCard(summary({ providerId: 'claude' as never, recipe: ['describe'] }))).toContain('claude');
+    expect(playgroundCard(summary({ recipe: ['describe'] }))).toContain('1 step');
+    expect(playgroundCard(summary({ recipe: ['a', 'b', 'c'] }))).toContain('3 steps');
+  });
+
+  it('links a fork back to its browsable parent, and states the fork fact when the parent is gone', () => {
+    const linked = playgroundCard(
+      summary({ forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: 'the original' } } }),
+    );
+    expect(linked).toContain('Forked from');
+    expect(linked).toContain('the original');
+    expect(linked).toContain(`/play?id=${encodeURIComponent('parent')}`);
+    expect(playgroundCard(summary({ forkedFrom: { parent: null } }))).toContain(
+      'Forked from a playground no longer in the commons',
+    );
+  });
+
+  it('shows no attribution for a card that is not a fork', () => {
+    expect(playgroundCard(summary())).not.toContain('Forked from');
+  });
+
+  it('escapes a hostile author and a hostile parent prompt rather than emitting markup', () => {
+    const badAuthor = playgroundCard(summary({ author: XSS as never }));
+    expect(badAuthor).not.toContain(XSS);
+    expect(badAuthor).toContain('&lt;script&gt;');
+    const badParent = playgroundCard(
+      summary({ forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: XSS } } }),
+    );
+    expect(badParent).not.toContain(XSS);
+    expect(badParent).toContain('&lt;script&gt;');
+  });
 });
 
 describe('renderPlayer', () => {

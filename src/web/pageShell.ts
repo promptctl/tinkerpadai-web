@@ -228,7 +228,7 @@ const THEME_TOGGLE_SCRIPT = `
       localStorage.setItem(PREF, next);
     });
   }
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+  window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change', (e) => {
     if (!localStorage.getItem(PREF)) root.setAttribute('data-theme', e.matches ? 'dark' : 'light');
   });
 `;

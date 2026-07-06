@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { DEFAULT_PORT } from '../src/web/serverConfig.js';
 
 // THE SEEDING DRIVER CORE: turn a briefs manifest into commons playgrounds by driving
 // the real public write path — loopback login, POST /generations, POST /poll — exactly
@@ -112,7 +113,10 @@ const expectStatus = async (response: Response, expected: number, what: string):
 // [LAW:single-enforcer] [LAW:no-silent-failure]
 const REQUEST_TIMEOUT_MS = 60 * 1000;
 
-const request = (url: string, init: RequestInit): Promise<Response> =>
+// The signal is the function's to set — it always installs the transport timeout — so the
+// parameter type excludes signal rather than accepting one it would silently discard.
+// [LAW:types-are-the-program]
+const request = (url: string, init: Omit<RequestInit, 'signal'>): Promise<Response> =>
   fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
 // Complete the session dance the browser performs: /session/login mints the CSRF state
@@ -335,8 +339,10 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
     throw new UsageError(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
   }
   // Foreign input normalized once where it crosses the boundary: a trailing slash would
-  // smear '//' into every concatenated path downstream. [LAW:single-enforcer]
-  const base = (env.TINKERPAD_URL ?? 'http://localhost:8787').replace(/\/+$/, '');
+  // smear '//' into every concatenated path downstream. The default targets the dev front
+  // door's port through the shared DEFAULT_PORT constant, so it tracks the server's default
+  // rather than drifting. [LAW:single-enforcer] [LAW:one-source-of-truth]
+  const base = (env.TINKERPAD_URL ?? `http://localhost:${DEFAULT_PORT}`).replace(/\/+$/, '');
   return { manifestPath, concurrency, base };
 };
 

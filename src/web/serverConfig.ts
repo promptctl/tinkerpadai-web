@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_PORT, FRONT_DOOR_HOST } from './frontDoorDefaults.js';
 
 // [LAW:no-silent-failure] [LAW:types-are-the-program] Number() accepts any string and
 // silently produces NaN for non-numeric input, which cascades into listen() and callback URLs.
@@ -17,18 +18,28 @@ function parsePort(value: string | undefined, name: string, fallback: number): n
   return n;
 }
 
+// The resolved runtime config the entries consume. Declared explicitly so the shape is a stated
+// contract — a field added or removed is a deliberate, visible edit, not a silent inference
+// change. [LAW:types-are-the-program]
+export interface ServerConfig {
+  readonly dataDir: string;
+  readonly port: number;
+  readonly contentPort: number;
+  readonly oauthCallbackUrl: string;
+  readonly frontDoorHost: string;
+}
+
 // Single source of truth for runtime config shared by main.ts and main.dev.ts.
 // [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
-export function resolveServerConfig(importMetaUrl: string) {
+export function resolveServerConfig(importMetaUrl: string): ServerConfig {
   const dataDir =
     process.env.TINKERPAD_DATA_DIR ??
     fileURLToPath(new URL('../../.tinkerpad-data', importMetaUrl));
-  const port = parsePort(process.env.PORT, 'PORT', 8787);
+  const port = parsePort(process.env.PORT, 'PORT', DEFAULT_PORT);
   const contentPort = parsePort(process.env.TINKERPAD_CONTENT_PORT, 'TINKERPAD_CONTENT_PORT', port + 1);
-  // localhost, not 127.0.0.1: browsers scope cookies to the hostname, so 127.0.0.1 and
-  // localhost are distinct cookie domains. The callback must match the origin the browser
-  // uses or the CSRF state cookie will be absent on the callback request. [LAW:one-source-of-truth]
+  // The callback origin is FRONT_DOOR_HOST — the same host the dev entry binds and logs — so
+  // the CSRF state cookie set at login is present on the callback request. [LAW:one-source-of-truth]
   const oauthCallbackUrl =
-    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://localhost:${port}/session/callback`;
-  return { dataDir, port, contentPort, oauthCallbackUrl };
+    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://${FRONT_DOOR_HOST}:${port}/session/callback`;
+  return { dataDir, port, contentPort, oauthCallbackUrl, frontDoorHost: FRONT_DOOR_HOST };
 }

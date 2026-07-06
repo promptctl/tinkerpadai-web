@@ -1,0 +1,102 @@
+[
+  {
+    "type": "design",
+    "description": "A CSS box-shadow designer: layer up to three shadows with controls for x/y offset, blur, spread, color and opacity per layer, elevation presets (raised, floating, dramatic), and a live preview card on a toggleable light/dark surface."
+  },
+  {
+    "type": "design",
+    "description": "A typography scale explorer: pick a base size and a modular scale ratio (minor third, major third, perfect fourth, golden), toggle between two font stacks, and preview a realistic article layout with headings, body text, and captions rendered at the resulting sizes."
+  },
+  {
+    "type": "design",
+    "description": "A color palette builder around HSL: pick a base hue and generate complementary, analogous, triadic and split-complementary schemes; preview the palette applied to a small sample UI (button, card, alert) and show WCAG contrast ratios for text pairings."
+  },
+  {
+    "type": "design",
+    "description": "A CSS grid layout playground: control column count, row sizing, gap, and named template areas for header/sidebar/main/footer; presets for classic layouts (holy grail, dashboard, magazine) and a copyable view of the resulting grid CSS."
+  },
+  {
+    "type": "design",
+    "description": "A border-radius and corner-smoothing designer for cards: per-corner radius controls, an overall smoothing slider, elevation and border options, previewed on a product card with image placeholder, title, and button."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A regex playground: type a pattern and flags, see live matches, capture groups, and replacements highlighted in an editable block of sample text; include presets for common patterns like emails, URLs, dates, and log lines."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A SQL SELECT query builder over a small embedded dataset of orders, customers, and products: choose columns, filters, sort, and group-by with aggregates, and see both the generated SQL and the live result table."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A cron expression explorer: build a schedule with controls for minutes, hours, days, months and weekdays, see the resulting cron expression, a plain-English description of it, and the next five run times."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A JSON query explorer: an embedded sample JSON document (a small e-commerce API response) with a query box supporting dot paths, array indexing and wildcards; live-highlight the matched nodes and show the extracted result."
+  },
+  {
+    "type": "concept-map",
+    "description": "An interactive Big-O complexity explorer: toggle common complexity classes (O(1), O(log n), O(n), O(n log n), O(n squared), O(2 to the n)) on a live growth chart, adjust the input-size range, and see which well-known algorithms fall in each class."
+  },
+  {
+    "type": "concept-map",
+    "description": "An HTTP status code concept map: explore the 1xx through 5xx families, drill into the common codes with when-to-use guidance, and answer 'which code should I return' through a small interactive decision flow."
+  },
+  {
+    "type": "concept-map",
+    "description": "A music intervals and chords explorer: pick a root note and a chord or interval type, see the notes highlighted on an on-screen piano keyboard, and play the sound using the Web Audio API only — no audio files or external resources."
+  },
+  {
+    "type": "concept-map",
+    "description": "A git branching strategies concept map: visualize merge vs rebase vs squash on an interactive commit graph, step through what each operation does to history, and compare trunk-based development against git-flow."
+  },
+  {
+    "type": "document-critique",
+    "description": "A README review playground: an embedded sample open-source README with inline suggestions (missing install section, unclear intro, stale badge) that I can approve, reject, or comment on, with a summary of accepted changes."
+  },
+  {
+    "type": "document-critique",
+    "description": "A cover-letter critique tool: an embedded sample cover letter with suggestions on tone, specificity and length, each with approve/reject/comment controls and a live 'revised letter' preview reflecting accepted suggestions."
+  },
+  {
+    "type": "document-critique",
+    "description": "An API documentation critique playground: sample REST endpoint docs with flagged issues (missing error codes, undocumented parameter, inconsistent naming) to approve or reject, and a quality checklist that updates as suggestions are resolved."
+  },
+  {
+    "type": "document-critique",
+    "description": "A technical blog post editing pass: an embedded draft post with suggestions for wordiness, passive voice, missing code examples and weak structure; approve, reject or comment on each and preview the edited result."
+  },
+  {
+    "type": "diff-review",
+    "description": "A code review playground for a refactoring diff: a unified diff extracting duplicated logic into a helper function, with line-by-line commenting, an approve/request-changes verdict, and a review summary I can copy."
+  },
+  {
+    "type": "diff-review",
+    "description": "A pull-request review playground for a small bug fix: a diff fixing an off-by-one error with an added regression test, line-by-line comments, suggested-change blocks, and an approve/request-changes flow."
+  },
+  {
+    "type": "diff-review",
+    "description": "A schema-migration diff review: an SQL migration adding a column with a backfill and index, shown as a diff with line-level commenting and a checklist covering reversibility, locking risk, and data safety."
+  },
+  {
+    "type": "diff-review",
+    "description": "A security patch review playground: a diff fixing an XSS vulnerability in an HTML template, with line comments, a severity assessment control, and a copyable review verdict summarizing the fix's completeness."
+  },
+  {
+    "type": "code-map",
+    "description": "A code map of a classic MVC web application: routers, controllers, models, views and middleware as an interactive layer diagram; click a component to see its responsibilities and trace a request's path end to end."
+  },
+  {
+    "type": "code-map",
+    "description": "An event-driven microservices architecture map: services, queues and topics with animated message flow; toggle between synchronous and asynchronous paths and inspect each service's publish/subscribe contracts."
+  },
+  {
+    "type": "code-map",
+    "description": "A compiler pipeline code map: lexer, parser, type checker, optimizer and code generator as stages with the intermediate representation flowing between them; click each stage to see its inputs, outputs and an example transformation."
+  },
+  {
+    "type": "code-map",
+    "description": "A React application component map: a component tree with props flowing down and events flowing up, a toggle to overlay context providers and state locations, and click-to-inspect for each component's inputs and outputs."
+  }
+]

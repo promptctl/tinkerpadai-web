@@ -322,13 +322,15 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   if (manifestPath === undefined) {
     throw new UsageError('usage: tsx scripts/seed.ts <briefs-manifest.json> [concurrency]');
   }
-  // argv[3] absent (e.g. `just seed <manifest>` with the empty default token) => the
-  // fallback here is the single source of the default concurrency. [LAW:one-source-of-truth]
-  // Number(), not parseInt: parseInt('7foo')=7 and parseInt('3.14')=3 would slip garbage
-  // and floats past the guard as a silently-wrong concurrency; Number() yields NaN/3.14,
-  // both of which the isSafeInteger check rejects loudly. [LAW:no-silent-failure]
+  // Concurrency unspecified — absent, or the empty string — uses the default; the fallback
+  // here is the single source of that default. Treating '' as unspecified makes the result
+  // independent of whether a given `just` version omits the empty default token or passes
+  // it through as '', so `just seed <manifest>` yields 3 either way. [LAW:one-source-of-truth]
+  // Number(), not parseInt, for a supplied value: parseInt('7foo')=7 and parseInt('3.14')=3
+  // would slip garbage and floats past the guard as a silently-wrong concurrency; Number()
+  // yields NaN/3.14, both of which the isSafeInteger check rejects loudly. [LAW:no-silent-failure]
   const concurrencyRaw = argv[3];
-  const concurrency = concurrencyRaw === undefined ? 3 : Number(concurrencyRaw);
+  const concurrency = concurrencyRaw === undefined || concurrencyRaw === '' ? 3 : Number(concurrencyRaw);
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
     throw new UsageError(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
   }

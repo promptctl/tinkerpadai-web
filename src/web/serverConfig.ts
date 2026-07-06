@@ -22,6 +22,13 @@ function parsePort(value: string | undefined, name: string, fallback: number): n
 // cannot drift onto a stale port if this default changes. [LAW:one-source-of-truth]
 export const DEFAULT_PORT = 8787;
 
+// The single source of the dev front door's host. The bind (main.dev.ts), the URL logged to
+// the developer, and the OAuth callback origin all derive from this one value, so they cannot
+// disagree. localhost, not 127.0.0.1: cookies scope to the exact hostname, so a session that
+// began on one is absent on the other — if the bound/logged origin and the callback origin
+// differed, the login's CSRF state cookie would vanish on the callback. [LAW:one-source-of-truth]
+export const FRONT_DOOR_HOST = 'localhost';
+
 // Single source of truth for runtime config shared by main.ts and main.dev.ts.
 // [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
 export function resolveServerConfig(importMetaUrl: string) {
@@ -30,10 +37,9 @@ export function resolveServerConfig(importMetaUrl: string) {
     fileURLToPath(new URL('../../.tinkerpad-data', importMetaUrl));
   const port = parsePort(process.env.PORT, 'PORT', DEFAULT_PORT);
   const contentPort = parsePort(process.env.TINKERPAD_CONTENT_PORT, 'TINKERPAD_CONTENT_PORT', port + 1);
-  // localhost, not 127.0.0.1: browsers scope cookies to the hostname, so 127.0.0.1 and
-  // localhost are distinct cookie domains. The callback must match the origin the browser
-  // uses or the CSRF state cookie will be absent on the callback request. [LAW:one-source-of-truth]
+  // The callback origin is FRONT_DOOR_HOST — the same host the dev entry binds and logs — so
+  // the CSRF state cookie set at login is present on the callback request. [LAW:one-source-of-truth]
   const oauthCallbackUrl =
-    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://localhost:${port}/session/callback`;
-  return { dataDir, port, contentPort, oauthCallbackUrl };
+    process.env.TINKERPAD_OAUTH_CALLBACK_URL || `http://${FRONT_DOOR_HOST}:${port}/session/callback`;
+  return { dataDir, port, contentPort, oauthCallbackUrl, frontDoorHost: FRONT_DOOR_HOST };
 }

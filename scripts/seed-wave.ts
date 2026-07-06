@@ -94,8 +94,11 @@ export const delay = (ms: number): Promise<void> => new Promise((resolve) => set
 export const cookiePair = (setCookies: readonly string[], name: string): string => {
   const header = setCookies.find((cookie) => cookie.startsWith(`${name}=`));
   if (header === undefined) throw new Error(`login: server did not set cookie ${name}`);
-  const pair = header.split(';', 1)[0];
-  if (pair === undefined || pair === `${name}=`) throw new Error(`login: cookie ${name} is empty`);
+  // The name=value pair is everything up to the first attribute delimiter; indexOf+slice
+  // always yields a definite string (no split()[0] that the type widens to possibly-undefined).
+  const semicolon = header.indexOf(';');
+  const pair = semicolon === -1 ? header : header.slice(0, semicolon);
+  if (pair === `${name}=`) throw new Error(`login: cookie ${name} is empty`);
   return pair;
 };
 
@@ -103,6 +106,19 @@ const expectStatus = async (response: Response, expected: number, what: string):
   if (response.status !== expected) {
     const body = await response.text();
     throw new Error(`${what}: expected HTTP ${expected}, got ${response.status}: ${body.slice(0, 300)}`);
+  }
+};
+
+// The one place a response body becomes JSON: read it as text and parse here, so a non-JSON
+// body (a proxy's HTML 502, a splash page) surfaces WITH its status and a snippet rather than
+// a bare parse error that buries the diagnosis. Every JSON read goes through this.
+// [LAW:single-enforcer] [LAW:no-silent-failure]
+const readJsonBody = async (response: Response, what: string): Promise<unknown> => {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`${what}: HTTP ${response.status} returned non-JSON body: ${text.slice(0, 200)}`);
   }
 };
 
@@ -136,7 +152,7 @@ export const login = async (base: string): Promise<string> => {
 
   const whoami = await request(`${base}/session`, { headers: { cookie: session } });
   await expectStatus(whoami, 200, 'GET /session');
-  const identity: unknown = await whoami.json();
+  const identity: unknown = await readJsonBody(whoami, 'GET /session');
   // Require the subject the log and the session depend on, not merely that identity is an
   // object — otherwise {identity:{}} passes and logs "logged in as undefined". [LAW:no-silent-failure]
   if (!isRecord(identity) || !isRecord(identity.identity) || typeof identity.identity.subject !== 'string') {
@@ -146,10 +162,8 @@ export const login = async (base: string): Promise<string> => {
   return session;
 };
 
-// One JSON POST to the app, keyed to a logged-in session. The body is read once as text
-// and parsed here, so a non-JSON error page (a proxy's HTML 502, a splash page) surfaces
-// WITH its status and a snippet of what came back — never as a bare parse error that
-// buries the real diagnosis. [LAW:no-silent-failure]
+// One JSON POST to the app, keyed to a logged-in session. The response body is read through
+// readJsonBody, so a non-JSON error page surfaces with its status and a snippet.
 export const postJson = async (
   base: string,
   cookie: string,
@@ -161,12 +175,7 @@ export const postJson = async (
     headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify(body),
   });
-  const text = await response.text();
-  try {
-    return { status: response.status, data: JSON.parse(text) as unknown };
-  } catch {
-    throw new Error(`POST ${path}: HTTP ${response.status} returned non-JSON body: ${text.slice(0, 200)}`);
-  }
+  return { status: response.status, data: await readJsonBody(response, `POST ${path}`) };
 };
 
 // The world-touching seam one brief drives: an HTTP POST, the poll clock (delay), and a
@@ -384,7 +393,7 @@ export const chooseProvider = (
 export const fetchProviders = async (base: string): Promise<readonly { readonly id: string }[]> => {
   const response = await request(`${base}/providers`, { headers: { accept: 'application/json' } });
   await expectStatus(response, 200, 'GET /providers');
-  const data: unknown = await response.json();
+  const data: unknown = await readJsonBody(response, 'GET /providers');
   if (!Array.isArray(data)) throw new Error(`GET /providers: expected a JSON array, got ${JSON.stringify(data)}`);
   return data.map((provider: unknown, index) => {
     if (!isRecord(provider) || typeof provider.id !== 'string') {

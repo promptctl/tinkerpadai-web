@@ -274,8 +274,18 @@ export const siteFooter = (): string => `<footer class="site-footer">
 
 // The page shell — doctype, head (title, tokens, theme resolver), and body. Callers compose the
 // body from siteNav + their content + siteFooter (the player omits the chrome and passes its own
-// full-height layout). `head` is the one per-page slot for page-specific CSS/meta; the title is
-// the only outside value here and crosses the single enforcer. [LAW:single-enforcer]
+// full-height layout). `head` is the one per-page slot for page-specific CSS/meta.
+//
+// TRUST CONTRACT: `title` is the ONE raw value the shell receives, so the shell escapes it through
+// the single enforcer. `body` and `head` are TRUSTED app-origin markup — every outside value they
+// contain has ALREADY crossed escapeHtml at the point it was interpolated by the caller — so the
+// shell injects them verbatim. That asymmetry is the invariant, not an oversight: the escape lives
+// once, at the boundary where the outside value enters, never a second time here. This contract is
+// carried in prose rather than a branded `SafeHtml` type on purpose — escapeHtml returns `string`
+// and every fragment builder in this layer returns `string`, so a brand at this one seam would be
+// laundered by casts (false safety); a real brand would have to span the whole layer as an
+// html-tagged-template enforcer, which would duplicate the single escape mechanism. That is a
+// deliberate, separate decision. [LAW:types-are-the-program] [LAW:single-enforcer] [LAW:one-source-of-truth]
 export const renderPageShell = (title: string, body: string, head = ''): string =>
   `<!doctype html>
 <html lang="en" data-theme="light">

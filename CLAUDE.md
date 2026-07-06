@@ -14,21 +14,21 @@ restate its content here, link to it.
 
 ## Engineering operations & current state
 
-**Current state: founding stage, no product code.** The entire repo is four files:
-`CLAUDE.md` (this operational guide), `design-docs/PROJECT.md` (founding intent),
-`README.md`, `.gitignore`. There is **no `package.json`, no build, no tests, no
-source tree yet.** There are therefore no build / test / lint commands to run — when
-you find yourself needing one, the first engineering task is to *establish* it, not
-to discover it. Do not invent commands that don't exist on disk.
+**Current state: the core loop is built and verified end-to-end.** The source tree
+lives in `src/` (`api/`, `provider/`, `web/`, plus storage); `package.json` (pnpm)
+defines `dev`, `test` (vitest), and `typecheck` (tsc); `just dev` runs the loopback
+dev entry (`src/web/main.dev.ts`) that drives the whole loop in a browser without
+external secrets. `design-docs/2YEARPLAN.mnd` carries the roadmap narrative; the
+lit backlog is the live queue. Do not invent commands that don't exist on disk —
+`package.json` and the `justfile` are the authority for what runs.
 
-**Intended stack (signal, not a committed decision).** `.gitignore` ignores
-`.wrangler/`, `.dev.vars`, `node_modules/`, and `.env` — Cloudflare Wrangler + Node
-tooling. Treat this as the *likely* direction for the platform (a Cloudflare Worker
-in front of static playground artifacts), not a settled architecture. The "Open
-decisions" in `design-docs/PROJECT.md` are still open; confirm before treating any
-of them as decided.
+**Stack.** Node + TypeScript, tsx entry points, vitest, pnpm, justfile. Deployment
+is staged: local two-server dev today, homelab next, Cloudflare Workers as the
+public target (the `cloudflare` epic) — the Workers architecture is direction, not
+yet built. The "Open decisions" in `design-docs/PROJECT.md` that remain open are
+still open; confirm before treating any of them as decided.
 
-**What any first code must honor** (these come straight from the founding document
+**What all code must honor** (these come straight from the founding document
 and the platform shape it implies — they are non-negotiable constraints on
 implementation, derived once here so they aren't re-litigated per file):
 

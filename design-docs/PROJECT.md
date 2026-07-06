@@ -165,7 +165,10 @@ bad playground from being *dangerous* while moderation catches what's merely
 
 ## Status
 
-Founding stage. No product code yet. The `playground` skill already defines the
+Building. The core loop — describe → generate → store → discover → use → remix —
+is implemented and verified end-to-end; `design-docs/2YEARPLAN.mnd` carries the
+roadmap narrative and the lit backlog holds the live queue, so status detail
+lives there, not here. The `playground` skill defines the
 artifact contract (self-contained HTML, controls + live preview + copyable prompt);
 TinkerPad is the public commons and frictionless front door around that artifact.
 This document is the source of truth for *intent* — build toward it, and update it

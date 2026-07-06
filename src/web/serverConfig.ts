@@ -5,8 +5,14 @@ import { fileURLToPath } from 'node:url';
 function parsePort(value: string | undefined, name: string, fallback: number): number {
   const n = value !== undefined ? Number(value) : fallback;
   if (!Number.isSafeInteger(n) || n < 1 || n > 65535) {
-    const source = value !== undefined ? `${name}=${JSON.stringify(value)}` : `default for ${name} (${fallback})`;
-    throw new Error(`${source} is not a valid port number (1-65535)`);
+    // [LAW:no-silent-failure] a derived default that lands out of range (e.g. PORT=65535
+    // making contentPort 65536) fails loudly and names the remedy — never clamped to a
+    // different port than documented.
+    const detail =
+      value !== undefined
+        ? `${name}=${JSON.stringify(value)} is not a valid port number (1-65535)`
+        : `derived default for ${name} (${fallback}) is not a valid port number (1-65535); set ${name} explicitly`;
+    throw new Error(detail);
   }
   return n;
 }

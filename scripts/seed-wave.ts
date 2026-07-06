@@ -163,21 +163,30 @@ export const postJson = async (
   }
 };
 
-// The world-touching seam one brief drives: an HTTP POST and the poll clock. Injected so
-// generateOne is pure orchestration over it — a test scripts `post` and passes a no-op
-// `delay`, exercising the terminal enumeration without a server or a real 2s wait.
+// The world-touching seam one brief drives: an HTTP POST, the poll clock (delay), and a
+// wall clock (now). Injected so generateOne is pure orchestration over them — a test
+// scripts `post`, passes a no-op `delay`, and drives `now` to exercise the terminal
+// enumeration and the liveness ceiling without a server or real waits.
 // [LAW:effects-at-boundaries]
 export interface BriefDriver {
   readonly post: (path: string, body: unknown) => Promise<{ readonly status: number; readonly data: unknown }>;
   readonly delay: (ms: number) => Promise<void>;
+  readonly now: () => number;
 }
 
 // Client-side pacing between polls; the server additionally paces a running poll, so this
-// loop never spins. There is deliberately NO client-side generation deadline: the driver
-// (server-side) is the single enforcer of it and always reports a terminal state within
-// it. A second, independent deadline here could only disagree with the real one — wave 1
-// lost a finished turn to exactly that. [LAW:single-enforcer] [LAW:one-source-of-truth]
+// loop never spins. [LAW:single-enforcer]
 const POLL_INTERVAL_MS = 2000;
+
+// The client's LIVENESS backstop — deliberately NOT a generation deadline. The server is
+// the single enforcer of how long a generation may take, and it always reports a terminal
+// state within its own deadline; a client generation-deadline BELOW it would abandon a
+// live turn (wave 1 lost a finished turn to exactly that). This ceiling sits FAR above any
+// plausible server deadline, so it never fires for a working server — it trips only when a
+// buggy server returns `pending` forever, turning a silent infinite loop into a loud
+// failure. It is the loop-scope sibling of the per-request transport timeout.
+// [LAW:no-silent-failure] [LAW:one-source-of-truth]
+const POLL_CEILING_MS = 30 * 60 * 1000;
 
 // Submit one brief and poll it to a terminal Outcome. Pure orchestration over the
 // injected driver: it maps the wire responses onto the Outcome union and owns the
@@ -197,7 +206,11 @@ export const generateOne = async (entry: BriefEntry, driver: BriefDriver): Promi
   // [LAW:no-silent-failure]
   console.log(`  handle: ${JSON.stringify(handle)}`);
 
+  const ceiling = driver.now() + POLL_CEILING_MS;
   for (;;) {
+    if (driver.now() > ceiling) {
+      return { state: 'failed', error: `poll: server never reported a terminal state within ${POLL_CEILING_MS}ms` };
+    }
     const polled = await driver.post('/poll', { handle });
     if (polled.status !== 200 || !isRecord(polled.data) || typeof polled.data.state !== 'string') {
       return { state: 'failed', error: `poll: HTTP ${polled.status}: ${JSON.stringify(polled.data)}` };
@@ -229,14 +242,13 @@ export const runWave = async (
   generate: (entry: BriefEntry) => Promise<Outcome>,
 ): Promise<readonly BriefResult[]> => {
   const results: BriefResult[] = new Array<BriefResult>(entries.length);
-  let nextIndex = 0;
+  // One iterator shared by all workers: each worker's for-of pulls the next [index, entry]
+  // via a synchronous .next(), so the lock-free draining holds and `entry` is typed
+  // BriefEntry — no `entries[index]` that could be undefined, hence no guard skipping an
+  // impossible case. [LAW:no-defensive-null-guards] [LAW:dataflow-not-control-flow]
+  const queue = entries.entries();
   const worker = async (): Promise<void> => {
-    for (;;) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= entries.length) return;
-      const entry = entries[index];
-      if (entry === undefined) return;
+    for (const [index, entry] of queue) {
       console.log(`[${index + 1}/${entries.length}] generating (${entry.type}): ${entry.description.slice(0, 80)}...`);
       // The one containment seam for a brief: ANY escape from its generate path — a
       // fetch rejection, a non-JSON body from a proxy, a parse throw — becomes THAT
@@ -305,8 +317,11 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   }
   // argv[3] absent (e.g. `just seed <manifest>` with the empty default token) => the
   // fallback here is the single source of the default concurrency. [LAW:one-source-of-truth]
+  // Number(), not parseInt: parseInt('7foo')=7 and parseInt('3.14')=3 would slip garbage
+  // and floats past the guard as a silently-wrong concurrency; Number() yields NaN/3.14,
+  // both of which the isSafeInteger check rejects loudly. [LAW:no-silent-failure]
   const concurrencyRaw = argv[3];
-  const concurrency = concurrencyRaw === undefined ? 3 : Number.parseInt(concurrencyRaw, 10);
+  const concurrency = concurrencyRaw === undefined ? 3 : Number(concurrencyRaw);
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
     throw new UsageError(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
   }
@@ -331,6 +346,7 @@ export const runSeed = async (
   const driver: BriefDriver = {
     post: (path, body) => postJson(config.base, cookie, path, body),
     delay,
+    now: () => Date.now(),
   };
   const results = await runWave(entries, config.concurrency, (entry) => generateOne(entry, driver));
   return summarize(results);

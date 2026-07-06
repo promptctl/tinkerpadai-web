@@ -188,6 +188,14 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig(argv('m.json', 'lots'), {})).toThrow(/must be a positive integer/);
   });
 
+  it('rejects a garbage-suffixed concurrency rather than silently truncating it', () => {
+    expect(() => resolveConfig(argv('m.json', '7foo'), {})).toThrow(/must be a positive integer/);
+  });
+
+  it('rejects a fractional concurrency rather than flooring it', () => {
+    expect(() => resolveConfig(argv('m.json', '3.14'), {})).toThrow(/must be a positive integer/);
+  });
+
   it('requires a manifest path', () => {
     expect(() => resolveConfig(argv(), {})).toThrow(UsageError);
   });
@@ -208,6 +216,7 @@ describe('resolveConfig', () => {
 const scriptedDriver = (script: {
   generations?: readonly { status: number; data: unknown }[];
   poll?: readonly { status: number; data: unknown }[];
+  now?: () => number;
 }): BriefDriver => {
   const queues: Record<string, { status: number; data: unknown }[]> = {
     '/generations': [...(script.generations ?? [{ status: 201, data: { handle: { turnId: 't1' } } }])],
@@ -220,6 +229,7 @@ const scriptedDriver = (script: {
       return Promise.resolve(next);
     },
     delay: () => Promise.resolve(),
+    now: script.now ?? ((): number => 0),
   };
 };
 
@@ -261,6 +271,19 @@ describe('generateOne — terminal enumeration', () => {
     const outcome = await generateOne(entry, driver);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);
+  });
+
+  it('trips the liveness ceiling when the server returns pending forever', async () => {
+    // The clock jumps past the ceiling on the second reading, while the server keeps
+    // answering pending — the loop must fail loudly rather than spin forever.
+    let tick = 0;
+    const driver = scriptedDriver({
+      poll: Array.from({ length: 5 }, () => ({ status: 200, data: { state: 'pending' } })),
+      now: () => (tick++ === 0 ? 0 : 60 * 60 * 1000),
+    });
+    const outcome = await generateOne(entry, driver);
+    expect(outcome.state).toBe('failed');
+    expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/never reported a terminal state/);
   });
 });
 

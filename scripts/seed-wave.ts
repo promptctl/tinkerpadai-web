@@ -1,11 +1,18 @@
 import { readFile } from 'node:fs/promises';
 
-// THE SEEDING DRIVER: turn a briefs manifest into commons playgrounds by driving the
-// real public write path — loopback login, POST /generations, POST /poll — exactly as
-// a browser session would. It deliberately knows nothing about storage, the catalog,
+// THE SEEDING DRIVER CORE: turn a briefs manifest into commons playgrounds by driving
+// the real public write path — loopback login, POST /generations, POST /poll — exactly
+// as a browser session would. It deliberately knows nothing about storage, the catalog,
 // or the provider: the HTTP surface is the only seam it touches, so seeding remains an
 // honest stress test of the loop and works against any deployment stage reachable by
 // URL. [LAW:effects-at-boundaries] [LAW:locality-or-seam]
+//
+// This module is the side-effect-free core: importing it runs nothing. The one place
+// that reads argv/env and exits the process is the thin entry (scripts/seed.ts), so the
+// core's behavior — manifest validation, the session dance, worker draining, the poll
+// terminal enumeration — is importable and testable without a running server. The pieces
+// that touch the world (HTTP, the clock) are injected at their callsite, never reached
+// for as globals inside the logic. [LAW:effects-at-boundaries]
 //
 // The manifest is the single source of truth for a wave's content: this driver carries
 // no briefs of its own and takes the manifest path as its one required argument, so
@@ -16,7 +23,7 @@ import { readFile } from 'node:fs/promises';
 // brief failed (each failure is printed, and is a quality/providers finding to file).
 // [LAW:no-silent-failure]
 
-const PLAYGROUND_TYPES = [
+export const PLAYGROUND_TYPES = [
   'design',
   'data-explorer',
   'concept-map',
@@ -24,20 +31,20 @@ const PLAYGROUND_TYPES = [
   'diff-review',
   'code-map',
 ] as const;
-type PlaygroundType = (typeof PLAYGROUND_TYPES)[number];
+export type PlaygroundType = (typeof PLAYGROUND_TYPES)[number];
 
-interface BriefEntry {
+export interface BriefEntry {
   readonly type: PlaygroundType;
   readonly description: string;
 }
 
 // One brief's terminal outcome. Success carries the catalog id; failure carries the
 // surfaced error — never an empty placeholder. [LAW:types-are-the-program]
-type Outcome =
+export type Outcome =
   | { readonly state: 'ready'; readonly playgroundId: string }
   | { readonly state: 'failed'; readonly error: string };
 
-interface BriefResult {
+export interface BriefResult {
   readonly entry: BriefEntry;
   readonly outcome: Outcome;
 }
@@ -50,7 +57,7 @@ const isPlaygroundType = (value: unknown): value is PlaygroundType =>
 
 // The manifest crosses a trust boundary (a file on disk); it is validated and shaped
 // here, once, so everything downstream assumes a well-formed wave. [LAW:single-enforcer]
-const parseManifest = (raw: string, path: string): readonly BriefEntry[] => {
+export const parseManifest = (raw: string, path: string): readonly BriefEntry[] => {
   const data: unknown = JSON.parse(raw);
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error(`${path}: manifest must be a non-empty JSON array`);
@@ -67,11 +74,14 @@ const parseManifest = (raw: string, path: string): readonly BriefEntry[] => {
   });
 };
 
-const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+export const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Extract one named cookie pair ("name=value") from Set-Cookie headers. A missing
-// cookie is a protocol violation by the server, surfaced loudly. [LAW:no-silent-failure]
-const cookiePair = (setCookies: readonly string[], name: string): string => {
+// cookie is a protocol violation by the server, surfaced loudly. The prefix includes the
+// '=' separator, and a cookie name cannot contain '=', so `startsWith("name=")` is an
+// exact name match — tp_session is never confused with tp_session_v2.
+// [LAW:no-silent-failure]
+export const cookiePair = (setCookies: readonly string[], name: string): string => {
   const header = setCookies.find((cookie) => cookie.startsWith(`${name}=`));
   if (header === undefined) throw new Error(`login: server did not set cookie ${name}`);
   const pair = header.split(';', 1)[0];
@@ -86,10 +96,6 @@ const expectStatus = async (response: Response, expected: number, what: string):
   }
 };
 
-// Complete the session dance the browser performs: /session/login mints the CSRF state
-// and redirects to the provider (the loopback provider redirects straight back), and
-// the callback verifies state and mints the session cookie. The same round-trip as
-// production, so seeding exercises the real write gate. [FRAMING:representation]
 // The per-REQUEST transport deadline: connection-refused fails a fetch on its own, but
 // a server that accepts TCP and never responds would hang it forever. This bounds one
 // HTTP request's liveness and nothing more — the GENERATION deadline stays solely the
@@ -100,7 +106,11 @@ const REQUEST_TIMEOUT_MS = 60 * 1000;
 const request = (url: string, init: RequestInit): Promise<Response> =>
   fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
-const login = async (base: string): Promise<string> => {
+// Complete the session dance the browser performs: /session/login mints the CSRF state
+// and redirects to the provider (the loopback provider redirects straight back), and
+// the callback verifies state and mints the session cookie. The same round-trip as
+// production, so seeding exercises the real write gate. [FRAMING:representation]
+export const login = async (base: string): Promise<string> => {
   const start = await request(`${base}/session/login`, { redirect: 'manual' });
   await expectStatus(start, 302, 'GET /session/login');
   const location = start.headers.get('location');
@@ -121,7 +131,11 @@ const login = async (base: string): Promise<string> => {
   return session;
 };
 
-const postJson = async (
+// One JSON POST to the app, keyed to a logged-in session. The body is read once as text
+// and parsed here, so a non-JSON error page (a proxy's HTML 502, a splash page) surfaces
+// WITH its status and a snippet of what came back — never as a bare parse error that
+// buries the real diagnosis. [LAW:no-silent-failure]
+export const postJson = async (
   base: string,
   cookie: string,
   path: string,
@@ -132,9 +146,6 @@ const postJson = async (
     headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify(body),
   });
-  // Read the body once as text and parse it here, so a non-JSON error page (a proxy's
-  // HTML 502, a splash page) surfaces WITH its status and a snippet of what came back —
-  // never as a bare parse error that buries the real diagnosis. [LAW:no-silent-failure]
   const text = await response.text();
   try {
     return { status: response.status, data: JSON.parse(text) as unknown };
@@ -143,17 +154,27 @@ const postJson = async (
   }
 };
 
-// Client-side pacing between polls; the server additionally paces a running poll, so
-// this loop never spins. There is deliberately NO client-side deadline: the driver is
-// the single enforcer of the generation deadline and always reports a terminal state
-// within it, while a dead or misbehaving server already surfaces loudly as a failed
-// fetch or a malformed poll response. A second, independent deadline here could only
-// disagree with the real one — wave 1 lost a finished turn to exactly that.
-// [LAW:single-enforcer] [LAW:one-source-of-truth] [LAW:no-silent-failure]
+// The world-touching seam one brief drives: an HTTP POST and the poll clock. Injected so
+// generateOne is pure orchestration over it — a test scripts `post` and passes a no-op
+// `delay`, exercising the terminal enumeration without a server or a real 2s wait.
+// [LAW:effects-at-boundaries]
+export interface BriefDriver {
+  readonly post: (path: string, body: unknown) => Promise<{ readonly status: number; readonly data: unknown }>;
+  readonly delay: (ms: number) => Promise<void>;
+}
+
+// Client-side pacing between polls; the server additionally paces a running poll, so this
+// loop never spins. There is deliberately NO client-side generation deadline: the driver
+// (server-side) is the single enforcer of it and always reports a terminal state within
+// it. A second, independent deadline here could only disagree with the real one — wave 1
+// lost a finished turn to exactly that. [LAW:single-enforcer] [LAW:one-source-of-truth]
 const POLL_INTERVAL_MS = 2000;
 
-const generateOne = async (base: string, cookie: string, entry: BriefEntry): Promise<Outcome> => {
-  const submitted = await postJson(base, cookie, '/generations', {
+// Submit one brief and poll it to a terminal Outcome. Pure orchestration over the
+// injected driver: it maps the wire responses onto the Outcome union and owns the
+// poll loop, knowing nothing about fetch or timers. [LAW:effects-at-boundaries]
+export const generateOne = async (entry: BriefEntry, driver: BriefDriver): Promise<Outcome> => {
+  const submitted = await driver.post('/generations', {
     providerId: 'claude-code-tmux',
     brief: { description: entry.description },
   });
@@ -168,7 +189,7 @@ const generateOne = async (base: string, cookie: string, entry: BriefEntry): Pro
   console.log(`  handle: ${JSON.stringify(handle)}`);
 
   for (;;) {
-    const polled = await postJson(base, cookie, '/poll', { handle });
+    const polled = await driver.post('/poll', { handle });
     if (polled.status !== 200 || !isRecord(polled.data) || typeof polled.data.state !== 'string') {
       return { state: 'failed', error: `poll: HTTP ${polled.status}: ${JSON.stringify(polled.data)}` };
     }
@@ -185,18 +206,18 @@ const generateOne = async (base: string, cookie: string, entry: BriefEntry): Pro
     if (polled.data.state !== 'pending' && polled.data.state !== 'running') {
       return { state: 'failed', error: `poll: unexpected response shape: ${JSON.stringify(polled.data)}` };
     }
-    await delay(POLL_INTERVAL_MS);
+    await driver.delay(POLL_INTERVAL_MS);
   }
 };
 
-// A fixed pool of workers draining one shared queue: concurrency is a value, and each
-// brief runs the identical submit→poll path regardless of which worker picks it up.
-// [LAW:dataflow-not-control-flow] [LAW:one-type-per-behavior]
-const runWave = async (
-  base: string,
-  cookie: string,
+// A fixed pool of workers draining one shared queue, each applying `generate` to the
+// brief it picks up. Concurrency is a value and the generate step is a parameter, so this
+// owns exactly one thing — the draining — asking nothing about how a brief becomes an
+// outcome. [LAW:composability] [LAW:dataflow-not-control-flow]
+export const runWave = async (
   entries: readonly BriefEntry[],
   concurrency: number,
+  generate: (entry: BriefEntry) => Promise<Outcome>,
 ): Promise<readonly BriefResult[]> => {
   const results: BriefResult[] = new Array<BriefResult>(entries.length);
   let nextIndex = 0;
@@ -208,13 +229,14 @@ const runWave = async (
       const entry = entries[index];
       if (entry === undefined) return;
       console.log(`[${index + 1}/${entries.length}] generating (${entry.type}): ${entry.description.slice(0, 80)}...`);
-      // The one containment seam for a brief: ANY escape from its submit/poll path — a
+      // The one containment seam for a brief: ANY escape from its generate path — a
       // fetch rejection, a non-JSON body from a proxy, a parse throw — becomes THAT
       // brief's failed outcome, so one bad response can never reject the workers'
-      // Promise.all and discard the whole wave's ledger. Wave-level preconditions
-      // (manifest, login) sit outside the workers and still fail the wave loudly.
+      // Promise.all and discard the whole wave's ledger. This protects the pool, so it
+      // lives here rather than inside generate. Wave-level preconditions (manifest,
+      // login) sit outside the workers and still fail the wave loudly.
       // [LAW:single-enforcer] [LAW:no-silent-failure]
-      const outcome = await generateOne(base, cookie, entry).catch(
+      const outcome = await generate(entry).catch(
         (error: unknown): Outcome => ({
           state: 'failed',
           error: `transport: ${error instanceof Error ? error.message : String(error)}`,
@@ -232,7 +254,10 @@ const runWave = async (
   return results;
 };
 
-const summarize = (results: readonly BriefResult[]): number => {
+// The wave's summary and exit code: 0 iff every brief became a playground. Pure over the
+// results — it prints the per-type tally and each failure, and returns the code the entry
+// exits with. [LAW:no-silent-failure]
+export const summarize = (results: readonly BriefResult[]): number => {
   const ready = results.filter((result) => result.outcome.state === 'ready');
   const failed = results.filter(
     (result): result is BriefResult & { outcome: Extract<Outcome, { state: 'failed' }> } =>
@@ -250,31 +275,58 @@ const summarize = (results: readonly BriefResult[]): number => {
   return failed.length === 0 ? 0 : 1;
 };
 
-const main = async (): Promise<void> => {
-  const manifestPath = process.argv[2];
+export interface WaveConfig {
+  readonly manifestPath: string;
+  readonly concurrency: number;
+  readonly base: string;
+}
+
+// A usage/validation failure of the invocation itself (bad args, bad env). Typed so the
+// entry maps it to exit code 2 — distinct from a wave that ran but had failures (1) or a
+// mid-run fault (1). [LAW:types-are-the-program]
+export class UsageError extends Error {}
+
+// Derive the wave's config from argv + env, or throw a UsageError. Pure, so the argument
+// contract (concurrency default and validation, base URL normalization) is verified
+// without a process. [LAW:effects-at-boundaries]
+export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): WaveConfig => {
+  const manifestPath = argv[2];
   if (manifestPath === undefined) {
-    console.error('usage: tsx scripts/seed-wave.ts <briefs-manifest.json> [concurrency]');
-    process.exit(2);
+    throw new UsageError('usage: tsx scripts/seed.ts <briefs-manifest.json> [concurrency]');
   }
-  const concurrencyRaw = process.argv[3];
+  // argv[3] absent (e.g. `just seed <manifest>` with the empty default token) => the
+  // fallback here is the single source of the default concurrency. [LAW:one-source-of-truth]
+  const concurrencyRaw = argv[3];
   const concurrency = concurrencyRaw === undefined ? 3 : Number.parseInt(concurrencyRaw, 10);
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
-    console.error(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
-    process.exit(2);
+    throw new UsageError(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
   }
-  // Foreign input normalized once where it crosses the boundary: a trailing slash
-  // would smear '//' into every concatenated path downstream. [LAW:single-enforcer]
-  const base = (process.env.TINKERPAD_URL ?? 'http://localhost:8787').replace(/\/+$/, '');
-
-  const entries = parseManifest(await readFile(manifestPath, 'utf8'), manifestPath);
-  console.log(`seeding ${entries.length} briefs against ${base} (concurrency ${concurrency})`);
-
-  const cookie = await login(base);
-  const results = await runWave(base, cookie, entries, concurrency);
-  process.exit(summarize(results));
+  // Foreign input normalized once where it crosses the boundary: a trailing slash would
+  // smear '//' into every concatenated path downstream. [LAW:single-enforcer]
+  const base = (env.TINKERPAD_URL ?? 'http://localhost:8787').replace(/\/+$/, '');
+  return { manifestPath, concurrency, base };
 };
 
-main().catch((error: unknown) => {
-  console.error('seed wave failed:', error);
-  process.exit(1);
-});
+// Run one wave end to end against a live server: validate the manifest, complete the
+// login dance, drain the briefs, and return the exit code. The effects it needs (reading
+// the manifest file, the real HTTP+clock driver) are threaded from the entry, so this
+// orchestration stays free of process/global reaches. [LAW:effects-at-boundaries]
+export const runSeed = async (
+  config: WaveConfig,
+  read: (path: string) => Promise<string>,
+): Promise<number> => {
+  const entries = parseManifest(await read(config.manifestPath), config.manifestPath);
+  console.log(`seeding ${entries.length} briefs against ${config.base} (concurrency ${config.concurrency})`);
+
+  const cookie = await login(config.base);
+  const driver: BriefDriver = {
+    post: (path, body) => postJson(config.base, cookie, path, body),
+    delay,
+  };
+  const results = await runWave(entries, config.concurrency, (entry) => generateOne(entry, driver));
+  return summarize(results);
+};
+
+// The real manifest reader, handed to runSeed by the entry. Kept here beside runSeed so
+// the entry stays a pure wiring shell. [LAW:effects-at-boundaries]
+export const readManifest = (path: string): Promise<string> => readFile(path, 'utf8');

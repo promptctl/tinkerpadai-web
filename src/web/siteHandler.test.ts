@@ -109,6 +109,37 @@ describe('makeSiteHandler', () => {
     expect(body).toContain('&lt;img src=x onerror=alert(1)&gt;');
   });
 
+  // The /api/playgrounds seam: the JSON projection of the commons the static homepage fetches to
+  // render its preview grid. It returns the SAME PlaygroundSummary[] the commons HTML is built
+  // from — the same source, so the two cannot disagree — in the catalog's insertion order, leaving
+  // "recent, top N" to the client view. [LAW:one-source-of-truth]
+  it('serves the commons summaries as JSON at GET /api/playgrounds, never touching the API', async () => {
+    const catalog = makeMemoryCatalog();
+    await seed(catalog, 'first playground');
+    const id = await seed(catalog, 'second playground');
+    const { handler, delegated } = build(catalog);
+
+    const res = await handler(new Request('http://front.local/api/playgrounds'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const summaries = (await res.json()) as { id: string; prompt: string; author: string; recipe: string[] }[];
+    // Insertion order preserved — recency is the client view's window, not the endpoint's policy.
+    expect(summaries.map((s) => s.prompt)).toEqual(['first playground', 'second playground']);
+    // The read-path projection the card renders from: id, author byline, and step-count source.
+    // (?. keeps the access honest — a missing element fails the assertion loudly, never silently.)
+    expect(summaries[1]?.id).toBe(id);
+    expect(summaries[1]?.author).toBe('ada');
+    expect(summaries[1]?.recipe).toEqual(['second playground']);
+    expect(delegated).toHaveLength(0);
+  });
+
+  it('serves an empty commons as an empty JSON array, not a thrown special case', async () => {
+    const { handler } = build(makeMemoryCatalog());
+    const res = await handler(new Request('http://front.local/api/playgrounds'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
   it('serves a sandboxed player at /play that frames the FOREIGN content origin', async () => {
     const catalog = makeMemoryCatalog();
     const id = await seed(catalog, 'a color palette');

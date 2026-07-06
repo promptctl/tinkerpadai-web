@@ -20,8 +20,9 @@ import { resolveServerConfig } from './serverConfig.js';
 
 // A loopback OAuthProvider: authorizeUrl redirects the browser straight back to the app's own
 // callback with a fixed code and the state echoed — exactly the shape a real IdP returns, so the
-// callback's state-verification, exchange, and cookie-minting all run for real. authenticate
-// brands a fixed dev subject. No network, no secret. [LAW:one-type-per-behavior]
+// callback's state-verification and cookie-minting run for real. The code exchange is the one
+// step stubbed — authenticate ignores the code and brands a fixed dev subject, which IS the
+// swapped IdP this entry exists to swap. No network, no secret. [LAW:one-type-per-behavior]
 const makeDevOAuthProvider = (subject: Subject): OAuthProvider => ({
   authorizeUrl: ({ state, redirectUri }) =>
     `${redirectUri}?${new URLSearchParams({ code: 'dev-code', state }).toString()}`,

@@ -30,6 +30,13 @@ const makeDevOAuthProvider = (subject: Subject): OAuthProvider => ({
 
 const pageUrl = new URL('./index.html', import.meta.url);
 
+// The dev generation deadline, stated by the composition root through the driver's
+// existing config seam. Wave-1 seeding (tinkerpadai-seeding-bw1.1) measured real briefs
+// hovering near — and four of them past — the driver's 5-minute default, so dev uses
+// 10 minutes; the deliberate production policy (and retry) is tinkerpadai-quality-ppu.2.
+// [LAW:no-ambient-temporal-coupling] [LAW:locality-or-seam]
+const DEV_GENERATION_TIMEOUT_MS = 10 * 60 * 1000;
+
 const main = async (): Promise<void> => {
   const { dataDir, port, contentPort, oauthCallbackUrl } = resolveServerConfig(import.meta.url);
 
@@ -37,6 +44,7 @@ const main = async (): Promise<void> => {
     dataDir,
     oauth: makeDevOAuthProvider(Subject('dev:local')),
     oauthCallbackUrl,
+    driver: { timeoutMs: DEV_GENERATION_TIMEOUT_MS },
   });
 
   const content = await serve({

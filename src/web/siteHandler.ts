@@ -37,6 +37,9 @@ export interface SiteHandlerDeps {
 const html = (body: string, status = 200): Response =>
   new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
 
+const json = (data: unknown, status = 200): Response =>
+  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
+
 export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => Promise<Response>) => {
   const { page, catalog, contentOrigin, sessionHandler, apiHandler } = deps;
 
@@ -74,6 +77,16 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         return html(page);
       case 'GET /commons':
         return html(renderCommons(await catalog.listPlaygrounds()));
+      case 'GET /api/playgrounds':
+        // The JSON projection of the commons — the SAME PlaygroundSummary list renderCommons
+        // renders as HTML, serialized so the static homepage (index.html, which cannot import the
+        // server shell) can fetch and client-render its own preview grid. One projection feeds both
+        // the server- and client-rendered cards, so a playground reads identically wherever it is
+        // listed. Recency and "top N" are the homepage view's concern, applied by that consumer over
+        // this canonical insertion-ordered list — never baked into the endpoint, so the future
+        // my-playgrounds page and discovery filters reuse the same seam. [LAW:one-source-of-truth]
+        // [LAW:decomposition]
+        return json(await catalog.listPlaygrounds());
       case 'GET /play': {
         const id = url.searchParams.get('id');
         if (id === null || id === '')

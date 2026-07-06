@@ -498,6 +498,54 @@
       }
       .btn-outline:hover { background: var(--accent); color: white; }
 
+      /* Preview grid — the client-rendered teaser of recent playgrounds. index.html is a static
+         file that cannot import the server shell's .card CSS (documented no-build exception), so
+         the card here is its own richer shape: a gradient preview thumbnail (keyed to the
+         playground id) over a title + byline. Hidden until the client injects cards; the
+         :not([hidden]) guard lets the UA [hidden] rule win until then, so an empty or failed fetch
+         leaves the static browse CTA as the honest fallback. [LAW:no-silent-failure] */
+      .pg-grid {
+        max-width: 1000px;
+        margin: 0 auto 2rem;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.25rem;
+        text-align: left;
+      }
+      .pg-grid:not([hidden]) { display: grid; }
+      @media (max-width: 860px) { .pg-grid { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 560px) { .pg-grid { grid-template-columns: 1fr; } }
+      .pg-card {
+        display: block;
+        background: var(--widget-bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        text-decoration: none;
+        transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+      }
+      .pg-card:hover {
+        transform: translateY(-3px);
+        box-shadow: var(--shadow-widget);
+        border-color: var(--accent);
+      }
+      .pg-card-preview { height: 120px; }
+      .pg-card-body { padding: 0.9rem 1rem 1rem; }
+      .pg-card-title {
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: var(--text);
+        line-height: 1.4;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .pg-card-meta {
+        margin-top: 0.4rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
       /* ── HOW IT WORKS ──────────────────────────── */
       .how {
         padding: 4rem 2rem;
@@ -677,6 +725,7 @@
     <section class="commons-cta">
       <h2>From the commons</h2>
       <p>Every playground anyone has ever generated — public, browsable, and remixable by all.</p>
+      <div class="pg-grid" id="commons-grid" hidden></div>
       <a class="btn-outline" href="/commons">Browse the commons →</a>
     </section>
 
@@ -923,6 +972,73 @@
           empty.replaceChildren(label, errMsg, commonsP);
           empty.hidden = false;
         }
+      })();
+
+      // ── COMMONS PREVIEW GRID ────────────────────────────────────────────────
+      // The public teaser of recent playgrounds — the client half of the /api/playgrounds seam.
+      // Independent of the generation boot above: the commons is public and browsable even when
+      // generation is off or the viewer is signed out, so this fetch is never gated on session or
+      // provider state. [LAW:decomposition] The list arrives in the catalog's insertion order
+      // (oldest first); "recent, top 6" is this view's window over the canonical list, applied here
+      // as a value transform (reverse + slice), never asked of the endpoint.
+      // [LAW:dataflow-not-control-flow]
+
+      // The preview gradient — a pure function of the playground id, so a card wears the same colour
+      // on every render. The hue is folded into the indigo→violet→cyan brand band [200,320) rather
+      // than a hardcoded palette, keeping colour derived, not sprinkled. [LAW:one-source-of-truth]
+      const previewGradient = (id) => {
+        let h = 0;
+        for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+        const hue = 200 + (h % 120);
+        return `linear-gradient(135deg, hsl(${hue} 75% 62%), hsl(${(hue + 40) % 360} 68% 54%))`;
+      };
+
+      // One summary → one card, built through the DOM so every server value is text, never markup —
+      // the createElement/textContent path is the escape boundary, so no prompt or author can inject
+      // an element. [LAW:single-enforcer] The whole card is one anchor (no nested link on this
+      // teaser), so it stays a legal, fully clickable target.
+      const commonsCard = (summary) => {
+        const card = document.createElement('a');
+        card.className = 'pg-card';
+        card.href = `/play?id=${encodeURIComponent(summary.id)}`;
+
+        const preview = document.createElement('div');
+        preview.className = 'pg-card-preview';
+        preview.style.background = previewGradient(summary.id);
+
+        const body = document.createElement('div');
+        body.className = 'pg-card-body';
+
+        const title = document.createElement('div');
+        title.className = 'pg-card-title';
+        title.textContent = summary.prompt; // CSS line-clamp truncates; full prompt is the tooltip
+        title.title = summary.prompt;
+
+        const meta = document.createElement('div');
+        meta.className = 'pg-card-meta';
+        const steps = summary.recipe.length;
+        meta.textContent = `by ${summary.author} · ${steps} step${steps === 1 ? '' : 's'}`;
+
+        body.replaceChildren(title, meta);
+        card.replaceChildren(preview, body);
+        return card;
+      };
+
+      (async () => {
+        let summaries;
+        try {
+          summaries = await api('/api/playgrounds');
+        } catch (error) {
+          // A failed fetch leaves the grid hidden and the static browse CTA as the honest fallback —
+          // but the failure is surfaced, never swallowed. [LAW:no-silent-failure]
+          console.warn('commons preview unavailable:', error.message);
+          return;
+        }
+        if (summaries.length === 0) return; // empty commons — the browse CTA already speaks for it
+        const recent = summaries.slice().reverse().slice(0, 6);
+        const grid = $('commons-grid');
+        grid.replaceChildren(...recent.map(commonsCard));
+        grid.hidden = false;
       })();
     </script>
   </body>

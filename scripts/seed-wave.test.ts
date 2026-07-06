@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  chooseProvider,
   cookiePair,
   generateOne,
   login,
@@ -169,6 +170,29 @@ describe('login', () => {
   });
 });
 
+describe('chooseProvider', () => {
+  it('uses the sole provider the server offers, unasked', () => {
+    expect(chooseProvider([{ id: 'claude-code-tmux' }], {})).toBe('claude-code-tmux');
+  });
+
+  it('fails loudly when the server offers no providers', () => {
+    expect(() => chooseProvider([], {})).toThrow(/no providers/);
+  });
+
+  it('uses TINKERPAD_PROVIDER when it names one the server offers', () => {
+    const providers = [{ id: 'a' }, { id: 'b' }];
+    expect(chooseProvider(providers, { TINKERPAD_PROVIDER: 'b' })).toBe('b');
+  });
+
+  it('rejects a TINKERPAD_PROVIDER the server does not offer', () => {
+    expect(() => chooseProvider([{ id: 'a' }], { TINKERPAD_PROVIDER: 'ghost' })).toThrow(/not among the server/);
+  });
+
+  it('fails loudly on ambiguity rather than guessing among several providers', () => {
+    expect(() => chooseProvider([{ id: 'a' }, { id: 'b' }], {})).toThrow(/multiple providers.*set TINKERPAD_PROVIDER/);
+  });
+});
+
 describe('resolveConfig', () => {
   const argv = (...rest: string[]): string[] => ['node', 'seed.ts', ...rest];
 
@@ -248,24 +272,24 @@ describe('generateOne — terminal enumeration', () => {
         { status: 200, data: { state: 'ready', playgroundId: 'pg-1' } },
       ],
     });
-    await expect(generateOne(entry, driver)).resolves.toEqual({ state: 'ready', playgroundId: 'pg-1' });
+    await expect(generateOne(entry, 'claude-code-tmux', driver)).resolves.toEqual({ state: 'ready', playgroundId: 'pg-1' });
   });
 
   it('fails the brief when submit is not a 201-with-handle', async () => {
     const driver = scriptedDriver({ generations: [{ status: 401, data: { error: 'auth' } }] });
-    const outcome = await generateOne(entry, driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/submit: HTTP 401/);
   });
 
   it('surfaces a server-reported failed state', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'failed', error: 'timed out' } }] });
-    await expect(generateOne(entry, driver)).resolves.toEqual({ state: 'failed', error: 'timed out' });
+    await expect(generateOne(entry, 'claude-code-tmux', driver)).resolves.toEqual({ state: 'failed', error: 'timed out' });
   });
 
   it('says so when a failed state carries no error message rather than reporting "undefined"', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'failed' } }] });
-    const outcome = await generateOne(entry, driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     const error = (outcome as Extract<Outcome, { state: 'failed' }>).error;
     expect(error).toMatch(/no error message/);
@@ -274,14 +298,14 @@ describe('generateOne — terminal enumeration', () => {
 
   it('fails loudly on a ready without a playgroundId rather than spinning forever', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'ready' } }] });
-    const outcome = await generateOne(entry, driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);
   });
 
   it('fails loudly on an unknown terminal state — a protocol mismatch, not a wait', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'exploded' } }] });
-    const outcome = await generateOne(entry, driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);
   });
@@ -294,7 +318,7 @@ describe('generateOne — terminal enumeration', () => {
       poll: Array.from({ length: 5 }, () => ({ status: 200, data: { state: 'pending' } })),
       now: () => (tick++ === 0 ? 0 : 60 * 60 * 1000),
     });
-    const outcome = await generateOne(entry, driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/never reported a terminal state/);
   });

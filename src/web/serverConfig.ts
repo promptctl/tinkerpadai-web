@@ -17,13 +17,18 @@ function parsePort(value: string | undefined, name: string, fallback: number): n
   return n;
 }
 
+// The default port the dev front door listens on, and the single source of that number.
+// The seeding script's default target URL references this so `just seed` (no TINKERPAD_URL)
+// cannot drift onto a stale port if this default changes. [LAW:one-source-of-truth]
+export const DEFAULT_PORT = 8787;
+
 // Single source of truth for runtime config shared by main.ts and main.dev.ts.
 // [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
 export function resolveServerConfig(importMetaUrl: string) {
   const dataDir =
     process.env.TINKERPAD_DATA_DIR ??
     fileURLToPath(new URL('../../.tinkerpad-data', importMetaUrl));
-  const port = parsePort(process.env.PORT, 'PORT', 8787);
+  const port = parsePort(process.env.PORT, 'PORT', DEFAULT_PORT);
   const contentPort = parsePort(process.env.TINKERPAD_CONTENT_PORT, 'TINKERPAD_CONTENT_PORT', port + 1);
   // localhost, not 127.0.0.1: browsers scope cookies to the hostname, so 127.0.0.1 and
   // localhost are distinct cookie domains. The callback must match the origin the browser

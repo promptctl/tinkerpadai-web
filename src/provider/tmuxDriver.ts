@@ -106,6 +106,16 @@ const dirExists = async (dir: string): Promise<boolean> => {
   }
 };
 
+// The one closing instruction every turn's prompt ends with. The playground skill
+// tells the agent to open the finished file in a browser — correct for a human's
+// desktop, hostile when this driver runs headless turns in the background (a seeding
+// wave would pop one window per brief on whatever machine hosts the provider) — so
+// the headless contract is stated here, once, for every prompt shape.
+// [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
+const PROMPT_CLOSING =
+  'Write nothing else to that path. Do NOT open the file in a browser or run `open` — ' +
+  'you are running headless; the platform serves the file itself. When the file is written, you are done.';
+
 // The instruction handed to Claude Code. The brief reaches the agent only via this
 // file on disk — never interpolated into a shell command — so a brief can say
 // anything without becoming an injection. [FRAMING:representation]
@@ -116,7 +126,7 @@ const promptFor = (brief: Brief, artifactPath: string): string =>
     brief.description,
     '',
     `Write the complete, self-contained HTML file (inline CSS/JS, no external dependencies) to exactly this path: ${artifactPath}`,
-    'Write nothing else to that path. When the file is written, you are done.',
+    PROMPT_CLOSING,
   ].join('\n');
 
 // The follow-up instruction for a continue turn: refine the file already on disk
@@ -130,7 +140,7 @@ const continuePromptFor = (brief: Brief, artifactPath: string): string =>
     brief.description,
     '',
     `The current playground is the file at exactly this path: ${artifactPath}. Update that file in place; keep it self-contained (inline CSS/JS, no external dependencies).`,
-    'Write nothing else to that path. When the file is written, you are done.',
+    PROMPT_CLOSING,
   ].join('\n');
 
 // The genesis instruction for a FORK: the seed artifact is already written to the
@@ -142,7 +152,7 @@ const forkPromptFor = (artifactPath: string): string =>
   [
     'You are forking an existing self-contained interactive HTML playground to use as the starting point for a new one.',
     `The playground is the file at exactly this path: ${artifactPath}. Keep it as the playground; keep it self-contained (inline CSS/JS, no external dependencies).`,
-    'Write nothing else to that path. When the file is written, you are done.',
+    PROMPT_CLOSING,
   ].join('\n');
 
 export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => {

@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { DEFAULT_PORT, FRONT_DOOR_HOST } from '../src/web/serverConfig.js';
+import { DEFAULT_PORT, FRONT_DOOR_HOST } from '../src/web/frontDoorDefaults.js';
 
 // THE SEEDING DRIVER CORE: turn a briefs manifest into commons playgrounds by driving
 // the real public write path — loopback login, POST /generations, POST /poll — exactly
@@ -358,6 +358,10 @@ export interface WaveConfig {
 // mid-run fault (1). [LAW:types-are-the-program]
 export class UsageError extends Error {}
 
+// The default number of briefs generated at once when concurrency is unspecified — the one
+// source of that default, named like the other config defaults rather than inlined. [LAW:one-source-of-truth]
+export const DEFAULT_CONCURRENCY = 3;
+
 // Derive the wave's config from argv + env, or throw a UsageError. Pure, so the argument
 // contract (concurrency default and validation, base URL normalization) is verified
 // without a process. [LAW:effects-at-boundaries]
@@ -376,7 +380,8 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   // would slip garbage and floats past the guard as a silently-wrong concurrency; Number()
   // yields NaN/3.14, both of which the isSafeInteger check rejects loudly. [LAW:no-silent-failure]
   const concurrencyRaw = argv[3];
-  const concurrency = concurrencyRaw === undefined || concurrencyRaw === '' ? 3 : Number(concurrencyRaw);
+  const concurrency =
+    concurrencyRaw === undefined || concurrencyRaw === '' ? DEFAULT_CONCURRENCY : Number(concurrencyRaw);
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
     throw new UsageError(`concurrency must be a positive integer, got: ${String(concurrencyRaw)}`);
   }

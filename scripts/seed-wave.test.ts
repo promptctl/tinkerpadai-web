@@ -457,9 +457,8 @@ describe('runWave — worker draining', () => {
   });
 
   it('contains a rejected brief and finishes the rest of the wave', async () => {
-    // generateOne is async, so its real failures — a fetch rejection, a non-JSON parse
-    // throw — arrive as a rejected promise; that is the shape the containment seam must
-    // absorb, modeled here as one brief rejecting.
+    // An async rejection — a fetch failure, a non-JSON parse throw — is the common failure
+    // shape the containment seam must absorb, modeled here as one brief rejecting.
     const generate = async (entry: BriefEntry): Promise<Outcome> => {
       if (entry.description === 'brief 4') throw new Error('proxy 502');
       return { state: 'ready', playgroundId: entry.description };
@@ -469,6 +468,21 @@ describe('runWave — worker draining', () => {
     const four = results[4];
     expect(four?.outcome.state).toBe('failed');
     expect((four?.outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/transport: proxy 502/);
+    expect(results.filter((r) => r.outcome.state === 'ready')).toHaveLength(9);
+  });
+
+  it('contains a SYNCHRONOUS throw too, not only an async rejection', async () => {
+    // A generate that throws synchronously (before returning a promise) would escape a
+    // generate(entry).catch chain; the try/catch containment absorbs it as this brief's
+    // failed outcome and the rest of the wave still completes.
+    const generate = (entry: BriefEntry): Promise<Outcome> => {
+      if (entry.description === 'brief 4') throw new Error('sync boom');
+      return Promise.resolve({ state: 'ready', playgroundId: entry.description });
+    };
+    const results = await runWave(entries, 3, generate);
+    expect(results).toHaveLength(10);
+    expect(results[4]?.outcome.state).toBe('failed');
+    expect((results[4]?.outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/transport: sync boom/);
     expect(results.filter((r) => r.outcome.state === 'ready')).toHaveLength(9);
   });
 

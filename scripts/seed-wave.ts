@@ -93,12 +93,12 @@ export const delay = (ms: number): Promise<void> => new Promise((resolve) => set
 // [LAW:no-silent-failure]
 export const cookiePair = (setCookies: readonly string[], name: string): string => {
   const header = setCookies.find((cookie) => cookie.startsWith(`${name}=`));
-  if (header === undefined) throw new Error(`login: server did not set cookie ${name}`);
+  if (header === undefined) throw new Error(`server did not set cookie ${name}`);
   // The name=value pair is everything up to the first attribute delimiter; indexOf+slice
   // always yields a definite string (no split()[0] that the type widens to possibly-undefined).
   const semicolon = header.indexOf(';');
   const pair = semicolon === -1 ? header : header.slice(0, semicolon);
-  if (pair === `${name}=`) throw new Error(`login: cookie ${name} is empty`);
+  if (pair === `${name}=`) throw new Error(`cookie ${name} is empty`);
   return pair;
 };
 
@@ -290,12 +290,15 @@ export const mapWithConcurrency = async <T, R>(
 };
 
 // Drain a wave's briefs through mapWithConcurrency, supplying the brief-specific mapper:
-// progress logging and the containment seam. That .catch is the one place ANY escape from a
-// brief's generate path — a fetch rejection, a non-JSON proxy body, a parse throw — becomes
-// THAT brief's failed outcome, so one bad response can never reject the pool and discard the
-// wave's ledger. It lives here (the caller), not in the generic primitive, and not in generate.
-// Wave-level preconditions (manifest, login) sit outside and still fail the wave loudly.
-// [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:dataflow-not-control-flow]
+// progress logging and the containment seam. The try/catch is the one place ANY escape from a
+// brief's generate path — a synchronous throw OR an async rejection (a fetch failure, a
+// non-JSON proxy body, a parse throw) — becomes THAT brief's failed outcome, so one bad
+// response can never reject the pool and discard the wave's ledger. try/catch (not
+// generate(entry).catch) is deliberate: it also contains a synchronous throw, which .catch
+// would miss because the throw escapes before .catch attaches. Containment lives here (the
+// caller), not in the generic primitive, and not in generate; wave-level preconditions
+// (manifest, login) sit outside and still fail the wave loudly.
+// [LAW:single-enforcer] [LAW:no-silent-failure]
 export const runWave = (
   entries: readonly BriefEntry[],
   concurrency: number,
@@ -303,12 +306,12 @@ export const runWave = (
 ): Promise<readonly BriefResult[]> =>
   mapWithConcurrency(entries, concurrency, async (entry, index): Promise<BriefResult> => {
     console.log(`[${index + 1}/${entries.length}] generating (${entry.type}): ${entry.description.slice(0, 80)}...`);
-    const outcome = await generate(entry).catch(
-      (error: unknown): Outcome => ({
-        state: 'failed',
-        error: `transport: ${error instanceof Error ? error.message : String(error)}`,
-      }),
-    );
+    let outcome: Outcome;
+    try {
+      outcome = await generate(entry);
+    } catch (error) {
+      outcome = { state: 'failed', error: `transport: ${error instanceof Error ? error.message : String(error)}` };
+    }
     console.log(
       outcome.state === 'ready'
         ? `[${index + 1}/${entries.length}] ready: ${outcome.playgroundId} (${entry.type})`

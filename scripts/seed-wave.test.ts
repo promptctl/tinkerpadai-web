@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cookiePair,
   generateOne,
+  login,
   parseManifest,
   resolveConfig,
   runWave,
@@ -25,6 +26,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const brief = (type: BriefEntry['type'], description: string): BriefEntry => ({ type, description });
@@ -68,6 +70,10 @@ describe('parseManifest', () => {
     const raw = JSON.stringify([{ type: 'design', description: 'ok' }, { type: 'design' }]);
     expect(() => parseManifest(raw, 'm.json')).toThrow(/\[1\]: description/);
   });
+
+  it('rejects invalid JSON, naming the manifest path', () => {
+    expect(() => parseManifest('not json at all', 'bad.json')).toThrow(/^bad\.json: not valid JSON/);
+  });
 });
 
 describe('cookiePair', () => {
@@ -92,6 +98,74 @@ describe('cookiePair', () => {
 
   it('fails loudly when the cookie is present but empty', () => {
     expect(() => cookiePair(['tp_session=; Path=/'], 'tp_session')).toThrow(/cookie tp_session is empty/);
+  });
+});
+
+// Build a Response carrying zero or more Set-Cookie headers, the way the app's session
+// endpoints answer — so login's cookie extraction runs against real Headers.getSetCookie().
+const withCookies = (
+  status: number,
+  cookies: readonly string[],
+  init: { location?: string; body?: unknown } = {},
+): Response => {
+  const headers = new Headers();
+  for (const cookie of cookies) headers.append('set-cookie', cookie);
+  if (init.location !== undefined) headers.set('location', init.location);
+  return new Response(init.body === undefined ? null : JSON.stringify(init.body), { status, headers });
+};
+
+// Route the login dance's three requests to scripted responses by URL, so each failure
+// shape can be injected without a server. [LAW:behavior-not-structure]
+const stubLoginFetch = (responders: {
+  start: () => Response;
+  callback?: () => Response;
+  whoami?: () => Response;
+}): void => {
+  vi.stubGlobal('fetch', (input: string | URL | Request) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url.endsWith('/session/login')) return Promise.resolve(responders.start());
+    if (url.includes('/session/callback')) {
+      return Promise.resolve((responders.callback ?? (() => withCookies(302, ['tp_session=sess'], { location: '/' })))());
+    }
+    if (url.endsWith('/session')) {
+      return Promise.resolve((responders.whoami ?? (() => withCookies(200, [], { body: { identity: { subject: 'dev:local' } } })))());
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+};
+
+const okStart = (): Response =>
+  withCookies(302, ['tp_oauth_state=nonce'], { location: 'http://test.local/session/callback?code=c&state=nonce' });
+
+describe('login', () => {
+  it('completes the dance and returns the session cookie pair', async () => {
+    stubLoginFetch({ start: okStart });
+    await expect(login('http://test.local')).resolves.toBe('tp_session=sess');
+  });
+
+  it('fails loudly when the login redirect carries no location header', async () => {
+    stubLoginFetch({ start: () => withCookies(302, ['tp_oauth_state=nonce']) });
+    await expect(login('http://test.local')).rejects.toThrow(/redirect carried no location header/);
+  });
+
+  it('fails loudly when the state cookie is absent', async () => {
+    stubLoginFetch({ start: () => withCookies(302, [], { location: 'http://test.local/session/callback' }) });
+    await expect(login('http://test.local')).rejects.toThrow(/did not set cookie tp_oauth_state/);
+  });
+
+  it('fails loudly when the callback mints no session cookie', async () => {
+    stubLoginFetch({ start: okStart, callback: () => withCookies(302, [], { location: '/' }) });
+    await expect(login('http://test.local')).rejects.toThrow(/did not set cookie tp_session/);
+  });
+
+  it('fails loudly when whoami resolves no identity shape', async () => {
+    stubLoginFetch({ start: okStart, whoami: () => withCookies(200, [], { body: { notIdentity: true } }) });
+    await expect(login('http://test.local')).rejects.toThrow(/did not resolve an identity/);
+  });
+
+  it('fails loudly when a step returns the wrong status', async () => {
+    stubLoginFetch({ start: () => withCookies(500, []) });
+    await expect(login('http://test.local')).rejects.toThrow(/expected HTTP 302, got 500/);
   });
 });
 

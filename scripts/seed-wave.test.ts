@@ -421,6 +421,10 @@ describe('mapWithConcurrency', () => {
       mapWithConcurrency([1, 2, 3], 2, (n) => (n === 2 ? Promise.reject(new Error('boom')) : Promise.resolve(n))),
     ).rejects.toThrow('boom');
   });
+
+  it('rejects a concurrency below 1 rather than silently doing no work', async () => {
+    await expect(mapWithConcurrency([1, 2], 0, (n) => Promise.resolve(n))).rejects.toThrow(/concurrency must be >= 1/);
+  });
 });
 
 describe('runWave — worker draining', () => {

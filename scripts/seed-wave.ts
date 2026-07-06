@@ -266,18 +266,24 @@ export const generateOne = async (
 };
 
 // The reusable concurrency primitive: apply `fn` to every item with at most `concurrency`
-// in flight, returning the results in INPUT order. One iterator is shared by all workers, so
-// each for-of pulls the next [index, item] via a synchronous .next() — lock-free draining, and
-// `item` is typed T, never a possibly-undefined indexed access. Results are pushed into a dense
-// (append-only, never sparse) array and reordered by index at the end, so the R[] type never
-// describes a hole. It knows nothing about what fn does; if fn rejects, that rejection
-// propagates (the caller owns any per-item containment). [LAW:composability] [LAW:decomposition]
-// [LAW:types-are-the-program]
+// in flight, returning the results in INPUT order. All workers share the ONE `queue` iterator,
+// so each for-of pulls the next [index, item] via a synchronous .next() — lock-free draining,
+// and `item` is typed T, never a possibly-undefined indexed access. The sharing is load-bearing:
+// a worker must iterate `queue`, never a fresh `items.entries()`, or each worker would get its
+// own copy and process every item N times. Results are pushed into a dense (append-only, never
+// sparse) array and reordered by index at the end, so the R[] type never describes a hole. It
+// knows nothing about what fn does; if fn rejects, that rejection propagates (the caller owns any
+// per-item containment). [LAW:composability] [LAW:decomposition] [LAW:types-are-the-program]
 export const mapWithConcurrency = async <T, R>(
   items: readonly T[],
   concurrency: number,
   fn: (item: T, index: number) => Promise<R>,
 ): Promise<readonly R[]> => {
+  // A general primitive defends its own contract: 0 (or less) would spawn no workers and
+  // return [] — silent data loss — so it fails loudly instead. [LAW:no-silent-failure]
+  if (concurrency < 1) {
+    throw new Error(`mapWithConcurrency: concurrency must be >= 1, got ${concurrency}`);
+  }
   const collected: { readonly index: number; readonly result: R }[] = [];
   const queue = items.entries();
   const worker = async (): Promise<void> => {

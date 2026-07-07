@@ -5,8 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TinkerPad — spin up a playground</title>
     <meta name="description" content="Describe anything and TinkerPad spins up a self-contained, interactive playground you can tinker with, copy the prompt from, remix, and share." />
-    <!-- The favicon: the brand mark as an inline SVG data URI. Byte-identical to pageShell.ts's
-         FAVICON_LINK — a documented twin, like the token blocks below; edit one, edit both. -->
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23g)'/%3E%3Ctext x='16' y='22' font-family='system-ui,-apple-system,sans-serif' font-size='14' font-weight='700' fill='white' text-anchor='middle'%3ETP%3C/text%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -14,72 +12,73 @@
     <script>(function(){var t=localStorage.getItem('tp-theme');if(!t)t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)})()</script>
     <style>
       /* ── DESIGN TOKENS ─────────────────────────── */
-      /* [LAW:one-source-of-truth] Every color flows from one of these two token blocks.
-         No hex values appear outside :root / [data-theme="dark"]. */
+      /* Injected from frontDoorChrome.ts's TOKENS_CSS at build time — the ONE source shared with the
+         server pages (pageShell). Do not edit here; edit the source and run `pnpm build`.
+         [LAW:one-source-of-truth] */
       :root {
-        color-scheme: light;
-        --bg:               #ffffff;
-        --surface:          #f8fafc;
-        --border:           #e2e8f0;
-        --border-2:         #cbd5e1;
-        --text:             #0f172a;
-        --text-2:           #334155;
-        --muted:            #64748b;
-        --muted-2:          #94a3b8;
-        --accent:           #6366f1;
-        --accent-dark:      #4f46e5;
-        --accent-light:     #818cf8;
-        --bad:              #ef4444;
-        --good:             #10b981;
-        --nav-bg:           rgba(255,255,255,0.92);
-        --widget-bg:        #ffffff;
-        --input-bg:         #f8fafc;
-        --input-focus-bg:   #ffffff;
-        --step-icon-bg:     rgba(99,102,241,0.08);
-        --step-icon-border: rgba(99,102,241,0.15);
-        --footer-bg:        #0f172a;
-        --footer-border:    #1e293b;
-        --footer-text:      #ffffff;
-        --footer-link:      #94a3b8;
-        --footer-dim:       #475569;
-        --shadow-widget:    0 4px 24px rgba(99,102,241,0.08), 0 1px 4px rgba(0,0,0,0.05);
-        --shadow-btn:       0 2px 8px rgba(99,102,241,0.3);
-        --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.4);
-        --radius-sm: 6px;
-        --radius-md: 12px;
-        --radius-lg: 16px;
-      }
+    color-scheme: light;
+    --bg:               #ffffff;
+    --surface:          #f8fafc;
+    --border:           #e2e8f0;
+    --border-2:         #cbd5e1;
+    --text:             #0f172a;
+    --text-2:           #334155;
+    --muted:            #64748b;
+    --muted-2:          #94a3b8;
+    --accent:           #6366f1;
+    --accent-dark:      #4f46e5;
+    --accent-light:     #818cf8;
+    --bad:              #ef4444;
+    --good:             #10b981;
+    --nav-bg:           rgba(255,255,255,0.92);
+    --widget-bg:        #ffffff;
+    --input-bg:         #f8fafc;
+    --input-focus-bg:   #ffffff;
+    --step-icon-bg:     rgba(99,102,241,0.08);
+    --step-icon-border: rgba(99,102,241,0.15);
+    --footer-bg:        #0f172a;
+    --footer-border:    #1e293b;
+    --footer-text:      #ffffff;
+    --footer-link:      #94a3b8;
+    --footer-dim:       #475569;
+    --shadow-widget:    0 4px 24px rgba(99,102,241,0.08), 0 1px 4px rgba(0,0,0,0.05);
+    --shadow-btn:       0 2px 8px rgba(99,102,241,0.3);
+    --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.4);
+    --radius-sm: 6px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+  }
 
-      [data-theme="dark"] {
-        color-scheme: dark;
-        --bg:               #0d1117;
-        --surface:          #161b27;
-        --border:           #21293a;
-        --border-2:         #30363d;
-        --text:             #e6edf3;
-        --text-2:           #c9d1d9;
-        --muted:            #8b949e;
-        --muted-2:          #6e7681;
-        --accent:           #818cf8;
-        --accent-dark:      #6366f1;
-        --accent-light:     #a5b4fc;
-        --bad:              #f87171;
-        --good:             #34d399;
-        --nav-bg:           rgba(13,17,23,0.92);
-        --widget-bg:        #161b27;
-        --input-bg:         #0d1117;
-        --input-focus-bg:   #0d1117;
-        --step-icon-bg:     rgba(129,140,248,0.1);
-        --step-icon-border: rgba(129,140,248,0.2);
-        --footer-bg:        #010409;
-        --footer-border:    #21293a;
-        --footer-text:      #e6edf3;
-        --footer-link:      #8b949e;
-        --footer-dim:       #6e7681;
-        --shadow-widget:    0 4px 24px rgba(129,140,248,0.1), 0 1px 4px rgba(0,0,0,0.3);
-        --shadow-btn:       0 2px 8px rgba(99,102,241,0.4);
-        --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.5);
-      }
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --bg:               #0d1117;
+    --surface:          #161b27;
+    --border:           #21293a;
+    --border-2:         #30363d;
+    --text:             #e6edf3;
+    --text-2:           #c9d1d9;
+    --muted:            #8b949e;
+    --muted-2:          #6e7681;
+    --accent:           #818cf8;
+    --accent-dark:      #6366f1;
+    --accent-light:     #a5b4fc;
+    --bad:              #f87171;
+    --good:             #34d399;
+    --nav-bg:           rgba(13,17,23,0.92);
+    --widget-bg:        #161b27;
+    --input-bg:         #0d1117;
+    --input-focus-bg:   #0d1117;
+    --step-icon-bg:     rgba(129,140,248,0.1);
+    --step-icon-border: rgba(129,140,248,0.2);
+    --footer-bg:        #010409;
+    --footer-border:    #21293a;
+    --footer-text:      #e6edf3;
+    --footer-link:      #8b949e;
+    --footer-dim:       #6e7681;
+    --shadow-widget:    0 4px 24px rgba(129,140,248,0.1), 0 1px 4px rgba(0,0,0,0.3);
+    --shadow-btn:       0 2px 8px rgba(99,102,241,0.4);
+    --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.5);
+  }
 
       /* ── RESET ─────────────────────────────────── */
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -502,9 +501,9 @@
       }
       .btn-outline:hover { background: var(--accent); color: white; }
 
-      /* Preview grid — the client-rendered teaser of recent playgrounds. index.html is a static
-         file that cannot import the server shell's .card CSS (documented no-build exception), so
-         the card here is its own richer shape: a gradient preview thumbnail (keyed to the
+      /* Preview grid — the client-rendered teaser of recent playgrounds. This page renders its cards
+         client-side (from /api/playgrounds), so it does not reuse the server shell's .card CSS; the
+         card here is its own richer shape: a gradient preview thumbnail (keyed to the
          playground id) over a title + byline. Hidden until the client injects cards; the
          :not([hidden]) guard lets the UA [hidden] rule win until then, so an empty or failed fetch
          leaves the static browse CTA as the honest fallback. [LAW:no-silent-failure] */
@@ -987,6 +986,13 @@
       // as a value transform (reverse + slice), never asked of the endpoint.
       // [LAW:dataflow-not-control-flow]
 
+      // The card format primitives (byline, step count). Inlined here from frontDoorChrome.ts at
+      // build time — their OWN source, lifted verbatim, so the homepage cards and the server-rendered
+      // commons cards share ONE format definition and cannot drift. Edit the source and run
+      // `pnpm build`; the drift test fails if this block and the source disagree. [LAW:one-source-of-truth]
+      const bylineText = (author) => `by ${author}`;
+      const stepText = (count) => `${count} step${count === 1 ? '' : 's'}`;
+
       // The preview gradient — a pure function of the playground id, so a card wears the same colour
       // on every render. The hue is folded into the indigo→violet→cyan brand band [200,320) rather
       // than a hardcoded palette, keeping colour derived, not sprinkled. [LAW:one-source-of-truth]
@@ -1020,14 +1026,11 @@
 
         const meta = document.createElement('div');
         meta.className = 'pg-card-meta';
-        const steps = summary.recipe.length;
-        // The byline and step-count formats here reproduce the server-rendered commons card's, and
-        // can drift from it. That duplication is forced, not accidental: this page paints
-        // pre-request with no build step and no shared runtime, so it cannot import the server's
-        // format helpers. The single-source fix is the shared-static-asset consolidation the design
-        // epic already tracks, not a presentation string folded into the JSON data seam (that would
-        // bake one consumer's view choice into a shape three consumers share). [LAW:one-source-of-truth]
-        meta.textContent = `by ${summary.author} · ${steps} step${steps === 1 ? '' : 's'}`;
+        // Byline and step count via the shared format primitives (inlined above from
+        // frontDoorChrome.ts) — the SAME formats the server commons card uses, so a playground reads
+        // identically wherever it is listed. textContent is the escape boundary: the raw author is
+        // rendered as text, never markup. [LAW:one-source-of-truth] [LAW:single-enforcer]
+        meta.textContent = `${bylineText(summary.author)} · ${stepText(summary.recipe.length)}`;
 
         body.replaceChildren(title, meta);
         card.replaceChildren(preview, body);

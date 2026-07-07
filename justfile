@@ -14,3 +14,7 @@ seed manifest concurrency="":
 
 typecheck:
     pnpm typecheck
+
+# Regenerate the static front door (src/web/index.html) from its template + shared chrome source.
+build:
+    pnpm build

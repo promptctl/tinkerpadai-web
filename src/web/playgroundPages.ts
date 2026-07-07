@@ -1,5 +1,6 @@
 import type { ForkAttribution, ParentRef, PlaygroundId, PlaygroundSummary } from '../storage/index.js';
 import { escapeHtml } from './escapeHtml.js';
+import { bylineText, stepText } from './frontDoorChrome.js';
 import { renderPageShell, siteFooter, siteNav } from './pageShell.js';
 
 // THE APP-ORIGIN "USE" PAGES, as pure string builders. Given already-read data they return
@@ -26,18 +27,20 @@ const forkedFromLabel = (parent: ParentRef | null): string =>
     : `Forked from <a href="${playHref(parent.id)}">${escapeHtml(parent.prompt)}</a>`;
 
 // The author byline — "by <author>", the visible half of provenance (the fork label is the
-// other half). It is the SAME on every surface, so it lives once; the author is server data and
-// crosses the single enforcer like every other outside value on this trusted origin. Unlike the
-// fork label, authorship is never absent — every playground has an author — so this is a total
-// string, not a nullable fragment. [LAW:one-source-of-truth] [LAW:single-enforcer]
-const byline = (author: PlaygroundSummary['author']): string => `by ${escapeHtml(author)}`;
+// other half). The FORMAT lives once in frontDoorChrome (shared with the static homepage's cards so
+// attribution reads identically there); this server surface wraps it around an escaped author, so
+// the single enforcer still owns escaping on this trusted origin. Unlike the fork label, authorship
+// is never absent — every playground has an author — so this is a total string, not a nullable
+// fragment. [LAW:one-source-of-truth] [LAW:single-enforcer]
+const byline = (author: PlaygroundSummary['author']): string => bylineText(escapeHtml(author));
 
 // The step-count label — iteration depth as a pluralized phrase, shared by the commons row and
 // the player's recipe block so "how many steps" reads identically wherever a playground appears.
-// A pure count of the recipe; the plural suffix is a value, never a branch over whether markup
-// renders. [LAW:one-source-of-truth] [LAW:dataflow-not-control-flow]
-const stepLabel = (recipe: PlaygroundSummary['recipe']): string =>
-  `${recipe.length} step${recipe.length === 1 ? '' : 's'}`;
+// The pluralization FORMAT lives once in frontDoorChrome (the same primitive the homepage cards
+// use); here it counts the recipe. A pure count, no escaping needed (digits only), and the plural
+// suffix is a value, never a branch over whether markup renders. [LAW:one-source-of-truth]
+// [LAW:dataflow-not-control-flow]
+const stepLabel = (recipe: PlaygroundSummary['recipe']): string => stepText(recipe.length);
 
 // The recipe block (history layer A) — the ordered prompts that built this playground, the
 // describe->refine story made visible. Collapsed by default so provenance enriches the chrome

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { PlaygroundId } from '../storage/index.js';
+import type { Tags } from '../storage/index.js';
+import { PlaygroundId, Tag } from '../storage/index.js';
 import { playgroundCard, renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 
 // The pure renderers' contract: trusted app-origin chrome with EVERY outside value escaped,
@@ -16,6 +17,7 @@ const summary = (over: Partial<Parameters<typeof renderCommons>[0][number]> = {}
   forkedFrom: null,
   author: 'ada' as never,
   recipe: ['a tiny counter'] as const,
+  tags: [] as Tags,
   ...over,
 });
 
@@ -136,6 +138,19 @@ describe('playgroundCard', () => {
     expect(playgroundCard(summary())).not.toContain('Forked from');
   });
 
+  // Topic tags render as a chip row on the card — the discoverability facet made visible.
+  it('renders each topic tag as a chip', () => {
+    const html = playgroundCard(summary({ tags: [Tag('math'), Tag('css')] }));
+    expect(html).toContain('class="tags"');
+    expect(html).toContain('<span class="tag">math</span>');
+    expect(html).toContain('<span class="tag">css</span>');
+  });
+
+  // A tag-less playground (one that predates tagging) shows no chip row — a value, not a crash.
+  it('renders no chip row when a playground has no tags', () => {
+    expect(playgroundCard(summary({ tags: [] }))).not.toContain('class="tags"');
+  });
+
   it('escapes a hostile author and a hostile parent prompt rather than emitting markup', () => {
     const badAuthor = playgroundCard(summary({ author: XSS as never }));
     expect(badAuthor).not.toContain(XSS);
@@ -157,6 +172,7 @@ describe('renderPlayer', () => {
     author: 'ada' as never,
     forkedFrom: null,
     recipe: [XSS] as const,
+    tags: [] as Tags,
   };
 
   // A shared player link is a first impression, so its meta description names THIS playground —
@@ -220,6 +236,18 @@ describe('renderPlayer', () => {
   // The player chrome carries the SAME byline the commons row does. [LAW:one-source-of-truth]
   it('credits the author as a "by <author>" byline in the chrome', () => {
     expect(renderPlayer({ ...view, author: 'grace' as never })).toContain('by grace');
+  });
+
+  // The player carries the SAME tag chips the commons card does, so tags read identically wherever a
+  // playground appears. [LAW:one-source-of-truth]
+  it('renders the topic tags as chips in the chrome', () => {
+    const html = renderPlayer({ ...view, tags: [Tag('math'), Tag('interactive')] });
+    expect(html).toContain('<span class="tag">math</span>');
+    expect(html).toContain('<span class="tag">interactive</span>');
+  });
+
+  it('renders no chip row for a player whose playground has no tags', () => {
+    expect(renderPlayer(view)).not.toContain('class="tags"');
   });
 
   // The recipe (history layer A) surfaces the ordered prompts that built the playground in the

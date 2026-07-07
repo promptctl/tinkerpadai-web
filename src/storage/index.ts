@@ -19,9 +19,9 @@ export {
   PlaygroundNotFoundError,
 } from './catalog.js';
 export { makeMemoryCatalog } from './memoryCatalog.js';
-export { makeFileCatalog } from './fileCatalog.js';
+export { makeFileCatalog, hydrateStoredDoc } from './fileCatalog.js';
 
-export { VersionId, PlaygroundId } from './types.js';
+export { VersionId, PlaygroundId, Tag } from './types.js';
 export type {
   CatalogDoc,
   ForkAttribution,
@@ -32,5 +32,6 @@ export type {
   PlaygroundSummary,
   Recipe,
   SessionRecord,
+  Tags,
   TurnRecord,
 } from './types.js';

@@ -32,7 +32,7 @@ export const generateIndexHtml = (template: string): string => {
 
   // No marker may survive: a leftover means the template names a slot the generator does not fill, so
   // the page would ship with a literal `tp:` comment where chrome belongs. Fail instead. [LAW:no-silent-failure]
-  const leftover = out.match(/(?:<!--|\/\*)\s*tp:[a-z]+/);
+  const leftover = out.match(/(?:<!--|\/\*)\s*tp:[a-zA-Z]+/);
   if (leftover !== null) {
     throw new Error(`generateIndexHtml: unfilled marker ${JSON.stringify(leftover[0])} — the template names a slot the generator does not fill`);
   }

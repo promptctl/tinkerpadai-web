@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CARD_FORMAT_JS, FAVICON_LINK, THEME_RESOLVER, TOKENS_CSS, bylineText, stepText } from './frontDoorChrome.js';
+import { CARD_FORMAT_JS, FAVICON_LINK, THEME_RESOLVER, TOKENS_CSS } from './frontDoorChrome.js';
 import { generateIndexHtml } from './generateIndexHtml.js';
 
 const template = readFileSync(new URL('./index.html.tmpl', import.meta.url), 'utf8');
@@ -24,21 +24,11 @@ describe('generateIndexHtml', () => {
     expect(html).toContain(FAVICON_LINK);
   });
 
-  // The client format twin (CARD_FORMAT_JS) is inlined into the homepage, and it must compute exactly
-  // what the server's typed bylineText/stepText do — that lockstep is what lets one format edit reach
-  // both surfaces. Evaluate the inlined source and compare against the functions. [LAW:one-source-of-truth]
-  it('inlines a client format twin that computes the same byline/step format as the server functions', () => {
+  // The generator splices the client format twin (CARD_FORMAT_JS) into the homepage's card renderer.
+  // That the twin computes the same format as the server functions is frontDoorChrome's own invariant,
+  // asserted in frontDoorChrome.test.ts; here we only prove the generator inlines it. [LAW:one-source-of-truth]
+  it('inlines the shared client format twin', () => {
     expect(generateIndexHtml(template)).toContain(CARD_FORMAT_JS);
-    const evaluated = new Function(`${CARD_FORMAT_JS} return { bylineText, stepText };`)() as {
-      bylineText: (author: string) => string;
-      stepText: (count: number) => string;
-    };
-    for (const author of ['grace', 'a<b>&"\'', '']) {
-      expect(evaluated.bylineText(author)).toBe(bylineText(author));
-    }
-    for (const count of [0, 1, 2, 3, 42]) {
-      expect(evaluated.stepText(count)).toBe(stepText(count));
-    }
   });
 
   // A template that names a slot the generator does not fill (typo'd or renamed marker) must fail the
@@ -47,7 +37,9 @@ describe('generateIndexHtml', () => {
     expect(() => generateIndexHtml(template.replace('<!--tp:favicon-->', ''))).toThrow(/favicon/);
   });
 
-  it('fails loudly on an unfilled marker left in the template', () => {
-    expect(() => generateIndexHtml(template.replace('<!--tp:theme-->', '<!--tp:theme--><!--tp:bogus-->'))).toThrow(/bogus|unfilled/);
+  // A leftover marker must be caught regardless of casing — the guard exists to catch mistakes, and a
+  // mixed-case marker name is exactly such a mistake. [LAW:no-silent-failure]
+  it('fails loudly on an unfilled marker of any casing left in the template', () => {
+    expect(() => generateIndexHtml(template.replace('<!--tp:theme-->', '<!--tp:theme--><!--tp:Bogus-->'))).toThrow(/Bogus|unfilled/);
   });
 });

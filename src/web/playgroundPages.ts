@@ -1,4 +1,6 @@
 import type { ForkAttribution, ParentRef, PlaygroundId, PlaygroundSummary } from '../storage/index.js';
+import type { CommonsQuery, TagFacet } from './commonsQuery.js';
+import { commonsHref, isActiveQuery, withTagToggled } from './commonsQuery.js';
 import { escapeHtml } from './escapeHtml.js';
 import { bylineText, stepText } from './frontDoorChrome.js';
 import { renderPageShell, siteFooter, siteNav } from './pageShell.js';
@@ -93,14 +95,65 @@ export const playgroundCard = (s: PlaygroundSummary): string =>
     ${cardForkedFrom(s.forkedFrom)}
   </article>`;
 
-// The commons listing — the product surface, now the design-system page: the shared site chrome
-// (nav + footer) wrapping a responsive card grid. An empty catalog is a value (an empty list),
-// rendered as an empty state, never a thrown special case. [LAW:dataflow-not-control-flow]
-export const renderCommons = (summaries: readonly PlaygroundSummary[]): string => {
+// The search form — a plain GET form whose target is /commons, so a query is a URL a viewer can
+// bookmark or share and the page needs no client JS to filter. It carries the active text as its `q`
+// field and the active tags as hidden fields, so submitting a new search PRESERVES the tag filter
+// (both facets compose into one URL). Every value crosses the single enforcer on the way into an
+// attribute. [LAW:no-silent-failure] [LAW:single-enforcer]
+const searchForm = (query: CommonsQuery): string => {
+  const carriedTags = query.tags
+    .map((tag) => `\n    <input type="hidden" name="tag" value="${escapeHtml(tag)}" />`)
+    .join('');
+  return `<form class="commons-search" method="get" action="/commons" role="search">${carriedTags}
+    <input type="search" name="q" value="${escapeHtml(query.text)}" placeholder="Search playgrounds…" aria-label="Search playgrounds" />
+    <button type="submit">Search</button>
+  </form>`;
+};
+
+// One filter chip — a LINK, not a form control, so clicking it toggles exactly this tag in the query
+// (add when absent, remove when present) while preserving the rest of the query, all expressed as
+// the target URL. An active tag reads as pressed (aria + class), so the current filter is legible
+// without JS. The tag is a normalized token but still crosses the single enforcer, defense in depth
+// like every outside value on this trusted origin. [LAW:dataflow-not-control-flow] [LAW:single-enforcer]
+const facetChip = (facet: TagFacet, query: CommonsQuery): string => {
+  const active = query.tags.includes(facet.tag);
+  const href = commonsHref(withTagToggled(query, facet.tag));
+  return `<a class="filter-tag${active ? ' active' : ''}" href="${escapeHtml(href)}" aria-pressed="${active}">${escapeHtml(facet.tag)}<span class="filter-count">${facet.count}</span></a>`;
+};
+
+// The filter chip row — every tag the commons carries, as toggle links. Derived from the WHOLE
+// catalog (not just the current results), so narrowing to one tag never hides the others and a
+// viewer can always broaden. An empty facet list (a commons with no tags yet) renders nothing — a
+// value, not a branch that special-cases the markup. [LAW:dataflow-not-control-flow]
+const facetRow = (facets: readonly TagFacet[], query: CommonsQuery): string =>
+  facets.length === 0
+    ? ''
+    : `<div class="commons-filters">${facets.map((facet) => facetChip(facet, query)).join('')}</div>`;
+
+// What the commons page renders: the already-filtered results, the full facet list to filter by, and
+// the active query to reflect in the controls. `results` is derived from the same canonical list the
+// facets come from (filtered at the read boundary), so the two cannot disagree about what exists.
+// [LAW:one-source-of-truth]
+export interface CommonsView {
+  readonly results: readonly PlaygroundSummary[];
+  readonly facets: readonly TagFacet[];
+  readonly query: CommonsQuery;
+}
+
+// The commons listing — the product surface: the shared site chrome (nav + footer) wrapping the
+// search + filter controls and a responsive card grid. Empty results are a value, not a crash — but
+// they carry two DIFFERENT meanings the message distinguishes: an active filter that matched nothing
+// (offer a way to clear) vs a genuinely empty commons (offer a way to build). The message is a value
+// chosen by whether the query narrows, never a skipped branch. [LAW:dataflow-not-control-flow]
+export const renderCommons = (view: CommonsView): string => {
+  const { results, facets, query } = view;
+  const emptyState = isActiveQuery(query)
+    ? `<div class="empty">No playgrounds match your search. <a href="/commons">Clear filters →</a></div>`
+    : `<div class="empty">No playgrounds yet. <a href="/">Describe one →</a></div>`;
   const grid =
-    summaries.length === 0
-      ? `<div class="empty">No playgrounds yet. <a href="/">Describe one →</a></div>`
-      : `<div class="card-grid">\n${summaries.map(playgroundCard).join('\n')}\n</div>`;
+    results.length === 0
+      ? emptyState
+      : `<div class="card-grid">\n${results.map(playgroundCard).join('\n')}\n</div>`;
   return renderPageShell(
     'The Commons — TinkerPad',
     'Browse every playground the TinkerPad community has made. Open one to tinker, or remix it into your own.',
@@ -109,12 +162,50 @@ export const renderCommons = (summaries: readonly PlaygroundSummary[]): string =
   <div class="page-head">
     <h1>The Commons</h1>
     <p class="lede">Every playground anyone has made. Open one to tinker. <a href="/">Make your own →</a></p>
+    ${searchForm(query)}
+    ${facetRow(facets, query)}
   </div>
   ${grid}
 </main>
 ${siteFooter()}`,
+    COMMONS_STYLES,
   );
 };
+
+// The commons-only filter styling, passed as the page's head CSS — kept out of the shared shell
+// because these controls live on this surface (and, later, my-playgrounds), not on every page. It
+// reads only shared design tokens, so the controls track light/dark like everything else, and the
+// active chip reuses the accent the way the front door's primary controls do — colour derived from
+// tokens, never a private hex. [LAW:one-source-of-truth]
+const COMMONS_STYLES = `<style>
+  .commons-search { display: flex; gap: 0.6rem; margin-top: 1.1rem; max-width: 520px; }
+  .commons-search input[type="search"] {
+    flex: 1 1 auto; background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: 0.55rem 0.9rem; font: inherit; outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  }
+  .commons-search input[type="search"]::placeholder { color: var(--muted-2); }
+  .commons-search input[type="search"]:focus { border-color: var(--accent-light); box-shadow: 0 0 0 3px rgba(99,102,241,0.12); background: var(--input-focus-bg); }
+  .commons-search button {
+    background: var(--accent); color: #fff; border: 0; border-radius: var(--radius-md);
+    padding: 0.55rem 1.2rem; font: 500 0.9rem inherit; cursor: pointer; white-space: nowrap;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .commons-search button:hover { background: var(--accent-dark); transform: translateY(-1px); }
+
+  .commons-filters { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.9rem; }
+  .filter-tag {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    font-size: 0.78rem; font-weight: 500; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 100px; padding: 0.2rem 0.75rem; line-height: 1.5;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+  }
+  .filter-tag:hover { color: var(--text); border-color: var(--border-2); }
+  .filter-tag.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .filter-count { font-size: 0.72rem; opacity: 0.7; font-variant-numeric: tabular-nums; }
+</style>`;
 
 // A plain notice page — for the read path's loud-but-friendly dead ends (unknown id, missing id).
 // The same site chrome as the commons, so a dead end still feels like the product. Both values are

@@ -36,21 +36,38 @@ export const PlaygroundId = (raw: string): PlaygroundId => raw as PlaygroundId;
 // [LAW:types-are-the-program]
 export type Tag = Brand<string, 'Tag'>;
 
-// The single normalizer/minter: lowercase, replace every run of non-alphanumerics with one hyphen,
-// trim hyphens. So spaces and punctuation between words become hyphens ('Data Viz' → `data-viz`),
-// never collapse away ('C.S.S' → `c-s-s`, not `css`). The one home for tag normalization, so every
-// Tag in the system is normalized by
-// construction. [LAW:single-enforcer] A raw string that normalizes to empty (pure punctuation) is
-// not a tag at all; minting one would be a silent lie, so it throws. The only inputs are a curated
-// vocabulary and our own already-normalized stored values, so this fires at module load if that
-// vocabulary is malformed — never on a hot path. [LAW:no-silent-failure]
-export const Tag = (raw: string): Tag => {
-  const normalized = raw
+// The single normalizer: lowercase, replace every run of non-alphanumerics with one hyphen, trim
+// hyphens. So spaces and punctuation between words become hyphens ('Data Viz' → `data-viz`), never
+// collapse away ('C.S.S' → `c-s-s`, not `css`). The one home for tag normalization — both minters
+// below derive from it, so a Tag() result and a tryTag() result for the same input are identical
+// wherever both are defined. A pure-punctuation input normalizes to the empty string, which is the
+// "not a tag at all" value the two minters treat differently (throw vs null). [LAW:single-enforcer]
+// [LAW:one-source-of-truth]
+const normalizeTag = (raw: string): string =>
+  raw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+
+// The strict minter, for our OWN inputs (the curated vocabulary and already-normalized stored
+// values). A raw string that normalizes to empty is not a tag at all; minting one would be a silent
+// lie, so it throws — and since the only callers are trusted, this fires at module load if the
+// vocabulary is malformed, never on a hot path. [LAW:no-silent-failure]
+export const Tag = (raw: string): Tag => {
+  const normalized = normalizeTag(raw);
   if (normalized === '') throw new Error(`not a valid tag: ${JSON.stringify(raw)}`);
   return normalized as Tag;
+};
+
+// The non-throwing minter, for TRUST BOUNDARIES — a user-supplied tag from a URL query, where a
+// hand-edited '?tag=' or '?tag=!!!' must not fault the whole page. It returns null for input with no
+// valid tag token, so the caller DROPS it as a constraint (it could match nothing anyway) rather
+// than crash. Same normalizer as Tag(), so the two agree wherever both produce a value; the ONLY
+// difference is how they represent "no tag here" — an exception vs a null the caller handles.
+// [LAW:single-enforcer] [LAW:no-defensive-null-guards]
+export const tryTag = (raw: string): Tag | null => {
+  const normalized = normalizeTag(raw);
+  return normalized === '' ? null : (normalized as Tag);
 };
 
 // A playground's topic tags — a bounded, priority-ordered list of normalized Tags for the commons'

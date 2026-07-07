@@ -1,5 +1,6 @@
 import type { Catalog } from '../storage/index.js';
 import { PlaygroundId } from '../storage/index.js';
+import { filterSummaries, parseCommonsQuery, tagFacets } from './commonsQuery.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 
 // THE APP-ORIGIN SURFACE — the front door's one composed Web handler. It serves the trusted
@@ -76,8 +77,16 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
     switch (route) {
       case 'GET /':
         return html(page);
-      case 'GET /commons':
-        return html(renderCommons(await catalog.listPlaygrounds()));
+      case 'GET /commons': {
+        // The catalog is read ONCE as the canonical list; discovery is a pure projection over it.
+        // The facets come from the WHOLE list (so filtering by one tag never hides the others),
+        // the results from that same list narrowed by the URL's query. One source of truth, two
+        // pure derivations — never a parallel search index. [LAW:one-source-of-truth]
+        // [LAW:effects-at-boundaries]
+        const all = await catalog.listPlaygrounds();
+        const query = parseCommonsQuery(url.searchParams);
+        return html(renderCommons({ results: filterSummaries(all, query), facets: tagFacets(all), query }));
+      }
       case 'GET /api/playgrounds':
         // The JSON projection of the commons — the SAME PlaygroundSummary list renderCommons
         // renders as HTML, serialized so the static homepage (index.html, which cannot import the

@@ -8,7 +8,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "tsx scripts/gen-index.ts",
-    "dev": "tsx scripts/gen-index.ts && tsx watch src/web/main.dev.ts",
+    "dev": "tsx watch src/web/main.dev.ts",
     "seed": "tsx scripts/seed.ts",
     "start": "tsx src/web/main.ts"
   },

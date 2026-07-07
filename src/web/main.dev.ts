@@ -3,6 +3,7 @@ import { makeApp } from '../app.js';
 import { Subject } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
+import { generateIndexHtml } from './generateIndexHtml.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
@@ -29,7 +30,12 @@ const makeDevOAuthProvider = (subject: Subject): OAuthProvider => ({
   authenticate: async () => subject,
 });
 
-const pageUrl = new URL('./index.html', import.meta.url);
+// Dev derives the front door IN-PROCESS from its template, so every tsx-watch restart (which fires
+// when frontDoorChrome or any imported source changes) serves a page regenerated from the same live
+// source the server pages use — the homepage can never drift stale from the chrome mid-session. Prod
+// (main.ts) serves the committed, pre-built index.html; the drift test guarantees the two are equal.
+// [LAW:no-ambient-temporal-coupling] [LAW:one-source-of-truth]
+const templateUrl = new URL('./index.html.tmpl', import.meta.url);
 
 // The dev generation deadline, stated by the composition root through the driver's
 // existing config seam. Wave-1 seeding (tinkerpadai-seeding-bw1.1) measured real briefs
@@ -53,7 +59,7 @@ const main = async (): Promise<void> => {
     port: contentPort,
   });
 
-  const page = await readFile(pageUrl, 'utf8');
+  const page = generateIndexHtml(await readFile(templateUrl, 'utf8'));
   const handler = makeSiteHandler({
     page,
     catalog: app.catalog,

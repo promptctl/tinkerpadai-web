@@ -39,7 +39,13 @@ describe('generateIndexHtml', () => {
 
   // A leftover marker must be caught regardless of casing — the guard exists to catch mistakes, and a
   // mixed-case marker name is exactly such a mistake. [LAW:no-silent-failure]
-  it('fails loudly on an unfilled marker of any casing left in the template', () => {
+  it('fails loudly on an unfilled HTML-comment marker of any casing left in the template', () => {
     expect(() => generateIndexHtml(template.replace('<!--tp:theme-->', '<!--tp:theme--><!--tp:Bogus-->'))).toThrow(/Bogus|unfilled/);
+  });
+
+  // The guard covers CSS-comment markers too (the `/*...*/` branch of the regex), since tokens/formats
+  // are spliced inside <style>/<script>. Exercise that branch, not just the HTML-comment one. [LAW:verifiable-goals]
+  it('fails loudly on an unfilled CSS-comment marker left in the template', () => {
+    expect(() => generateIndexHtml(template.replace('/*tp:tokens*/', '/*tp:tokens*/ /*tp:Extra*/'))).toThrow(/Extra|unfilled/);
   });
 });

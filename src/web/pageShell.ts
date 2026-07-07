@@ -1,92 +1,28 @@
 import { escapeHtml } from './escapeHtml.js';
+import { TOKENS_CSS, THEME_RESOLVER, FAVICON_LINK } from './frontDoorChrome.js';
 
 // THE SHARED SERVER-RENDERED PAGE SHELL. Every app-origin page the server builds as a STRING
-// (the commons, the notice/error pages, the player) is wrapped here, so the design tokens, the
-// theme resolver, the reset, and the site chrome (nav + footer) are defined EXACTLY ONCE for the
-// dynamic surfaces. Before this file each renderer carried its own divergent token block; now
-// they share one. [LAW:one-source-of-truth] [LAW:decomposition]
+// (the commons, the notice/error pages, the player) is wrapped here, so the reset and the site
+// chrome (nav + footer) are defined EXACTLY ONCE for the dynamic surfaces. Before this file each
+// renderer carried its own divergent token block; now they share one. [LAW:one-source-of-truth]
+// [LAW:decomposition]
 //
-// index.html is the deliberate, documented TWIN of these tokens — a hand-authored static file
-// that must be self-contained and paint pre-request with no build step, so it inlines its own
-// copy rather than importing this one. That is the single marked exception to the source-of-truth
-// above; the token blocks below AND the favicon link (FAVICON_LINK) are kept byte-identical to
-// index.html's on purpose, and an edit to one is an edit to both.
-// [LAW:one-source-of-truth] exception: static file, no build step.
+// The design pieces that ALSO appear on the static homepage — the design tokens, the pre-paint
+// theme resolver, and the favicon — are not defined here: they live in frontDoorChrome, the one
+// source both this shell and index.html derive from (index.html gets them spliced in at build time
+// by generateIndexHtml). So there is no twin to keep in sync — a token edit lands on both surfaces
+// from a single place. [LAW:one-source-of-truth]
 //
 // This module knows NOTHING about playgrounds — it is generic chrome that any page composes.
 // The playground-shaped fragments (cards, bylines, recipes) live in playgroundPages, which
 // depends on this file and never the reverse. [LAW:one-way-deps]
 
-// The design-token stylesheet: the two token blocks (light default, dark override) copied
-// verbatim from index.html, then the reset, base type, and the reusable component classes the
-// content pages share — nav, footer, the container/page-head, and the card grid. Every color
-// flows from a token; no hex values appear outside :root / [data-theme="dark"].
-// [LAW:one-source-of-truth]
+// The design-token stylesheet: the two token blocks (light default, dark override) from the shared
+// frontDoorChrome source, then the reset, base type, and the reusable component classes the content
+// pages share — nav, footer, the container/page-head, and the card grid. Every color flows from a
+// token; no hex values appear outside :root / [data-theme="dark"]. [LAW:one-source-of-truth]
 const SHELL_STYLES = `
-  :root {
-    color-scheme: light;
-    --bg:               #ffffff;
-    --surface:          #f8fafc;
-    --border:           #e2e8f0;
-    --border-2:         #cbd5e1;
-    --text:             #0f172a;
-    --text-2:           #334155;
-    --muted:            #64748b;
-    --muted-2:          #94a3b8;
-    --accent:           #6366f1;
-    --accent-dark:      #4f46e5;
-    --accent-light:     #818cf8;
-    --bad:              #ef4444;
-    --good:             #10b981;
-    --nav-bg:           rgba(255,255,255,0.92);
-    --widget-bg:        #ffffff;
-    --input-bg:         #f8fafc;
-    --input-focus-bg:   #ffffff;
-    --step-icon-bg:     rgba(99,102,241,0.08);
-    --step-icon-border: rgba(99,102,241,0.15);
-    --footer-bg:        #0f172a;
-    --footer-border:    #1e293b;
-    --footer-text:      #ffffff;
-    --footer-link:      #94a3b8;
-    --footer-dim:       #475569;
-    --shadow-widget:    0 4px 24px rgba(99,102,241,0.08), 0 1px 4px rgba(0,0,0,0.05);
-    --shadow-btn:       0 2px 8px rgba(99,102,241,0.3);
-    --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.4);
-    --radius-sm: 6px;
-    --radius-md: 12px;
-    --radius-lg: 16px;
-  }
-
-  [data-theme="dark"] {
-    color-scheme: dark;
-    --bg:               #0d1117;
-    --surface:          #161b27;
-    --border:           #21293a;
-    --border-2:         #30363d;
-    --text:             #e6edf3;
-    --text-2:           #c9d1d9;
-    --muted:            #8b949e;
-    --muted-2:          #6e7681;
-    --accent:           #818cf8;
-    --accent-dark:      #6366f1;
-    --accent-light:     #a5b4fc;
-    --bad:              #f87171;
-    --good:             #34d399;
-    --nav-bg:           rgba(13,17,23,0.92);
-    --widget-bg:        #161b27;
-    --input-bg:         #0d1117;
-    --input-focus-bg:   #0d1117;
-    --step-icon-bg:     rgba(129,140,248,0.1);
-    --step-icon-border: rgba(129,140,248,0.2);
-    --footer-bg:        #010409;
-    --footer-border:    #21293a;
-    --footer-text:      #e6edf3;
-    --footer-link:      #8b949e;
-    --footer-dim:       #6e7681;
-    --shadow-widget:    0 4px 24px rgba(129,140,248,0.1), 0 1px 4px rgba(0,0,0,0.3);
-    --shadow-btn:       0 2px 8px rgba(99,102,241,0.4);
-    --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.5);
-  }
+  ${TOKENS_CSS}
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -208,12 +144,6 @@ const SHELL_STYLES = `
   .footer-bottom { border-top: 1px solid var(--footer-border); padding-top: 1.25rem; font-size: 0.78rem; color: var(--footer-dim); }
 `;
 
-// The pre-paint theme resolver — the SAME preference waterfall index.html runs (localStorage →
-// prefers-color-scheme → light), inlined in <head> so it sets data-theme BEFORE first paint and
-// no page flashes the wrong theme. It is the single resolver of the active token set on a
-// server-rendered page. [LAW:no-ambient-temporal-coupling] [LAW:one-source-of-truth]
-const THEME_RESOLVER = `<script>(function(){var t=localStorage.getItem('tp-theme');if(!t)t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';document.documentElement.setAttribute('data-theme',t)})()</script>`;
-
 // The theme-toggle wiring — flips and persists the choice, and keeps mirroring the system
 // preference for users who never chose. The toggle button lives in siteNav, so a page without a
 // nav (the player) simply has no button to bind; the lookup returning null is genuine optionality
@@ -272,13 +202,6 @@ export const siteFooter = (): string => `<footer class="site-footer">
     <div class="footer-bottom">© 2026 TinkerPad. All playgrounds are public by default.</div>
   </div>
 </footer>`;
-
-// The favicon — the brand mark (the nav-logo-icon: a 135deg #6366f1→#8b5cf6 rounded square with a
-// white "TP") expressed as an inline SVG data URI. It is the SAME mark, not a second asset that can
-// drift from it, and it needs no binary file and no static-file route on this handler — the icon
-// travels in the head as source. This link is the byte-identical twin of index.html's own copy.
-// [LAW:one-source-of-truth]
-const FAVICON_LINK = `<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23g)'/%3E%3Ctext x='16' y='22' font-family='system-ui,-apple-system,sans-serif' font-size='14' font-weight='700' fill='white' text-anchor='middle'%3ETP%3C/text%3E%3C/svg%3E" />`;
 
 // The page shell — doctype, head (title, tokens, theme resolver), and body. Callers compose the
 // body from siteNav + their content + siteFooter (the player omits the chrome and passes its own

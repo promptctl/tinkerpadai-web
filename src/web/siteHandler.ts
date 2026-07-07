@@ -65,6 +65,7 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         author: summary.author,
         forkedFrom: summary.forkedFrom,
         recipe: summary.recipe,
+        tags: summary.tags,
       }),
     );
   };

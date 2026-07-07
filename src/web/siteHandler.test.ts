@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { makeMemoryCatalog, VersionId } from '../storage/index.js';
-import type { Catalog, PlaygroundId } from '../storage/index.js';
+import { makeMemoryCatalog, Tag, VersionId } from '../storage/index.js';
+import type { Catalog, PlaygroundId, Tags } from '../storage/index.js';
 import { Subject } from '../identity/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
@@ -13,13 +13,14 @@ import { makeSiteHandler } from './siteHandler.js';
 const PAGE = '<!doctype html><title>front door</title>';
 const CONTENT_ORIGIN = 'http://content.local:9999';
 
-const seed = async (catalog: Catalog, prompt: string): Promise<PlaygroundId> => {
+const seed = async (catalog: Catalog, prompt: string, tags: Tags = []): Promise<PlaygroundId> => {
   const playground = await catalog.createPlayground({
     handle: { providerId: ProviderId('p'), sessionId: SessionId('s'), turnId: TurnId('t') },
     prompt,
     version: VersionId('v1'),
     lineage: null,
     author: Subject('ada'),
+    tags,
   });
   return playground.id;
 };
@@ -122,7 +123,13 @@ describe('makeSiteHandler', () => {
     const res = await handler(new Request('http://front.local/api/playgrounds'));
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
-    const summaries = (await res.json()) as { id: string; prompt: string; author: string; recipe: string[] }[];
+    const summaries = (await res.json()) as {
+      id: string;
+      prompt: string;
+      author: string;
+      recipe: string[];
+      tags: string[];
+    }[];
     // Insertion order preserved — recency is the client view's window, not the endpoint's policy.
     expect(summaries.map((s) => s.prompt)).toEqual(['first playground', 'second playground']);
     // The read-path projection the card renders from: id, author byline, and step-count source.
@@ -130,6 +137,8 @@ describe('makeSiteHandler', () => {
     expect(summaries[1]?.id).toBe(id);
     expect(summaries[1]?.author).toBe('ada');
     expect(summaries[1]?.recipe).toEqual(['second playground']);
+    // Tags cross the same seam — the JSON projection the homepage grid also reads.
+    expect(summaries[1]?.tags).toEqual([]);
     expect(delegated).toHaveLength(0);
   });
 
@@ -152,6 +161,22 @@ describe('makeSiteHandler', () => {
     // The iframe points at the separate content origin, carrying the id — the app origin
     // never serves the playground html itself.
     expect(body).toContain(`src="${CONTENT_ORIGIN}/?id=${encodeURIComponent(id)}"`);
+  });
+
+  // Tags flow end-to-end: a playground's stored classification reaches the reader as chips on BOTH
+  // the commons list and the player chrome — the same projected value on both surfaces.
+  it('renders a playground\'s topic tags as chips on the commons and the player', async () => {
+    const catalog = makeMemoryCatalog();
+    const id = await seed(catalog, 'a fractal explorer', [Tag('math'), Tag('interactive')]);
+    const { handler } = build(catalog);
+
+    const commons = await (await handler(new Request('http://front.local/commons'))).text();
+    expect(commons).toContain('<span class="tag">math</span>');
+    expect(commons).toContain('<span class="tag">interactive</span>');
+
+    const player = await (await handler(new Request(`http://front.local/play?id=${encodeURIComponent(id)}`))).text();
+    expect(player).toContain('<span class="tag">math</span>');
+    expect(player).toContain('<span class="tag">interactive</span>');
   });
 
   it('returns a 404 for an unknown playground id rather than a blank player', async () => {
@@ -201,6 +226,7 @@ describe('makeSiteHandler', () => {
       version: VersionId('v1'),
       lineage: null,
       author: Subject('ada'),
+      tags: [],
     });
     const child = await catalog.createPlayground({
       handle: { providerId: ProviderId('p'), sessionId: SessionId('child-session'), turnId: TurnId('t1') },
@@ -208,6 +234,7 @@ describe('makeSiteHandler', () => {
       version: VersionId('v2'),
       lineage: { parentSession: SessionId('parent-session'), forkedFromVersion: VersionId('v1') },
       author: Subject('grace'),
+      tags: [],
     });
     const { handler } = build(catalog);
 

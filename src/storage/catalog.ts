@@ -123,6 +123,10 @@ export const summarize = (
   forkedFrom: forkAttributionOf(playground, resolveParent),
   author: playground.session.author,
   recipe: recipeOf(playground.session),
+  // Tags are a pass-through projection of the stored classification — like author, not recomputed
+  // here — so nothing re-derives them and they cannot drift from what was stored at create.
+  // [LAW:one-source-of-truth]
+  tags: playground.session.tags,
 });
 
 // The single implementation of the catalog invariants over any CatalogStore. The
@@ -162,6 +166,7 @@ export const makeCatalog = (store: CatalogStore): Catalog => {
             providerId: input.handle.providerId,
             lineage: input.lineage,
             author: input.author,
+            tags: input.tags,
             turns: [{ turnId: input.handle.turnId, prompt: input.prompt, version: input.version }],
           },
         };

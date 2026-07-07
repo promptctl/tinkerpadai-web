@@ -58,6 +58,18 @@ ${steps}
 </details>`;
 };
 
+// The tag chips — a playground's normalized topic tags as a small pill row, shared by the commons
+// card and the player chrome so tags read identically wherever a playground appears (the same
+// one-source discipline as the byline and step count). An empty tag list is the empty string (a
+// value, not a branch that skips markup): a playground with no tags simply shows no chips. Tags are
+// normalized tokens, but they still cross the single enforcer — defense in depth on this trusted
+// origin, like every other outside value. [LAW:single-enforcer] [LAW:one-source-of-truth]
+// [LAW:dataflow-not-control-flow]
+const tagChips = (tags: PlaygroundSummary['tags']): string =>
+  tags.length === 0
+    ? ''
+    : `<div class="tags">${tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>`;
+
 // Per-surface attribution fragments: a non-fork is the empty string (a value, never a branch
 // that skips markup), a fork is the shared label inside the surface's own element. The commons
 // card carries it as its own line; the player header as its own row. [LAW:dataflow-not-control-flow]
@@ -77,6 +89,7 @@ export const playgroundCard = (s: PlaygroundSummary): string =>
   `  <article class="card">
     <a class="card-title" href="${playHref(s.id)}">${escapeHtml(s.prompt)}</a>
     <div class="card-meta">${escapeHtml(s.providerId)} · ${byline(s.author)} · ${stepLabel(s.recipe)}</div>
+    ${tagChips(s.tags)}
     ${cardForkedFrom(s.forkedFrom)}
   </article>`;
 
@@ -148,6 +161,10 @@ export interface PlayerView {
   // commons row counts, so provenance reads consistently wherever a playground appears. Escaped
   // chrome (text), never interpolated into the client script. [LAW:one-source-of-truth]
   readonly recipe: PlaygroundSummary['recipe'];
+  // The topic tags, rendered as the SAME chip row the commons card carries, so tags read
+  // identically wherever a playground appears. The SAME projected value the commons row uses;
+  // escaped chrome, never interpolated into the client script. [LAW:one-source-of-truth]
+  readonly tags: PlaygroundSummary['tags'];
 }
 
 // The player client, inlined into the player chrome. It wires TWO actions onto the SAME
@@ -387,6 +404,7 @@ export const renderPlayer = (view: PlayerView): string =>
     <span class="byline">${byline(view.author)}</span>
   </div>
   ${playerForkedFrom(view.forkedFrom)}
+  ${tagChips(view.tags)}
   ${recipeBlock(view.recipe)}
 </header>
 <iframe
@@ -427,6 +445,10 @@ export const renderPlayer = (view: PlayerView): string =>
   .player-head .byline { font-size:0.8rem; color:var(--muted); white-space:nowrap; flex-shrink:0; }
   .forked-from { flex-basis:100%; margin:0; font-size:0.8rem; color:var(--muted); }
   .forked-from a { font-weight:600; }
+
+  /* The tag chips take their own row in the wrapping header (base pill style is the shared shell's
+     .tag); margin-top:0 because the header's own gap already spaces the rows. */
+  .player-head .tags { flex-basis:100%; margin-top:0; }
 
   /* Recipe — the describe->refine story as an INTENTIONAL collapse, not a browser default: the
      summary is a pill (the same step-icon accent the landing page uses), the steps a proper card. */

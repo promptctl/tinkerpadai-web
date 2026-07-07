@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -9,8 +9,8 @@ import type { Catalog } from './catalog.js';
 import { currentVersionOf, recipeOf } from './catalog.js';
 import { makeFileCatalog } from './fileCatalog.js';
 import { makeMemoryCatalog } from './memoryCatalog.js';
-import type { Lineage } from './types.js';
-import { PlaygroundId, VersionId } from './types.js';
+import type { Lineage, Tags } from './types.js';
+import { PlaygroundId, Tag, VersionId } from './types.js';
 
 // The provider-agnostic contract every Catalog must satisfy, run against each local
 // adapter. A new backend proves itself by passing this same suite.
@@ -43,6 +43,11 @@ const handle = (provider: string, session: string, turn: string): SessionHandle 
 // recorded, projected onto the summary, and preserved across an append (which never re-authors).
 const AUTHOR = Subject('ada');
 
+// Fixed topic tags supplied at create. The catalog stores what the producer hands it and never
+// classifies — so the contract proves tags are recorded on the session, projected onto the summary,
+// and preserved across an append (which never re-tags), exactly the discipline author follows.
+const TAGS: Tags = [Tag('math'), Tag('interactive')];
+
 describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
   it('round-trips the full session → turn → version record', async () => {
     const { catalog, close } = await open();
@@ -53,6 +58,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('version-1'),
         lineage: null,
         author: AUTHOR,
+        tags: TAGS,
       });
       const got = await catalog.getPlayground(created.id);
 
@@ -65,6 +71,9 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
       expect(got.session.lineage).toBeNull();
       // The author is recorded on the session — who made this playground, stored once at create.
       expect(got.session.author).toBe(AUTHOR);
+      // The tags are recorded on the session too — the classification the producer supplied, stored
+      // verbatim; the catalog never invents or re-derives them.
+      expect(got.session.tags).toEqual(TAGS);
     } finally {
       await close();
     }
@@ -79,6 +88,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('version-1'),
         lineage: null,
         author: AUTHOR,
+        tags: TAGS,
       });
       const second = await catalog.createPlayground({
         handle: handle('tmux', 'session-2', 'turn-2'),
@@ -86,6 +96,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('version-2'),
         lineage: null,
         author: AUTHOR,
+        tags: TAGS,
       });
 
       const list = await catalog.listPlaygrounds();
@@ -97,6 +108,9 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
       expect(summary?.currentVersion).toBe(VersionId('version-1'));
       // Authorship is projected onto the summary the commons reads — derived, never re-stored.
       expect(summary?.author).toBe(AUTHOR);
+      // Tags are projected the same way — a pass-through of the stored classification onto the
+      // summary the commons and player render as chips.
+      expect(summary?.tags).toEqual(TAGS);
     } finally {
       await close();
     }
@@ -111,6 +125,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('version-1'),
         lineage: null,
         author: AUTHOR,
+        tags: TAGS,
       });
 
       const updated = await catalog.appendTurn(created.id, {
@@ -128,6 +143,9 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
       expect(updated.session.lineage).toBeNull();
       // Nor does appending re-author: a follow-up extends the original author's playground.
       expect(updated.session.author).toBe(AUTHOR);
+      // Nor does it re-tag: tags are the playground's durable classification, set once at create and
+      // carried across every refinement, exactly like the author.
+      expect(updated.session.tags).toEqual(TAGS);
 
       const got = await catalog.getPlayground(created.id);
       expect(currentVersionOf(got.session)).toBe(VersionId('version-2'));
@@ -169,6 +187,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('version-1'),
         lineage: null,
         author: AUTHOR,
+        tags: TAGS,
       });
       await expect(
         catalog.appendTurn(created.id, {
@@ -200,6 +219,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('parent-version'),
         lineage: null,
         author: AUTHOR,
+        tags: TAGS,
       });
       const child = await catalog.createPlayground({
         handle: handle('tmux', 'child-session', 'child-turn'),
@@ -207,6 +227,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('child-version'),
         lineage: { parentSession: SessionId('parent-session'), forkedFromVersion: VersionId('parent-version') },
         author: AUTHOR,
+        tags: TAGS,
       });
 
       const list = await catalog.listPlaygrounds();
@@ -230,6 +251,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('child-version'),
         lineage: { parentSession: SessionId('gone-session'), forkedFromVersion: VersionId('gone-version') },
         author: AUTHOR,
+        tags: TAGS,
       });
 
       const summary = (await catalog.listPlaygrounds()).find((s) => s.id === orphan.id);
@@ -253,6 +275,7 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
         version: VersionId('own-version'),
         lineage,
         author: AUTHOR,
+        tags: TAGS,
       });
       const got = await catalog.getPlayground(forked.id);
 
@@ -264,6 +287,45 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
       expect(currentVersionOf(got.session)).not.toBe(got.session.lineage?.forkedFromVersion);
     } finally {
       await close();
+    }
+  });
+});
+
+// Tagging arrived after the first playgrounds were already on disk, so the file backend must read a
+// pre-tagging document without crashing: a session written before tags existed reads as an empty
+// tag list, never an error. This is the forward-compat trust boundary, and it is file-specific — the
+// memory backend never holds a legacy shape. [LAW:no-silent-failure]
+describe('file catalog reads a pre-tagging document', () => {
+  it('projects a tag-less stored playground as an empty tag list, not an error', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tp-catalog-legacy-'));
+    const path = join(dir, 'catalog.json');
+    try {
+      // A document exactly as an older build wrote it: a full session record with NO `tags` field.
+      const legacy = {
+        playgrounds: [
+          {
+            id: 'legacy-1',
+            session: {
+              sessionId: 'session-1',
+              providerId: 'tmux',
+              lineage: null,
+              author: 'ada',
+              turns: [{ turnId: 'turn-1', prompt: 'a bouncing ball', version: 'version-1' }],
+            },
+          },
+        ],
+      };
+      await writeFile(path, JSON.stringify(legacy), 'utf8');
+
+      const catalog = makeFileCatalog(path);
+      const summary = (await catalog.listPlaygrounds()).find((s) => s.id === PlaygroundId('legacy-1'));
+      expect(summary?.prompt).toBe('a bouncing ball');
+      expect(summary?.tags).toEqual([]);
+      // getPlayground must tolerate it too — the whole read path sees the upgraded shape.
+      const got = await catalog.getPlayground(PlaygroundId('legacy-1'));
+      expect(got.session.tags).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

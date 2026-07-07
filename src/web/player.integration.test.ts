@@ -28,6 +28,7 @@ const seed = async (catalog: Catalog, store: ArtifactStore): Promise<PlaygroundI
     version,
     lineage: null,
     author: Subject('ada'),
+    tags: [],
   });
   return playground.id;
 };

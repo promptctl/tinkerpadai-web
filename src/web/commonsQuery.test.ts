@@ -112,6 +112,16 @@ describe('tagFacets', () => {
     ]);
   });
 
+  // The tie-breaker: equal counts fall back to lexicographic tag order, so the chip order is
+  // stable regardless of input order. Distinct-count cases never exercise this branch. [LAW:behavior-not-structure]
+  it('breaks equal counts by lexicographic tag order, independent of input order', () => {
+    const facets = tagFacets([summary({ id: PlaygroundId('x'), tags: [Tag('b'), Tag('a')] })]);
+    expect(facets).toEqual([
+      { tag: Tag('a'), count: 1 },
+      { tag: Tag('b'), count: 1 },
+    ]);
+  });
+
   it('is empty when no summary carries a tag', () => {
     expect(tagFacets([summary({ tags: [] })])).toEqual([]);
   });

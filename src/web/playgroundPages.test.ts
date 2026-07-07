@@ -156,6 +156,24 @@ describe('renderCommons', () => {
   it('renders no filter chip row when no playground carries a tag', () => {
     expect(commons([summary({ tags: [] })])).not.toContain('class="commons-filters"');
   });
+
+  // The production path diverges from the `commons` helper: siteHandler passes facets from the WHOLE
+  // catalog, INDEPENDENT of the filtered results, so a filter that matched nothing still shows the
+  // chips a user needs to adjust. Called directly (not through the results-coupled helper) to prove
+  // the renderer handles empty results alongside non-empty facets. [LAW:behavior-not-structure]
+  it('renders the facet chips even when the filter matched no results', () => {
+    const html = renderCommons({
+      results: [],
+      facets: [{ tag: Tag('css'), count: 3 }],
+      query: { text: 'no-match', tags: [] },
+    });
+    // The over-filtered viewer sees BOTH the "no match" state AND the chips to broaden by. The css
+    // chip carries its count and toggles css on while preserving the active search text.
+    expect(html.toLowerCase()).toContain('no playgrounds match');
+    expect(html).toContain('class="commons-filters"');
+    expect(html).toContain('tag=css');
+    expect(html).toContain('<span class="filter-count">3</span>');
+  });
 });
 
 // The card is exported because the profile "my playgrounds" page (blocked on this ticket) renders

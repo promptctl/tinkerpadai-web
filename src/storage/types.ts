@@ -36,17 +36,21 @@ export const PlaygroundId = (raw: string): PlaygroundId => raw as PlaygroundId;
 // [LAW:types-are-the-program]
 export type Tag = Brand<string, 'Tag'>;
 
-// The single normalizer: lowercase, replace every run of non-alphanumerics with one hyphen, trim
-// hyphens. So spaces and punctuation between words become hyphens ('Data Viz' → `data-viz`), never
-// collapse away ('C.S.S' → `c-s-s`, not `css`). The one home for tag normalization — both minters
+// The single normalizer: lowercase, replace every run of non-letter/non-digit characters — in ANY
+// script, via the Unicode `\p{L}`/`\p{N}` classes — with one hyphen, then trim hyphens. So spaces
+// and punctuation between words become hyphens ('Data Viz' → `data-viz`), never collapse away
+// ('C.S.S' → `c-s-s`, not `css`), and a letter in any script survives rather than being silently
+// dropped ('café' → `café`, not the lossy `caf`). The one home for tag normalization — both minters
 // below derive from it, so a Tag() result and a tryTag() result for the same input are identical
-// wherever both are defined. A pure-punctuation input normalizes to the empty string, which is the
-// "not a tag at all" value the two minters treat differently (throw vs null). [LAW:single-enforcer]
-// [LAW:one-source-of-truth]
+// wherever both are defined. A separator/punctuation-only input normalizes to the empty string,
+// which is the "not a tag at all" value the two minters treat differently (throw vs null). Our own
+// producer (deriveTags) emits ASCII slugs, so this Unicode-awareness matters only at the tryTag
+// trust boundary, where it keeps hand-typed non-ASCII intact instead of mangling it.
+// [LAW:single-enforcer] [LAW:one-source-of-truth] [LAW:no-silent-failure]
 const normalizeTag = (raw: string): string =>
   raw
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '');
 
 // The strict minter, for our OWN inputs (the curated vocabulary and already-normalized stored

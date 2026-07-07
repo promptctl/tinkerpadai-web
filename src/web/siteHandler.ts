@@ -85,7 +85,9 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         // [LAW:effects-at-boundaries]
         const all = await catalog.listPlaygrounds();
         const query = parseCommonsQuery(url.searchParams);
-        return html(renderCommons({ results: filterSummaries(all, query), facets: tagFacets(all), query }));
+        const facets = tagFacets(all);
+        const results = filterSummaries(all, query);
+        return html(renderCommons({ results, facets, query }));
       }
       case 'GET /api/playgrounds':
         // The JSON projection of the commons — the SAME PlaygroundSummary list renderCommons

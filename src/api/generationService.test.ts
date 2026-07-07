@@ -304,6 +304,11 @@ describe('GenerationService.fork — branch a playground into an independent lin
     // fork carries no user brief, so the new playground's first-turn prompt is the parent's
     // original describe.
     expect(child.session.turns[0]?.prompt).toBe('a counter');
+    // The fork create path runs the SAME persist→deriveTags step submit does, so the fork is
+    // classified too — from its first-turn prompt ('a counter' → the 'counter' tools keyword). This
+    // guards the fork path independently: a refactor of fork's target or brief that dropped tagging
+    // would fail here, not silently ship untagged forks. [LAW:behavior-not-structure]
+    expect(child.session.tags.map(String)).toContain('tools');
   });
 
   it('fails loudly for an unknown playground id', async () => {

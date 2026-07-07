@@ -21,8 +21,18 @@ interface Topic {
 }
 
 // The topic vocabulary, in PRIORITY order (specific → generic). When a prompt matches more topics
-// than the cap, earlier entries win and the generic 'interactive' tag falls off first. Each keyword
-// is matched at a word boundary so 'color' catches 'colorful' but 'art' never fires inside 'start'.
+// than the cap, earlier entries win and the generic 'interactive' tag falls off first.
+//
+// Matching is PREFIX-at-a-word-boundary (\b at the start of the keyword only) — a deliberate
+// recall-favoring choice for a discovery facet: it catches the inflections prompts actually use,
+// both plurals ('tools', 'gradients') and the intentionally-truncated stems here ('simulat' →
+// simulation/simulate, 'geometr' → geometry/geometric, 'visualiz' → visualize). The known cost is
+// occasional over-tagging (a '3d texture viewer' trips 'text'); a right-hand boundary would prevent
+// it but lose far more legitimate matches, since a plural 's' and an unrelated 'u' are both just
+// letters — no simple rule separates them without a full stem-vs-word split across the vocabulary.
+// That precision is the job of the richer classifier this module's seam is built to accept, not
+// regex whack-a-mole here; over-tagging by one low-harm chip is the accepted trade-off.
+// [LAW:carrying-cost]
 const TOPICS: readonly Topic[] = [
   { tag: 'math', keywords: ['math', 'algebra', 'calculus', 'geometr', 'equation', 'formula', 'fibonacci', 'prime', 'trigonom', 'sine', 'cosine', 'vector', 'matrix', 'bezier', 'fractal', 'probabilit', 'arithmetic'] },
   { tag: 'physics', keywords: ['physic', 'gravity', 'pendulum', 'orbit', 'projectile', 'collision', 'momentum', 'velocity', 'kinematic', 'newton'] },
@@ -40,13 +50,23 @@ const TOPICS: readonly Topic[] = [
   { tag: 'interactive', keywords: ['interactive', 'explore', 'explorer', 'playground', 'slider', 'toggle', 'adjust', 'tweak'] },
 ];
 
+// A keyword is a plain alphanumeric word-stem — the invariant the match regex depends on.
+const KEYWORD = /^[a-z0-9]+$/;
+
 // The vocabulary compiled once at module load: each topic paired with a single boundary-anchored
-// regex over its keywords. Minting the tag through the single normalizer here means a malformed
-// vocabulary entry fails loudly at load, not in production. [LAW:single-enforcer] [LAW:no-silent-failure]
-const VOCABULARY: readonly { readonly tag: Tag; readonly re: RegExp }[] = TOPICS.map(({ tag, keywords }) => ({
-  tag: Tag(tag),
-  re: new RegExp(`\\b(?:${keywords.join('|')})`),
-}));
+// regex over its keywords. Two invariants are enforced HERE, loudly, at load — so a malformed
+// vocabulary is a build-time-ish failure that every test run trips, never a silent misclassification
+// in production. First, the tag is minted through the single normalizer. Second, each keyword is
+// asserted alphanumeric before it is interpolated raw into the pattern: a keyword carrying a regex
+// metacharacter (say 'c++') would otherwise compile to a WRONG pattern ('c' then one-or-more '+'),
+// or throw on unbalanced parens — the invariant that keeps `keywords.join('|')` safe is thus checked,
+// not merely assumed. [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:types-are-the-program]
+const VOCABULARY: readonly { readonly tag: Tag; readonly re: RegExp }[] = TOPICS.map(({ tag, keywords }) => {
+  for (const keyword of keywords) {
+    if (!KEYWORD.test(keyword)) throw new Error(`vocabulary keyword must be [a-z0-9]+: ${JSON.stringify(keyword)}`);
+  }
+  return { tag: Tag(tag), re: new RegExp(`\\b(?:${keywords.join('|')})`) };
+});
 
 // Every playground is interactive by the artifact contract (controls + live preview), so this is a
 // TRUE floor, not a junk-drawer default: a prompt that matched no topic still gets one honest tag.

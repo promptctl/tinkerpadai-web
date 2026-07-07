@@ -110,6 +110,43 @@ describe('makeSiteHandler', () => {
     expect(body).toContain('&lt;img src=x onerror=alert(1)&gt;');
   });
 
+  // The commons search + tag filter, end to end through the real route: the URL's query is parsed,
+  // the canonical list is narrowed, and only the surviving cards render. Both facets narrow the
+  // SAME cards, never a second card shape. [LAW:one-source-of-truth]
+  it('narrows the commons by the URL search text', async () => {
+    const catalog = makeMemoryCatalog();
+    await seed(catalog, 'a color picker');
+    await seed(catalog, 'a prime sieve');
+    const { handler } = build(catalog);
+    const body = await (await handler(new Request('http://front.local/commons?q=color'))).text();
+    expect(body).toContain('a color picker');
+    expect(body).not.toContain('a prime sieve');
+  });
+
+  it('narrows the commons by a URL tag filter, matching normalized tags', async () => {
+    const catalog = makeMemoryCatalog();
+    await seed(catalog, 'a color picker', [Tag('css')]);
+    await seed(catalog, 'a prime sieve', [Tag('math')]);
+    const { handler } = build(catalog);
+    // 'CSS' in the URL is normalized to match the stored 'css'.
+    const body = await (await handler(new Request('http://front.local/commons?tag=CSS'))).text();
+    expect(body).toContain('a color picker');
+    expect(body).not.toContain('a prime sieve');
+    // The filter chip row is derived from the WHOLE catalog, so the other facet stays offered — and
+    // its toggle link PRESERVES the active css filter (AND semantics: adding math narrows further).
+    expect(body).toContain('tag=math');
+    expect(body).toContain('/commons?tag=css&amp;tag=math');
+  });
+
+  it('renders the filtered-empty state when a filter matches nothing', async () => {
+    const catalog = makeMemoryCatalog();
+    await seed(catalog, 'a color picker', [Tag('css')]);
+    const { handler } = build(catalog);
+    const body = (await (await handler(new Request('http://front.local/commons?q=nomatch'))).text()).toLowerCase();
+    expect(body).toContain('no playgrounds match');
+    expect(body).not.toContain('no playgrounds yet');
+  });
+
   // The /api/playgrounds seam: the JSON projection of the commons the static homepage fetches to
   // render its preview grid. It returns the SAME PlaygroundSummary[] the commons HTML is built
   // from — the same source, so the two cannot disagree — in the catalog's insertion order, leaving

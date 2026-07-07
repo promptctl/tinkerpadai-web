@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { Tags } from '../storage/index.js';
+import type { PlaygroundSummary, Tags } from '../storage/index.js';
 import { PlaygroundId, Tag } from '../storage/index.js';
+import type { CommonsQuery } from './commonsQuery.js';
+import { EMPTY_QUERY, tagFacets } from './commonsQuery.js';
 import { playgroundCard, renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 
 // The pure renderers' contract: trusted app-origin chrome with EVERY outside value escaped,
@@ -9,7 +11,7 @@ import { playgroundCard, renderCommons, renderNotice, renderPlayer } from './pla
 
 const XSS = '<script>alert(1)</script>';
 
-const summary = (over: Partial<Parameters<typeof renderCommons>[0][number]> = {}) => ({
+const summary = (over: Partial<PlaygroundSummary> = {}): PlaygroundSummary => ({
   id: PlaygroundId('abc'),
   prompt: 'a tiny counter',
   providerId: 'p' as never,
@@ -21,21 +23,28 @@ const summary = (over: Partial<Parameters<typeof renderCommons>[0][number]> = {}
   ...over,
 });
 
+// renderCommons takes a view: the already-filtered results, the facets to filter by, and the active
+// query. These tests render a given result set directly (facets derived from it, empty query), so the
+// provenance/escaping contracts read the same as before the search UI landed; the search/filter
+// behaviour has its own describe block below.
+const commons = (results: readonly PlaygroundSummary[], query: CommonsQuery = EMPTY_QUERY): string =>
+  renderCommons({ results, facets: tagFacets(results), query });
+
 describe('renderCommons', () => {
   it('escapes a hostile prompt into inert text', () => {
-    const html = renderCommons([summary({ prompt: XSS })]);
+    const html = commons([summary({ prompt: XSS })]);
     expect(html).not.toContain(XSS);
     expect(html).toContain('&lt;script&gt;');
   });
 
   it('renders an empty list as an empty state, not a crash', () => {
-    expect(renderCommons([]).toLowerCase()).toContain('no playgrounds yet');
+    expect(commons([]).toLowerCase()).toContain('no playgrounds yet');
   });
 
   // Attribution is data flow: a fork shows "forked from <parent>" linking back, a non-fork
   // shows nothing — not a special case, just the empty value rendered as the empty fragment.
   it('attributes a fork to its browsable parent and links back', () => {
-    const html = renderCommons([
+    const html = commons([
       summary({ id: PlaygroundId('child'), prompt: 'a remixed counter', forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: 'the original counter' } } }),
     ]);
     expect(html).toContain('Forked from');
@@ -44,16 +53,16 @@ describe('renderCommons', () => {
   });
 
   it('shows no attribution for a playground that is not a fork', () => {
-    expect(renderCommons([summary()])).not.toContain('Forked from');
+    expect(commons([summary()])).not.toContain('Forked from');
   });
 
   // Authorship is the other half of provenance — every row credits its author as a byline.
   it('credits the author as a "by <author>" byline', () => {
-    expect(renderCommons([summary({ author: 'grace' as never })])).toContain('by grace');
+    expect(commons([summary({ author: 'grace' as never })])).toContain('by grace');
   });
 
   it('escapes a hostile author in the byline rather than emitting it as markup', () => {
-    const html = renderCommons([summary({ author: XSS as never })]);
+    const html = commons([summary({ author: XSS as never })]);
     expect(html).not.toContain(XSS);
     expect(html).toContain('&lt;script&gt;');
   });
@@ -61,12 +70,12 @@ describe('renderCommons', () => {
   // A fork whose parent has left the commons keeps the durable fork fact, but offers no link
   // to a parent that is no longer browsable. [LAW:no-silent-failure]
   it('states the fork fact without a link when the parent is gone', () => {
-    const html = renderCommons([summary({ forkedFrom: { parent: null } })]);
+    const html = commons([summary({ forkedFrom: { parent: null } })]);
     expect(html).toContain('Forked from a playground no longer in the commons');
   });
 
   it('escapes a hostile parent prompt in the attribution', () => {
-    const html = renderCommons([summary({ forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: XSS } } })]);
+    const html = commons([summary({ forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: XSS } } })]);
     expect(html).not.toContain(XSS);
     expect(html).toContain('&lt;script&gt;');
   });
@@ -74,23 +83,96 @@ describe('renderCommons', () => {
   // The recipe surfaces as a step count on the row — iteration depth made visible (history
   // layer A), pluralized as a value so a one-shot reads "1 step" and an iterated one "3 steps".
   it('shows the iteration step count, pluralized, on the row', () => {
-    expect(renderCommons([summary({ recipe: ['describe'] })])).toContain('1 step');
-    expect(renderCommons([summary({ recipe: ['describe', 'refine', 'again'] })])).toContain('3 steps');
+    expect(commons([summary({ recipe: ['describe'] })])).toContain('1 step');
+    expect(commons([summary({ recipe: ['describe', 'refine', 'again'] })])).toContain('3 steps');
   });
 
   // The commons is now the design-system page: the site chrome wraps it so a viewer can navigate
   // away (build, discover), and the theme system rides along so the page honors dark mode.
   it('wraps the list in the shared site chrome with a way to build and browse', () => {
-    const html = renderCommons([summary()]);
+    const html = commons([summary()]);
     expect(html).toContain('nav-logo');
     expect(html).toContain('site-footer');
     expect(html).toContain('id="themeToggle"');
   });
 
   it('links each playground to its player from the card', () => {
-    expect(renderCommons([summary({ id: PlaygroundId('xyz') })])).toContain(
+    expect(commons([summary({ id: PlaygroundId('xyz') })])).toContain(
       `/play?id=${encodeURIComponent('xyz')}`,
     );
+  });
+
+  // The search + filter controls: a GET form to /commons and a chip per available tag, so a viewer
+  // can narrow the commons and the resulting filter is a shareable URL — no client JS. [LAW:no-silent-failure]
+  it('renders a GET search form targeting /commons', () => {
+    const html = commons([summary()]);
+    expect(html).toContain('class="commons-search"');
+    expect(html).toContain('method="get"');
+    expect(html).toContain('action="/commons"');
+    expect(html).toContain('name="q"');
+  });
+
+  it('reflects the active search text in the search box, escaped', () => {
+    const html = commons([summary()], { text: XSS, tags: [] });
+    expect(html).toContain('name="q" value="&lt;script&gt;');
+    expect(html).not.toContain(XSS);
+  });
+
+  // Facets come from the whole result set, each a toggle link carrying its count. Ordered by count,
+  // so the most populous facet leads.
+  it('renders a filter chip per tag with its playground count', () => {
+    const html = commons([
+      summary({ id: PlaygroundId('a'), tags: [Tag('css'), Tag('math')] }),
+      summary({ id: PlaygroundId('b'), tags: [Tag('css')] }),
+    ]);
+    expect(html).toContain('class="commons-filters"');
+    expect(html).toContain('/commons?tag=css');
+    expect(html).toContain('/commons?tag=math');
+    // css appears on two playgrounds, math on one — the chip carries the count.
+    const cssChip = /href="\/commons\?tag=css"[^>]*>css<span class="filter-count">2</.exec(html);
+    expect(cssChip).not.toBeNull();
+  });
+
+  // An active tag reads as pressed and its link REMOVES itself (toggles off), so the current filter
+  // is legible and reversible without JS. [LAW:dataflow-not-control-flow]
+  it('marks an active tag pressed and links it to clear itself', () => {
+    const html = commons([summary({ tags: [Tag('css')] })], { text: '', tags: [Tag('css')] });
+    expect(html).toContain('class="filter-tag active"');
+    expect(html).toContain('aria-pressed="true"');
+    // Toggling the only active tag off returns to the bare commons.
+    expect(html).toContain('href="/commons"');
+  });
+
+  // A filter that matched nothing is a DIFFERENT empty state from a bare empty commons: it names the
+  // filter and offers a way to clear, never the "describe one" message. [LAW:dataflow-not-control-flow]
+  it('shows a filtered-empty state with a clear link, distinct from the bare-empty message', () => {
+    const html = commons([], { text: 'nothing matches', tags: [] });
+    expect(html.toLowerCase()).toContain('no playgrounds match');
+    expect(html).toContain('Clear filters');
+    expect(html.toLowerCase()).not.toContain('no playgrounds yet');
+  });
+
+  // A commons with no tags at all renders no filter row — a value, not a special case.
+  it('renders no filter chip row when no playground carries a tag', () => {
+    expect(commons([summary({ tags: [] })])).not.toContain('class="commons-filters"');
+  });
+
+  // The production path diverges from the `commons` helper: siteHandler passes facets from the WHOLE
+  // catalog, INDEPENDENT of the filtered results, so a filter that matched nothing still shows the
+  // chips a user needs to adjust. Called directly (not through the results-coupled helper) to prove
+  // the renderer handles empty results alongside non-empty facets. [LAW:behavior-not-structure]
+  it('renders the facet chips even when the filter matched no results', () => {
+    const html = renderCommons({
+      results: [],
+      facets: [{ tag: Tag('css'), count: 3 }],
+      query: { text: 'no-match', tags: [] },
+    });
+    // The over-filtered viewer sees BOTH the "no match" state AND the chips to broaden by. The css
+    // chip carries its count and toggles css on while preserving the active search text.
+    expect(html.toLowerCase()).toContain('no playgrounds match');
+    expect(html).toContain('class="commons-filters"');
+    expect(html).toContain('tag=css');
+    expect(html).toContain('<span class="filter-count">3</span>');
   });
 });
 

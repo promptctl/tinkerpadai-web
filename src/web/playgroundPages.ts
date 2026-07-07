@@ -186,7 +186,7 @@ const COMMONS_STYLES = `<style>
     transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
   }
   .commons-search input[type="search"]::placeholder { color: var(--muted-2); }
-  .commons-search input[type="search"]:focus { border-color: var(--accent-light); box-shadow: 0 0 0 3px rgba(99,102,241,0.12); background: var(--input-focus-bg); }
+  .commons-search input[type="search"]:focus { border-color: var(--accent-light); box-shadow: var(--focus-ring); background: var(--input-focus-bg); }
   .commons-search button {
     background: var(--accent); color: #fff; border: 0; border-radius: var(--radius-md);
     padding: 0.55rem 1.2rem; font: 500 0.9rem inherit; cursor: pointer; white-space: nowrap;
@@ -562,7 +562,7 @@ export const renderPlayer = (view: PlayerView): string =>
   #refine { display:flex; gap:0.7rem; }
   #refine-input { flex:1 1 auto; background:var(--input-bg); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-md); padding:0.6rem 0.9rem; font:inherit; outline:none; transition:border-color 0.15s, box-shadow 0.15s, background 0.15s; }
   #refine-input::placeholder { color:var(--muted-2); }
-  #refine-input:focus { border-color:var(--accent-light); box-shadow:0 0 0 3px rgba(99,102,241,0.12); background:var(--input-focus-bg); }
+  #refine-input:focus { border-color:var(--accent-light); box-shadow: var(--focus-ring); background:var(--input-focus-bg); }
   #refine-submit { background:linear-gradient(135deg, #6366f1, #7c3aed); color:#fff; border:0; border-radius:10px; padding:0.6rem 1.4rem; font:600 0.95rem inherit; cursor:pointer; white-space:nowrap; box-shadow:var(--shadow-btn); transition:opacity 0.15s, transform 0.1s, box-shadow 0.15s; }
   #refine-submit:hover:not(:disabled) { opacity:0.92; transform:translateY(-1px); box-shadow:var(--shadow-btn-h); }
   #refine-submit:disabled { opacity:0.4; cursor:not-allowed; transform:none; box-shadow:none; }

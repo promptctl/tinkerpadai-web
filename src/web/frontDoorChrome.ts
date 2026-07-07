@@ -48,6 +48,7 @@ export const TOKENS_CSS = `:root {
     --shadow-widget:    0 4px 24px rgba(99,102,241,0.08), 0 1px 4px rgba(0,0,0,0.05);
     --shadow-btn:       0 2px 8px rgba(99,102,241,0.3);
     --shadow-btn-h:     0 4px 16px rgba(99,102,241,0.4);
+    --focus-ring:       0 0 0 3px rgba(99,102,241,0.12);
     --radius-sm: 6px;
     --radius-md: 12px;
     --radius-lg: 16px;

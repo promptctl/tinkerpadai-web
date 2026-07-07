@@ -102,6 +102,23 @@ describe('GenerationService.poll — success persists the file as a catalogued p
     expect((await h.store.get(version)).html).toContain('a wave explorer');
   });
 
+  // The post-generation extraction step runs on success: every new playground is classified into a
+  // non-empty tag list derived from its describe prompt, so the commons is discoverable from the
+  // first playground on. [LAW:no-silent-failure]
+  it('classifies the new playground into non-empty topic tags derived from its prompt', async () => {
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const handle = await submit(h, 'a fractal geometry explorer with an interactive slider');
+    const status = await h.service.poll(handle);
+    if (status.state !== 'ready') throw new Error('unreachable');
+
+    const summary = (await h.catalog.listPlaygrounds()).find((s) => s.id === status.playgroundId);
+    const tags = summary?.tags.map(String) ?? [];
+    expect(tags.length).toBeGreaterThan(0);
+    // The tags reflect the prompt's topics, not a fixed default.
+    expect(tags).toContain('math');
+    expect(tags).toContain('interactive');
+  });
+
   it('does NOT release a successful turn — its workdir is the session continuable state', async () => {
     // A successful turn's workdir is what a follow-up (continue) resumes into, so the
     // service must not dispose it on success. Only failed turns, which leave nothing
@@ -210,6 +227,7 @@ describe('GenerationService.continue — refine an existing playground into a ne
       version: seedVersion,
       lineage: null,
       author: AUTHOR,
+      tags: [],
     });
 
     const handle = await h.service.continue(seed.id, { description: 'add a reset button' });
@@ -314,6 +332,7 @@ describe('GenerationService.fork — branch a playground into an independent lin
       version: seedVersion,
       lineage: null,
       author: AUTHOR,
+      tags: [],
     });
 
     const forkHandle = await h.service.fork(parent.id, FORKER);

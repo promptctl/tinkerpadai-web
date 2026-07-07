@@ -28,6 +28,37 @@ export type PlaygroundId = Brand<string, 'PlaygroundId'>;
 export const VersionId = (raw: string): VersionId => raw as VersionId;
 export const PlaygroundId = (raw: string): PlaygroundId => raw as PlaygroundId;
 
+// A normalized topic tag — one facet of the commons' discoverability (math, css, tools, design,
+// interactive…). Branded like the ids above, but with a difference that earns its keep: minting a
+// Tag NORMALIZES it. 'CSS', 'css', and ' C.S.S ' all become the one tag `css`, so the commons' tag
+// facets never fragment on case or punctuation. Normalization lives at this one boundary, so an
+// un-normalized Tag is unrepresentable everywhere downstream. [LAW:types-are-the-program]
+export type Tag = Brand<string, 'Tag'>;
+
+// The single normalizer/minter: lowercase, collapse every run of non-alphanumerics to one hyphen,
+// trim hyphens. The one home for tag normalization, so every Tag in the system is normalized by
+// construction. [LAW:single-enforcer] A raw string that normalizes to empty (pure punctuation) is
+// not a tag at all; minting one would be a silent lie, so it throws. The only inputs are a curated
+// vocabulary and our own already-normalized stored values, so this fires at module load if that
+// vocabulary is malformed — never on a hot path. [LAW:no-silent-failure]
+export const Tag = (raw: string): Tag => {
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (normalized === '') throw new Error(`not a valid tag: ${JSON.stringify(raw)}`);
+  return normalized as Tag;
+};
+
+// A playground's topic tags — a bounded, priority-ordered list of normalized Tags for the commons'
+// facets and the player chrome. Possibly EMPTY: a playground stored before tagging existed carries
+// none, and that is a value (no chips), never an error — so this is `readonly Tag[]`, not a
+// non-empty tuple, because a non-empty tuple would be a theorem the legacy-empty case falsifies.
+// New playgrounds are populated with a non-empty list at creation (the generation service's
+// extraction step, deriveTags); the count is a property of that producer, not a type invariant.
+// [LAW:types-are-the-program] [LAW:dataflow-not-control-flow]
+export type Tags = readonly Tag[];
+
 // Fork lineage — the remix axis, kept deliberately SEPARATE from version history.
 // `forkedFromVersion` points at a version belonging to ANOTHER session (the parent);
 // a playground's own version history lives on its turns. Conflating the two is the
@@ -65,6 +96,14 @@ export interface SessionRecord {
   // mints a new session whose author is the forker. The generation SessionId never crosses into
   // the read projection, but the author does, as visible attribution. [LAW:one-source-of-truth]
   readonly author: Subject;
+  // WHAT this playground is ABOUT — its normalized topic tags, classified once at the create write
+  // (the generation service's extraction step) and never re-derived, exactly parallel to author.
+  // A property of the session as a whole: a follow-up turn appends a version, never re-tags; a fork
+  // classifies afresh. Stored (not derived on read) because a tag is a DURABLE classification — if
+  // it were recomputed each read, improving the extractor would silently re-tag every existing
+  // playground and shift the facets discovery is built on. The single source of truth for this
+  // playground's tags is here; the summary projects it. [LAW:one-source-of-truth]
+  readonly tags: Tags;
   readonly turns: readonly [TurnRecord, ...TurnRecord[]];
 }
 
@@ -129,6 +168,12 @@ export interface PlaygroundSummary {
   // this summary) is the public half of provenance. A derivation of the stored author, never a
   // second copy. [LAW:one-source-of-truth]
   readonly author: Subject;
+  // The topic tags for this playground, projected for the read path as the chip row the commons
+  // card and player chrome render (and the facets discovery filters on). A pass-through of the
+  // stored tags — like `author`, never a second copy and never re-classified here — so tags read
+  // identically wherever a playground is listed. Empty for a playground that predates tagging;
+  // non-empty for every new one. [LAW:one-source-of-truth]
+  readonly tags: Tags;
 }
 
 // What p0v.4 hands the catalog on a succeeded turn: the provider's turn handle
@@ -146,6 +191,13 @@ export interface NewPlayground {
   // not a representable state. A follow-up turn (NewTurn) has no author — appending never
   // re-authors. [LAW:types-are-the-program]
   readonly author: Subject;
+  // The topic tags classified for this playground by the generation service's extraction step, the
+  // producer THIS seam is the join for. The catalog stores what it is given and never knows the
+  // taxonomy, so a richer future classifier (the agent emitting semantic tags) swaps the producer
+  // behind this one field, touching neither the catalog nor the read path. Required: like author, a
+  // create records tags; a follow-up (NewTurn) carries none — appending never re-tags.
+  // [LAW:decomposition] [LAW:locality-or-seam]
+  readonly tags: Tags;
 }
 
 // What a succeeded FOLLOW-UP turn hands the catalog to extend an existing playground

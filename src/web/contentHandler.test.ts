@@ -24,6 +24,7 @@ const seed = async (
     version,
     lineage: null,
     author: Subject('ada'),
+    tags: [],
   });
   return playground.id;
 };
@@ -79,6 +80,7 @@ describe('makeContentHandler — the sandbox content origin', () => {
       version: VersionId('v1'),
       lineage: null,
       author: Subject('ada'),
+      tags: [],
     });
     const failingStore: ArtifactStore = {
       put: async () => {

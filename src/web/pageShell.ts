@@ -122,6 +122,17 @@ const SHELL_STYLES = `
   .card-meta { color: var(--muted); font-size: 0.8rem; margin-top: 0.55rem; }
   .card-fork { color: var(--muted); font-size: 0.78rem; margin-top: 0.4rem; }
   .card-fork a { font-weight: 600; }
+
+  /* ── TAG CHIPS ─────────────────────────────── */
+  /* Shared by the commons card and the player chrome (both render through this shell), so a
+     playground's topic tags read identically wherever it is listed. The indigo-tinted pill reuses
+     the same step-icon tokens the recipe pill uses — colour derived from tokens, never sprinkled. */
+  .tags { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
+  .tag {
+    font-size: 0.72rem; font-weight: 500; color: var(--accent);
+    background: var(--step-icon-bg); border: 1px solid var(--step-icon-border);
+    border-radius: 100px; padding: 0.12rem 0.6rem; line-height: 1.5;
+  }
   .empty {
     color: var(--muted);
     background: var(--surface);

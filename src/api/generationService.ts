@@ -12,6 +12,7 @@ import type {
 import type { Subject } from '../identity/index.js';
 import type { ArtifactStore, Catalog, Lineage, Playground, PlaygroundId, VersionId } from '../storage/index.js';
 import { currentTurnOf, currentVersionOf } from '../storage/index.js';
+import { deriveTags } from './deriveTags.js';
 
 // THE GENERATION SERVICE — the one boundary where the generation effect is performed,
 // wiring registry -> provider -> store -> catalog. It is provider-agnostic by
@@ -194,7 +195,19 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   ): Promise<Playground> => {
     switch (target.kind) {
       case 'create':
-        return catalog.createPlayground({ handle, prompt, version, lineage: target.lineage, author: target.author });
+        // The post-generation extraction step: classify the describe prompt into topic tags and
+        // hand them to the catalog as a value. Only a create tags — an append extends a playground
+        // that already carries its tags, exactly as it already carries its author, so refining never
+        // re-tags. The producer lives here, at the generation boundary, not in the catalog.
+        // [LAW:decomposition] [LAW:one-source-of-truth]
+        return catalog.createPlayground({
+          handle,
+          prompt,
+          version,
+          lineage: target.lineage,
+          author: target.author,
+          tags: deriveTags(prompt),
+        });
       case 'append':
         return catalog.appendTurn(target.playgroundId, { handle, prompt, version });
       default: {

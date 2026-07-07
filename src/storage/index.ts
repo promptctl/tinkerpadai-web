@@ -21,7 +21,7 @@ export {
 export { makeMemoryCatalog } from './memoryCatalog.js';
 export { makeFileCatalog, hydrateStoredDoc } from './fileCatalog.js';
 
-export { VersionId, PlaygroundId, Tag } from './types.js';
+export { VersionId, PlaygroundId, Tag, tryTag } from './types.js';
 export type {
   CatalogDoc,
   ForkAttribution,

@@ -43,19 +43,23 @@ describe('deriveTags', () => {
     expect(tagsOf('A CALCULUS GRAPH')).toEqual(tagsOf('a calculus graph'));
   });
 
-  // The cap keeps a card from becoming a wall of chips even when a prompt name-drops many topics.
-  // [LAW:no-mode-explosion]
-  it('caps the number of tags', () => {
+  // The cap keeps a card from becoming a wall of chips even when a prompt name-drops many topics —
+  // AND it respects priority order: the earliest (most specific) topics survive, the generic
+  // 'interactive' falls off first. Asserting the exact set proves both, so a slice→"pick any 5"
+  // regression would fail here. [LAW:no-mode-explosion] [LAW:behavior-not-structure]
+  it('caps to the five highest-priority topics, excluding the generic floor', () => {
     const kitchenSink =
       'a math physics game audio canvas chart text color css design tool simulation map interactive explorer';
-    expect(deriveTags(kitchenSink).length).toBeLessThanOrEqual(5);
+    // The first five vocabulary entries, in order — later matches (chart, text, …, interactive) are
+    // dropped by the cap, proving priority is honored, not just the count.
+    expect(tagsOf(kitchenSink)).toEqual(['math', 'physics', 'game', 'audio', 'graphics']);
   });
 
   // Word-boundary matching: a topic keyword must start a word, so it never fires as an accidental
-  // substring of an unrelated one.
+  // substring of an unrelated one. Asserting the EXACT set proves the negative — that nothing
+  // spurious matched inside "restart" — not merely that the expected tag is present.
+  // [LAW:behavior-not-structure]
   it('matches whole-word keywords, not accidental substrings', () => {
-    // "start" must not trip the (hypothetical) "art"-like substring matches; "restart a timer"
-    // should read as a tool, not something spurious.
-    expect(tagsOf('restart a timer')).toContain('tools');
+    expect(tagsOf('restart a timer')).toEqual(['tools']);
   });
 });

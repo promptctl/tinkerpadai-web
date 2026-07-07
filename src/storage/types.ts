@@ -30,13 +30,16 @@ export const PlaygroundId = (raw: string): PlaygroundId => raw as PlaygroundId;
 
 // A normalized topic tag — one facet of the commons' discoverability (math, css, tools, design,
 // interactive…). Branded like the ids above, but with a difference that earns its keep: minting a
-// Tag NORMALIZES it. 'CSS', 'css', and ' C.S.S ' all become the one tag `css`, so the commons' tag
-// facets never fragment on case or punctuation. Normalization lives at this one boundary, so an
-// un-normalized Tag is unrepresentable everywhere downstream. [LAW:types-are-the-program]
+// Tag NORMALIZES it. 'CSS' and 'css' both become the one tag `css`, and ' Data Viz ' becomes
+// `data-viz` — so the commons' tag facets never fragment on case or spacing. Normalization lives at
+// this one boundary, so an un-normalized Tag is unrepresentable everywhere downstream.
+// [LAW:types-are-the-program]
 export type Tag = Brand<string, 'Tag'>;
 
-// The single normalizer/minter: lowercase, collapse every run of non-alphanumerics to one hyphen,
-// trim hyphens. The one home for tag normalization, so every Tag in the system is normalized by
+// The single normalizer/minter: lowercase, replace every run of non-alphanumerics with one hyphen,
+// trim hyphens. So spaces and punctuation between words become hyphens ('Data Viz' → `data-viz`),
+// never collapse away ('C.S.S' → `c-s-s`, not `css`). The one home for tag normalization, so every
+// Tag in the system is normalized by
 // construction. [LAW:single-enforcer] A raw string that normalizes to empty (pure punctuation) is
 // not a tag at all; minting one would be a silent lie, so it throws. The only inputs are a curated
 // vocabulary and our own already-normalized stored values, so this fires at module load if that

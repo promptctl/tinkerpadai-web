@@ -2,11 +2,10 @@
 // pieces that must read identically on the static homepage (index.html) AND every server-rendered
 // page (pageShell). Before this module those pieces lived in two hand-kept copies that could
 // silently drift; now they live here once, and both surfaces DERIVE from this source:
-//   - pageShell.ts imports the token/theme/favicon strings directly (server render).
-//   - generateIndexHtml.ts splices the same strings into index.html, and inlines the format
-//     functions' own source (via .toString()) into the homepage's client card renderer, at
-//     build time (`pnpm build`). The shipped index.html is a complete, self-contained static
-//     file; nothing here is fetched at runtime.
+//   - pageShell.ts imports the token/theme/favicon strings and the format functions directly (server render).
+//   - generateIndexHtml.ts splices the same token/theme/favicon strings — and CARD_FORMAT_JS, the
+//     client-source twin of the format functions — into index.html at build time (`pnpm build`). The
+//     shipped index.html is a complete, self-contained static file; nothing here is fetched at runtime.
 // [LAW:one-source-of-truth] [LAW:decomposition]
 //
 // This is the dependency LEAF: it imports nothing from the web layer, so pageShell, playgroundPages,

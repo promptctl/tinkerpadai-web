@@ -11,6 +11,7 @@ export { makeFileArtifactStore } from './fileArtifactStore.js';
 export type { Catalog, CatalogStore } from './catalog.js';
 export {
   makeCatalog,
+  hydrateStoredDoc,
   currentTurnOf,
   currentVersionOf,
   recipeOf,
@@ -19,7 +20,7 @@ export {
   PlaygroundNotFoundError,
 } from './catalog.js';
 export { makeMemoryCatalog } from './memoryCatalog.js';
-export { makeFileCatalog, hydrateStoredDoc } from './fileCatalog.js';
+export { makeFileCatalog } from './fileCatalog.js';
 
 export { VersionId, PlaygroundId, Tag, tryTag } from './types.js';
 export type {

@@ -50,14 +50,19 @@ interface SessionRecord {
   readonly expiresAt: number;
 }
 
+// The one definition of a session token's shape: 32 random bytes, base64url — URL- and cookie-safe
+// (no `;`, `=`, or whitespace), with ~256 bits of entropy so a token cannot be guessed. Shared by
+// every SessionStore backend (in-memory dev, D1 at the edge) so a token is the same kind of opaque
+// value wherever it is minted, and the "what a session token IS" decision lives once.
+// [LAW:one-source-of-truth] [LAW:no-silent-failure]
+export const mintSessionToken = (): string => randomBytes(32).toString('base64url');
+
 export const makeMemorySessionStore = (deps: SessionStoreDeps): SessionStore => {
   const { now, ttlMs } = deps;
   const sessions = new Map<string, SessionRecord>();
   return {
-    // 32 random bytes, base64url — URL- and cookie-safe (no `;`, `=`, or whitespace), with
-    // ~256 bits of entropy so a token cannot be guessed. [LAW:no-silent-failure]
     create: async (subject) => {
-      const token = randomBytes(32).toString('base64url');
+      const token = mintSessionToken();
       sessions.set(token, { subject, expiresAt: now() + ttlMs });
       return token;
     },

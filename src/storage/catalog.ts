@@ -65,6 +65,25 @@ export interface CatalogStore {
   write(doc: CatalogDoc): Promise<void>;
 }
 
+// The forward-compatible shape upgrade applied at the read boundary of EVERY persisted backend
+// (file, D1, any future store). Bytes on disk or in a database row can predate a field the current
+// type requires: tags arrived with the discovery epic, so a playground written before then has a
+// session with no `tags`. Reading is the single trust boundary where an older stored shape meets the
+// current type, so the shape is upgraded HERE, once — a tag-less session reads as an empty tag list
+// (a value: no chips, never a crash). A subsequent write persists the upgraded shape, so the
+// migration is a natural consequence of use, not a separate script. New required fields default in
+// this same seam. It lives on the CatalogStore seam (not in one backend) so both the file and D1
+// adapters apply the identical migration — the in-memory store needs none, as it only ever holds
+// current-shape objects. [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:types-are-the-program]
+export const hydrateStoredDoc = (doc: CatalogDoc): CatalogDoc => ({
+  playgrounds: doc.playgrounds.map((p) =>
+    // The guard is legitimate defensive validation AT the trust boundary (persisted external input),
+    // not control flow hiding a bug: legacy bytes genuinely lack the field the type now promises.
+    // [LAW:no-defensive-null-guards]
+    Array.isArray(p.session.tags) ? p : { ...p, session: { ...p.session, tags: [] } },
+  ),
+});
+
 // The latest turn of a session, derived from its turns in order. Version history IS
 // the turns; the current turn is simply the last one. Derived, never stored, so it
 // cannot drift. The non-empty turns tuple makes this total — no null to guard. This is

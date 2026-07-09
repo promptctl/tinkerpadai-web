@@ -139,7 +139,12 @@ Concrete shape:
   is a property of the target platform, so the thumbnail feature cannot precede the deploy.
 - **Trigger:** async, **out of the generation-create path** — enqueue "render version X" on
   publish; generation success never waits on or fails because of a render
-  (`[LAW:no-ambient-temporal-coupling]`). The render job carries a **bounded retry**, and a
+  (`[LAW:no-ambient-temporal-coupling]`). Name the seam so the enqueue does **not** land inside
+  `finalizeSuccess` (`src/api/generationService.ts:234`, the one place publish happens) — that
+  would weld the thumbnail concern into the generation service, the coupling this bullet rejects
+  (`[LAW:locality-or-seam]`). It belongs as a **post-publish hook the web/HTTP layer fires after
+  `poll` returns ready** (on Workers, a Cloudflare Queue consumer subscribed to a
+  "playground-created" event), which the generation service knows nothing about. The render job carries a **bounded retry**, and a
   render that fails past that bound is **surfaced, not swallowed**: the version is flagged
   failed-to-render (and logged) so "failed" is distinguishable from "still pending" — otherwise a
   crashed job leaves an eternally-empty slot that reads as "not yet" forever, a silent failure

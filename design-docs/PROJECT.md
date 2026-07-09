@@ -172,7 +172,10 @@ bad playground from being *dangerous* while moderation catches what's merely
 
 ## Open decisions (not yet made)
 
-- **Accounts vs. anonymous** creation, and how attribution/lineage is tracked.
+- **Anonymous participation and attribution.** The *creation* half is settled (see Decisions
+  made: generating requires signing in; browsing/using/remixing stays open to anonymous
+  visitors). What remains open is how attribution and remix lineage are tracked — and whether
+  anonymous visitors get any lighter-weight identity at all.
 - **Monetization, if any.** Free commons as the default; possible paid edges
   (private playgrounds, pro generation limits, teams) — or it stays a loss-leader /
   showcase. Undecided on purpose.

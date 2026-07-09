@@ -54,17 +54,24 @@ type RequiredEnvKey =
   | 'TINKERPAD_OAUTH_CALLBACK_URL'
   | 'TINKERPAD_CONTENT_ORIGIN';
 
+// The keys that are SECRETS — credentials that must be set with `wrangler secret put` and must NEVER
+// land in the committed wrangler.toml [vars]. The remediation text below is chosen from this set so an
+// operator is steered to the safe mechanism per key, not told both work for all four (which would
+// invite committing a GitHub secret). [LAW:no-silent-failure]
+const SECRET_KEYS: ReadonlySet<RequiredEnvKey> = new Set(['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET']);
+
 // Read a required secret/var, failing LOUDLY and by name when absent — never a silent fallback to an
 // open gate or a wrong origin. `|| undefined` so an empty string is treated as unset. The GitHub
 // credentials CANNOT be minted, so their absence is a hard failure, exactly as the Node entry
-// enforces. [LAW:no-silent-failure]
+// enforces. The remediation is key-specific: a secret is steered to `wrangler secret put` with an
+// explicit warning against [vars]; a non-secret var to [vars]. [LAW:no-silent-failure]
 const required = (env: Env, name: RequiredEnvKey): string => {
   const value = env[name] || undefined;
   if (typeof value !== 'string') {
-    throw new Error(
-      `${String(name)} is required for the Cloudflare deploy. Set it with \`wrangler secret put ${String(name)}\` ` +
-        `(secrets) or the [vars] table in wrangler.toml (config).`,
-    );
+    const how = SECRET_KEYS.has(name)
+      ? `Set it with \`wrangler secret put ${name}\` — it is a SECRET; never put it in the [vars] table (that would commit it to the repo).`
+      : `Set it in the [vars] table of wrangler.toml.`;
+    throw new Error(`${name} is required for the Cloudflare deploy. ${how}`);
   }
   return value;
 };

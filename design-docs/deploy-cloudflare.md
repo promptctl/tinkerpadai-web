@@ -68,6 +68,13 @@ wrangler dev --port 8787
 # content host:  curl -H 'Host: content.localhost:8787' 'http://127.0.0.1:8787/?id=<playground-id>'
 ```
 
+The router splits the two origins by the request's **host**, and `wrangler dev` binds only one
+socket, so the content host is driven with an explicit `Host:` header rather than DNS — the header
+sets `request.url`'s host to `content.localhost:8787`, which the router matches against
+`TINKERPAD_CONTENT_ORIGIN`. No `/etc/hosts` entry or DNS setup is needed locally; the two hosts are
+distinguished purely by name. In a real deploy the two hostnames are separate DNS records both
+pointing at the Worker.
+
 ## Known limitation, stated not hidden
 
 `makeD1Catalog` stores the whole catalog document as one row (the `CatalogStore` seam is

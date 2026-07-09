@@ -29,6 +29,19 @@ describe('readCookie', () => {
   it('does not match a cookie whose name is a prefix of the requested one', () => {
     expect(readCookie('tp_sess=nope', 'tp_session')).toBeNull();
   });
+
+  it('reads the __Host- prefixed names the secure edge policy uses', () => {
+    // The resolver reads these exact names at the edge; pin the codec against the hardened shape.
+    expect(readCookie('__Host-tp_session=tok', '__Host-tp_session')).toBe('tok');
+    expect(readCookie('a=1; __Host-tp_oauth_state=st; b=2', '__Host-tp_oauth_state')).toBe('st');
+  });
+
+  it('does not confuse the bare name with its __Host- prefixed form (strict equality)', () => {
+    // Both directions: asking for the bare name must not match the hardened cookie, and vice versa —
+    // they are distinct cookies, exactly as the strict `===` name check guarantees.
+    expect(readCookie('__Host-tp_session=tok', 'tp_session')).toBeNull();
+    expect(readCookie('tp_session=tok', '__Host-tp_session')).toBeNull();
+  });
 });
 
 describe('serializeCookie', () => {

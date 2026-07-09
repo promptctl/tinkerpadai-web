@@ -101,8 +101,9 @@ or a new homelab service (`homelab-28m`).
 ### Option C — Client-side capture at view time — **rejected**
 Tempting ("the iframe already runs it") but unworkable *because* the sandbox works:
 - The player iframe is cross-origin and `sandbox="allow-scripts"` **without**
-  `allow-same-origin` (deliberately, `src/web/playgroundPages.ts:472`). The parent **cannot
-  read its pixels** — that opacity is the security guarantee, not a bug to route around.
+  `allow-same-origin` (the attribute is at `src/web/playgroundPages.ts:504`; the deliberate
+  rationale is the comment at `:472`). The parent **cannot read its pixels** — that opacity is
+  the security guarantee, not a bug to route around.
 - Injecting capture code *into* the untrusted HTML would corrupt the "generation's output is
   *just a file*, unmodified" seam and run our code in the hostile context. Non-starter.
 

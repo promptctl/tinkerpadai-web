@@ -59,8 +59,8 @@ This settles the storage sub-question before we even pick a renderer:
   next to the `.html`. Served from the content origin, never inlined into the catalog doc.
 
 The version's immutability makes the cache trivially correct: a `VersionId` never changes its
-bytes, so its thumbnail never goes stale — no invalidation logic, no `[LAW:no-silent-failure]`
-drift risk.
+bytes, so its thumbnail never goes stale — no invalidation logic, no `[LAW:one-source-of-truth]`
+drift risk (the derived cache cannot disagree with a source that never changes).
 
 ## Producing the pixels — the actual fork (three options)
 
@@ -74,8 +74,9 @@ immediately — zero untrusted-code execution, zero new dependency, Workers-nati
 **unifies the two card surfaces into one shape** (`[LAW:one-source-of-truth]`).
 
 *Honest limitation:* a gradient is a **placeholder, not a rendered preview**. It does not
-satisfy the ticket's literal acceptance ("a rendered thumbnail"). It is a real UX upgrade and
-a correct *fallback*, not the feature.
+satisfy the ticket's literal acceptance ("a rendered thumbnail"). It was considered as an
+interim fallback — the Decision below **rejects** it: no placeholder ships, empty-until-rendered
+is the honest state.
 
 ### Option B — Render in an isolated sandbox that is a *sibling* of the iframe
 Render the untrusted HTML somewhere that is **itself an enforcement boundary**, never the app
@@ -88,9 +89,10 @@ server:
 
 Store the PNG as the derived `VersionId`-keyed blob above. Critically, **decouple it from the
 create path**: generation success must not wait on, or fail because of, a render
-(`[LAW:no-ambient-temporal-coupling]`). Enqueue "render version X"; the card shows the Option-A
-placeholder until the real thumbnail exists, then swaps. A missing thumbnail is an honest
-"not yet," never a broken image or a blocked publish.
+(`[LAW:no-ambient-temporal-coupling]`). Enqueue "render version X"; until the real thumbnail
+exists the card's image slot stays empty. A missing thumbnail is an honest "not yet," never a
+broken image or a blocked publish. (An earlier draft had this fall back to the Option-A
+gradient; the Decision below rejects any placeholder interim — see there.)
 
 *This is the only option that produces a true screenshot while respecting "untrusted code runs
 isolated."* Cost: real infra that belongs to the unbuilt `cloudflare-8le` epic (Workers path)
@@ -133,8 +135,9 @@ Concrete shape:
   seam (R2 on Workers), a sibling of the `.html` it derives from — regenerable, evictable, never a
   field on the catalog record (`[LAW:one-source-of-truth]`).
 - **Render:** an image slot on the shared card (`playgroundCard`); until a version's thumbnail
-  exists the slot shows an honest empty/neutral state, **not** a fabricated visual
-  (`[LAW:no-silent-failure]`).
+  exists the slot shows an honest empty/neutral state, **not** a fabricated visual — a gradient
+  shown *as if* it were the playground would be a representation that lies about what the
+  playground looks like (`[FRAMING:representation]`).
 
 **Backlog consequence:** rye.3 is blocked on `cloudflare-8le` and re-described to this shape; it
 is no longer a standalone discovery-chrome ticket. The homelab render-service alternative is

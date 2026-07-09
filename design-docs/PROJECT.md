@@ -159,7 +159,10 @@ bad playground from being *dangerous* while moderation catches what's merely
   rather than raw request caps, and the accounts surface must carry a credit balance.
   The first public deploy ships with generation disabled/tunneled at the edge (browse/
   use/remix only); public generation turns on once the API driver and the credit ledger
-  exist.
+  exist. (This does not contradict the Status section's "verified end-to-end": the loop is
+  code-complete and verified in *dev*; gating generation at the public edge is a
+  launch-safety and economics choice, not an incompleteness — it stays off in production
+  only until the credit meter that governs its cost is built.)
 
 ---
 

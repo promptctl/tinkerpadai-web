@@ -156,11 +156,18 @@ Concrete shape:
   blob kind (or a parallel thumbnail store), under a **distinct key** from the artifact
   (`thumb/<versionId>` / `<versionId>.png`) so it never clobbers the `.html`
   (`[LAW:types-are-the-program]`).
+- **Render status** (pending / failed / rendered) is operational state of the *derivation*,
+  owned by the **render pipeline**, not the catalog: *rendered* is derivable from the thumbnail
+  blob's presence; *pending* vs *failed* is an explicit status the render worker writes — a small
+  entry keyed by `VersionId` (KV on Workers), distinct from both the authoritative catalog record
+  (which stays thumbnail-free) and the PNG blob. The exact shape is the implementation ticket's to
+  finalize; the proposal fixes the **owner** and the invariant — status is not an authoritative
+  catalog fact (`[LAW:one-source-of-truth]`).
 - **Render:** an image slot on the shared card (`playgroundCard`); while a version's thumbnail is
   still **pending** the slot shows an honest empty/neutral state, **not** a fabricated visual — a
   gradient shown *as if* it were the playground would be a representation that lies about what the
-  playground looks like (`[FRAMING:representation]`). The failed-to-render state (above) is
-  distinct from pending, not a permanent blank.
+  playground looks like (`[FRAMING:representation]`). The failed-to-render state is distinct from
+  pending, not a permanent blank.
 
 **Backlog consequence:** rye.3 is blocked on `cloudflare-8le` and re-described to this shape; it
 is no longer a standalone discovery-chrome ticket. The homelab render-service alternative is

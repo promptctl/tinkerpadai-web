@@ -92,7 +92,7 @@ them stay in Gate 4.
 | `sandbox`: adversarial audit + rate limits | PROJECT.md: safety designed in from day one. Audit blocks public exposure as a structural edge. |
 | `moderation`: report + unlist | A public UGC platform with no takedown path is an incident with a countdown. Review-queue polish can follow launch; the minimal pair cannot. |
 | `legal`: terms, privacy, DMCA | Safe harbor requires the agent and procedure before the complaint arrives |
-| `cloudflare-8le`: the public deploy | The launch edge itself, and now the direct deploy target (user, 2026-07-08): the deploy goes **straight to Cloudflare** with generation disabled/tunneled at the edge. `homelab-28m` is **dropped from the critical path** — the earlier homelab staging rehearsal is optional de-risking, not a step on the way to launch. |
+| `cloudflare-8le`: the public deploy | The launch edge itself, and now the direct deploy target (user, 2026-07-08): the deploy goes **straight to Cloudflare** with generation not served at the edge (either off or proxied to a back-end generator). `homelab-28m` is **dropped from the critical path** — the earlier homelab staging rehearsal is optional de-risking, not a step on the way to launch. |
 | **`launch-nkn`** | The gate ticket. Blocked by all of the above plus the seeded commons. Closing it is launching. |
 
 ## Gate 4 — the loop deepens

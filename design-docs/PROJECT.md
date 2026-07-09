@@ -161,9 +161,9 @@ bad playground from being *dangerous* while moderation catches what's merely
   remixing the commons stays open to anonymous visitors. Consequences that now follow: the API
   provider driver debits credits per generation, rate-limit semantics are expressed in credits
   rather than raw request caps, and the accounts surface must carry a credit balance.
-  The first public deploy ships with generation disabled/tunneled at the edge (browse/
-  use/remix only); public generation turns on once the API driver and the credit ledger
-  exist. (This does not contradict the Status section's "verified end-to-end": the loop is
+  The first public deploy does not serve generation at the edge — it is either off, or
+  proxied to a back-end generator — so the public surface is browse/use/remix only; public
+  generation turns on once the API driver and the credit ledger exist. (This does not contradict the Status section's "verified end-to-end": the loop is
   code-complete and verified in *dev*; gating generation at the public edge is a
   launch-safety and economics choice, not an incompleteness — it stays off in production
   only until the credit meter that governs its cost is built.)

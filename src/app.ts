@@ -1,33 +1,26 @@
-import { join } from 'node:path';
-import {
-  ProviderRegistry,
-  cleanupTurn,
-  makeTmuxDriver,
-  makeTmuxProvider,
-} from './provider/index.js';
-import type { TmuxDriverConfig } from './provider/index.js';
-import { makeFileArtifactStore, makeFileCatalog } from './storage/index.js';
+import { ProviderRegistry } from './provider/index.js';
+import type { SessionHandle } from './provider/index.js';
 import type { ArtifactStore, Catalog } from './storage/index.js';
 import {
   makeGenerationService,
   makeHttpHandler,
-  makeMemorySessionStore,
   makeSessionHandler,
   makeSessionResolver,
 } from './api/index.js';
-import type { GenerationService, OAuthProvider } from './api/index.js';
+import type { CookieSecurity, GenerationService, OAuthProvider, SessionStore } from './api/index.js';
 
-// THE COMPOSITION ROOT. The one place that knows the concrete shape of the steel
-// thread: that the provider is the local tmux/Claude-Code body, that storage is the
-// local file backends, and that cleanup is tmux's disposer. Everything it constructs
-// sees only the agnostic seams (Provider, ArtifactStore, Catalog) — so changing the
-// provider or a backend happens HERE, by changing what is wired, and nothing downstream
-// changes. This is where the four shipped seams (p0v.1..p0v.3) compose. [LAW:effects-at-boundaries]
+// THE COMPOSITION ROOT'S GRAPH BUILDER. It composes the four agnostic seams — provider registry,
+// artifact store, catalog, session store — into the running app, and knows NOTHING about which
+// concrete backend sits behind any of them. The tmux provider vs none, file storage vs R2, an
+// in-memory session map vs D1: those are decided by the entry that BUILDS the deps (src/web/main.ts
+// on Node, src/web/worker.ts on Cloudflare) and passed in as values. Changing the deployment target
+// changes what is wired at the entry, and NOTHING here — no branch on environment, only different
+// adapters. This is exactly the seam the Workers deploy (tinkerpadai-cloudflare-8le) turns on.
+// [LAW:effects-at-boundaries] [LAW:dataflow-not-control-flow]
 
-// The assembled system graph. It exposes the persistence seams as well as the generation
-// surface because browsing and running (p0v.6) read the catalog and store directly and
-// never go through the provider — that read path is a different concern from generation.
-// [LAW:decomposition]
+// The assembled system graph. It exposes the persistence seams as well as the generation surface
+// because browsing and running read the catalog and store directly and never go through the provider
+// — that read path is a different concern from generation. [LAW:decomposition]
 export interface App {
   readonly registry: ProviderRegistry;
   readonly service: GenerationService;
@@ -40,52 +33,54 @@ export interface App {
   readonly sessionHandler: (request: Request) => Promise<Response | null>;
 }
 
-export interface AppConfig {
-  // Where the file artifact store and catalog live.
-  readonly dataDir: string;
-  // The delegated identity provider behind the login seam (GitHub in production, a fake in tests).
-  // Required, not optional: there is no "auth off" mode — without a provider there is no working
-  // write path, so the app cannot be constructed without one and the gate is always real. The
-  // concrete provider (and its credentials/HTTP) is built by the caller at the true edge, so
+// The environment-varying parts, all supplied by the entry as already-built values. makeApp is a
+// pure graph builder over these — a test constructs it with fakes, the Node entry with file/memory/
+// tmux, the Worker entry with R2/D1. Each field is a seam whose concrete backend is the ONE thing
+// that differs across deployments; naming them here, once, is what keeps that difference out of
+// every downstream part. [LAW:decomposition] [LAW:types-are-the-program]
+export interface AppDeps {
+  // The provider set for generation. The Node entry registers the local tmux/Claude-Code provider;
+  // the first edge deploy registers NONE (generation disabled), which the front door reads as "no
+  // generation UI" — a value (empty list), not a mode. [LAW:dataflow-not-control-flow]
+  readonly registry: ProviderRegistry;
+  // Immutable keyed HTML storage: a local directory on Node, an R2 bucket at the edge.
+  readonly store: ArtifactStore;
+  // The single source of truth for what playgrounds exist: a JSON file on Node, D1 at the edge.
+  readonly catalog: Catalog;
+  // Live sessions and their lifecycle: an in-memory map on Node (dies with the process, which is
+  // correct for dev), a durable D1-backed store at the edge (survives Worker cold starts).
+  readonly sessionStore: SessionStore;
+  // Release a settled turn's provider-internal resources. The Node entry supplies tmux's disposer
+  // (cleanupTurn); the edge, with no provider, supplies a no-op — the service disposes
+  // unconditionally, so this is a value varying, not a branch. [LAW:dataflow-not-control-flow]
+  readonly disposeTurn: (handle: SessionHandle) => Promise<void>;
+  // The delegated identity provider behind the login seam (GitHub in production, a loopback in dev,
+  // a fake in tests). Required, not optional: there is no "auth off" mode — without a provider there
+  // is no working write path, so the app cannot be constructed without one and the gate is always
+  // real. The concrete provider and its credentials/HTTP are built by the entry at the true edge, so
   // makeApp stays a pure graph builder a test can construct with a fake. [LAW:types-are-the-program]
   readonly oauth: OAuthProvider;
   // The absolute URL the identity provider redirects back to (this app's /session/callback).
   readonly oauthCallbackUrl: string;
-  readonly providerId?: string;
-  readonly providerLabel?: string;
-  readonly driver?: TmuxDriverConfig;
+  // The cookie hardening policy (Secure + `__Host-`). The HTTPS edge passes { secure: true }; http
+  // loopback dev passes { secure: false }. A value the entry decides by its transport, threaded into
+  // both the resolver and the session handler so they share one cookie name. [LAW:one-source-of-truth]
+  readonly cookieSecurity: CookieSecurity;
 }
 
-export const makeApp = (config: AppConfig): App => {
-  const registry = new ProviderRegistry();
-  registry.register(
-    makeTmuxProvider({
-      id: config.providerId ?? 'claude-code-tmux',
-      label: config.providerLabel ?? 'Claude Code (local tmux)',
-      driver: makeTmuxDriver(config.driver ?? {}),
-    }),
-  );
+export const makeApp = (deps: AppDeps): App => {
+  const { registry, store, catalog, sessionStore, disposeTurn, oauth, oauthCallbackUrl, cookieSecurity } = deps;
 
-  const store = makeFileArtifactStore(join(config.dataDir, 'artifacts'));
-  const catalog = makeFileCatalog(join(config.dataDir, 'catalog.json'));
+  const service = makeGenerationService({ registry, store, catalog, disposeTurn });
 
-  // cleanupTurn is tmux's per-turn disposer; injecting it here is what keeps the service
-  // provider-agnostic — the service releases settled turns without knowing it is tmux.
-  // [LAW:dataflow-not-control-flow]
-  const service = makeGenerationService({ registry, store, catalog, disposeTurn: cleanupTurn });
+  // THE IDENTITY MECHANISM, wired behind the seam. One store owns live sessions; the resolver reads a
+  // request's cookie THROUGH that store to a principal (or null), and the same resolver both gates
+  // the write path (in the handler) and answers whoami (in the session handler) — one source of truth
+  // for "who is this request". The store and the cookie policy are injected, so activating durable
+  // edge sessions or HTTPS cookie hardening is a change at the entry; the enforcer (makeHttpHandler)
+  // is untouched. [LAW:locality-or-seam] [LAW:one-source-of-truth]
+  const resolveIdentity = makeSessionResolver(sessionStore, cookieSecurity);
 
-  // THE IDENTITY MECHANISM, wired behind the seam. One store owns live sessions; the resolver
-  // reads a request's cookie THROUGH that store to a principal (or null), and the same resolver
-  // both gates the write path (in the handler) and answers whoami (in the session handler) — one
-  // source of truth for "who is this request". Swapping the resolver here is the entire activation
-  // of real auth: the enforcer (makeHttpHandler) is untouched. [LAW:locality-or-seam] [LAW:one-source-of-truth]
-  // The store owns session lifecycle; the composition root states the policy it owns by: the real
-  // clock (Date.now is the world's clock, supplied here at the boundary rather than read inside the
-  // store) and the dev session lifetime. 6 hours — long enough to span a working session without
-  // re-auth, short enough that a session cannot live forever. [LAW:no-ambient-temporal-coupling]
-  const DEV_SESSION_TTL_MS = 6 * 60 * 60 * 1000;
-  const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: DEV_SESSION_TTL_MS });
-  const resolveIdentity = makeSessionResolver(sessionStore);
   return {
     registry,
     service,
@@ -95,8 +90,9 @@ export const makeApp = (config: AppConfig): App => {
     sessionHandler: makeSessionHandler({
       store: sessionStore,
       resolveIdentity,
-      oauth: config.oauth,
-      callbackUrl: config.oauthCallbackUrl,
+      oauth,
+      callbackUrl: oauthCallbackUrl,
+      security: cookieSecurity,
     }),
   };
 };

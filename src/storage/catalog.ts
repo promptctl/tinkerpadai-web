@@ -65,6 +65,66 @@ export interface CatalogStore {
   write(doc: CatalogDoc): Promise<void>;
 }
 
+// The empty catalog — the one initial state every backend starts from and returns when nothing is
+// stored yet (no file, no D1 row, a fresh memory instance). It lives here, on the module that owns
+// the CatalogDoc shape, so a change to what "empty" means is made once rather than in each backend.
+// [LAW:one-source-of-truth]
+export const EMPTY_CATALOG: CatalogDoc = { playgrounds: [] };
+
+// The forward-compatible shape upgrade applied at the read boundary of EVERY persisted backend
+// (file, D1, any future store). Bytes on disk or in a database row can predate a field the current
+// type requires: tags arrived with the discovery epic, so a playground written before then has a
+// session with no `tags`. Reading is the single trust boundary where an older stored shape meets the
+// current type, so the shape is upgraded HERE, once — a tag-less session reads as an empty tag list
+// (a value: no chips, never a crash). A subsequent write persists the upgraded shape, so the
+// migration is a natural consequence of use, not a separate script. New required fields default in
+// this same seam. It lives on the CatalogStore seam (not in one backend) so both the file and D1
+// adapters apply the identical migration — the in-memory store needs none, as it only ever holds
+// current-shape objects. [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:types-are-the-program]
+export const hydrateStoredDoc = (doc: unknown): CatalogDoc => {
+  // `unknown`, not `CatalogDoc`: this IS the boundary where untyped persisted bytes become the typed
+  // document, so it validates rather than trusts a cast. A stored value that isn't the expected
+  // { playgrounds: [...] } shape — gross corruption or manual tampering (`wrangler d1 execute` setting
+  // the cell to `42`) — fails LOUDLY with a clear message, never a downstream "cannot read
+  // properties of undefined" that hides what actually went wrong. The per-field `tags` upgrade below
+  // is the known forward-compatible migration. [LAW:types-are-the-program] [LAW:no-silent-failure]
+  if (typeof doc !== 'object' || doc === null || !Array.isArray((doc as { playgrounds?: unknown }).playgrounds)) {
+    throw new Error('stored catalog document is malformed: expected { playgrounds: [...] }');
+  }
+  const playgrounds = (doc as { playgrounds: readonly unknown[] }).playgrounds;
+  return {
+    playgrounds: playgrounds.map((entry) => {
+      // Validate each element against the STRUCTURAL INVARIANTS the catalog universally relies on: a
+      // playground is an object with a session object whose `turns` is a NON-EMPTY array. `turns`
+      // non-empty is load-bearing — the type declares it a non-empty tuple and every derivation
+      // (currentTurnOf, recipeOf, summarize) destructures `[first, ...]` — so a tampered element that
+      // breaks it must fail HERE with a clear message, not later in summarize with a cryptic
+      // `turns[0]` TypeError. This validates the skeleton, deliberately NOT every leaf field: we are
+      // the sole legitimate writer, a full field-by-field validator would duplicate the Playground
+      // type as runtime checks that drift from it, and the threat is gross corruption / manual
+      // tampering, not malformed leaves. [LAW:types-are-the-program] [LAW:no-silent-failure]
+      // [LAW:one-source-of-truth]
+      const session = (entry as { session?: unknown } | null)?.session as { turns?: unknown } | undefined;
+      if (
+        typeof entry !== 'object' ||
+        entry === null ||
+        typeof session !== 'object' ||
+        session === null ||
+        !Array.isArray(session.turns) ||
+        session.turns.length === 0
+      ) {
+        throw new Error(
+          'stored catalog document is malformed: each playground must be an object with a session whose turns is a non-empty array',
+        );
+      }
+      const p = entry as Playground;
+      // Legacy bytes genuinely lack the `tags` field the type now promises — the known forward
+      // migration, applied here once at the read boundary.
+      return Array.isArray(p.session.tags) ? p : { ...p, session: { ...p.session, tags: [] } };
+    }),
+  };
+};
+
 // The latest turn of a session, derived from its turns in order. Version history IS
 // the turns; the current turn is simply the last one. Derived, never stored, so it
 // cannot drift. The non-empty turns tuple makes this total — no null to guard. This is

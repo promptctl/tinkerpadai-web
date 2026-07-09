@@ -41,7 +41,8 @@ const startFrontDoor = async (): Promise<RunningServer> => {
   });
 
   const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60 * 60 * 1000 });
-  const resolveIdentity = makeSessionResolver(sessionStore);
+  const security = { secure: false } as const;
+  const resolveIdentity = makeSessionResolver(sessionStore, security);
   const handler = makeSiteHandler({
     page: PAGE,
     catalog,
@@ -51,6 +52,7 @@ const startFrontDoor = async (): Promise<RunningServer> => {
       resolveIdentity,
       oauth: makeFakeOAuthProvider({ subject: SUBJECT }),
       callbackUrl: 'http://app.local/session/callback',
+      security,
     }),
     apiHandler: makeHttpHandler(service, resolveIdentity),
   });

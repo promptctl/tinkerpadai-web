@@ -1,0 +1,139 @@
+import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import page from './index.html';
+import { makeApp } from '../app.js';
+import { ProviderRegistry } from '../provider/index.js';
+import { makeGitHubOAuthProvider } from '../api/index.js';
+import { makeD1SessionStore } from '../api/d1SessionStore.js';
+import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
+import { makeD1Catalog } from '../storage/d1Catalog.js';
+import { makeFrontDoorRouter } from './frontDoorRouter.js';
+
+// The type of the assembled request handler, memoized per isolate below.
+type Handler = (request: Request) => Promise<Response>;
+
+// THE CLOUDFLARE WORKER ENTRY — the edge composition root, sibling to the Node entry (nodeApp.ts).
+// It is the only edge-specific effectful top of the steel thread: it reads the environment (bindings
+// and secrets), builds the SAME app graph makeApp assembles everywhere — swapping in R2 for the
+// artifact store and D1 for the catalog and sessions — and hands each request to the pure two-origin
+// router. There is NO branch on "are we on Cloudflare"; the difference between here and Node is
+// entirely which adapters are wired. The app and the raw playground content stay on SEPARATE hosts
+// (the router splits them), the sandbox boundary the deploy must preserve. [LAW:effects-at-boundaries]
+// [LAW:dataflow-not-control-flow] [LAW:single-enforcer]
+
+// The Worker's bindings and secrets. Bindings (R2/D1) are provisioned in wrangler.toml; the secrets
+// and vars are set with `wrangler secret put` / the [vars] table. Optional-typed because the runtime
+// hands them as possibly-absent; each is validated loudly below before use. [LAW:types-are-the-program]
+export interface Env {
+  // The R2 bucket holding immutable playground html, one object per version.
+  readonly ARTIFACTS: R2Bucket;
+  // The D1 database backing BOTH the catalog (single-row document) and live sessions (one table).
+  readonly DB: D1Database;
+  // The GitHub OAuth app credentials. Secrets, never committed — set with `wrangler secret put`.
+  readonly GITHUB_CLIENT_ID?: string;
+  readonly GITHUB_CLIENT_SECRET?: string;
+  // The registered GitHub Authorization callback URL. Pinned as config because request.url behind
+  // the CDN is NOT the public origin, so it cannot be derived per request. [LAW:one-source-of-truth]
+  readonly TINKERPAD_OAUTH_CALLBACK_URL?: string;
+  // The SEPARATE content origin's public base URL (a distinct host from the app). Load-bearing: the
+  // router serves raw playground html only on this host, and the player frames it from here.
+  readonly TINKERPAD_CONTENT_ORIGIN?: string;
+}
+
+// A real user's session at the edge, durably in D1 so it survives Worker cold starts. 7 days — long
+// enough to stay signed in across visits, bounded so a session cannot live forever. The store owns
+// the deadline; this composition root states the policy. [LAW:no-ambient-temporal-coupling]
+const EDGE_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// The env keys that carry a required STRING (secrets + config), distinct from the object bindings
+// (ARTIFACTS, DB). `required` accepts only these, so `required(env, 'ARTIFACTS')` is a COMPILE error
+// rather than a call that type-checks but always throws (an R2Bucket is never a string). The type
+// makes the invalid call unrepresentable. [LAW:types-are-the-program]
+type RequiredEnvKey =
+  | 'GITHUB_CLIENT_ID'
+  | 'GITHUB_CLIENT_SECRET'
+  | 'TINKERPAD_OAUTH_CALLBACK_URL'
+  | 'TINKERPAD_CONTENT_ORIGIN';
+
+// The keys that are SECRETS — credentials that must be set with `wrangler secret put` and must NEVER
+// land in the committed wrangler.toml [vars]. The remediation text below is chosen from this set so an
+// operator is steered to the safe mechanism per key, not told both work for all four (which would
+// invite committing a GitHub secret). [LAW:no-silent-failure]
+const SECRET_KEYS: ReadonlySet<RequiredEnvKey> = new Set(['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET']);
+
+// Read a required secret/var, failing LOUDLY and by name when absent — never a silent fallback to an
+// open gate or a wrong origin. `|| undefined` so an empty string is treated as unset. The GitHub
+// credentials CANNOT be minted, so their absence is a hard failure, exactly as the Node entry
+// enforces. The remediation is key-specific: a secret is steered to `wrangler secret put` with an
+// explicit warning against [vars]; a non-secret var to [vars]. [LAW:no-silent-failure]
+const required = (env: Env, name: RequiredEnvKey): string => {
+  const value = env[name] || undefined;
+  if (typeof value !== 'string') {
+    const how = SECRET_KEYS.has(name)
+      ? `Set it with \`wrangler secret put ${name}\` — it is a SECRET; never put it in the [vars] table (that would commit it to the repo).`
+      : `Set it in the [vars] table of wrangler.toml.`;
+    throw new Error(`${name} is required for the Cloudflare deploy. ${how}`);
+  }
+  return value;
+};
+
+// The request handler, built ONCE per isolate and reused — memoized on the `env` it was built from.
+// An isolate's `env` is fixed for its whole life, and the app is a pure function of `env` (the R2/D1
+// adapters are stateless wrappers over stable bindings; the router's parsed content host and handler
+// closures derive only from config). So the graph is constructed on the first request and reused,
+// spending the per-request budget on I/O rather than rebuilding stateless wrappers each fetch. The
+// cache is KEYED on `env` identity, so the signature stays honest — the handler is a value derived
+// from `env`, not an ignored parameter — and a different `env` (never happens in a stable isolate,
+// but the type permits it) rebuilds rather than returning a stale handler. One module-owned cell,
+// one accessor, documented invariant. [LAW:no-shared-mutable-globals] [LAW:dataflow-not-control-flow]
+// [LAW:no-ambient-temporal-coupling]
+let cached: { readonly env: Env; readonly handler: Handler } | undefined;
+
+const handlerFor = (env: Env): Handler => {
+  if (cached !== undefined && cached.env === env) return cached.handler;
+
+  const clientId = required(env, 'GITHUB_CLIENT_ID');
+  const clientSecret = required(env, 'GITHUB_CLIENT_SECRET');
+  const oauthCallbackUrl = required(env, 'TINKERPAD_OAUTH_CALLBACK_URL');
+  const contentOrigin = required(env, 'TINKERPAD_CONTENT_ORIGIN');
+
+  const app = makeApp({
+    // Generation is disabled at the first public deploy — an empty registry the front door reads as
+    // "no generation UI". Public generation turns on later with the credits ledger + API driver
+    // (tinkerpadai-providers-u1h). [LAW:dataflow-not-control-flow]
+    registry: new ProviderRegistry(),
+    store: makeR2ArtifactStore(env.ARTIFACTS),
+    catalog: makeD1Catalog(env.DB),
+    sessionStore: makeD1SessionStore(env.DB, { now: () => Date.now(), ttlMs: EDGE_SESSION_TTL_MS }),
+    // No provider means no turns are ever created, so the disposer is unreachable — a no-op is the
+    // contract's sanctioned value for "a provider with nothing to release". [LAW:dataflow-not-control-flow]
+    disposeTurn: async () => undefined,
+    oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
+    oauthCallbackUrl,
+    // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]
+    cookieSecurity: { secure: true },
+  });
+
+  const handler = makeFrontDoorRouter({ app, page, contentOrigin });
+  cached = { env, handler };
+  return handler;
+};
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    // THE EDGE ERROR BOUNDARY — the Worker's equivalent of the Node socket's try/catch in serve().
+    // Any failure building the graph (a missing secret) or serving a request (a D1/R2 error — real
+    // now that the seams are async and remote, e.g. a session-mint write that fails) becomes a loud
+    // 500 carrying its message, never a generic runtime crash that tells the caller nothing. Two
+    // separate runtime edges (Node socket, Worker fetch) each own their own boundary; this is not a
+    // duplicate enforcer. [LAW:no-silent-failure] [LAW:single-enforcer]
+    try {
+      return await handlerFor(env)(request);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return new Response(JSON.stringify({ error: message }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+  },
+};

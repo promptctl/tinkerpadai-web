@@ -181,7 +181,7 @@ export const makeHttpHandler = (
       // behind resolveIdentity; this enforcer never changes when it is swapped.
       // [LAW:single-enforcer] [LAW:dataflow-not-control-flow] [LAW:locality-or-seam]
       if (WRITE_ROUTES.has(route)) {
-        const identity = resolveIdentity(request);
+        const identity = await resolveIdentity(request);
         if (identity === null) return json({ error: 'authentication required' }, 401);
         return await handleWrite(route, request, identity.subject);
       }

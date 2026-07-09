@@ -139,12 +139,17 @@ The sandbox and two-origin split are sound. The gaps are **defense-in-depth on t
 origin** — the boundary is whole, but the trusted side ships barer headers than the untrusted
 side, which is backwards for the origin that actually holds the asset.
 
-- **R1 — App origin serves no security headers.** `siteHandler` responses carry only
-  `content-type`: no `Content-Security-Policy` (zero defense-in-depth if any V6 escaping
-  callsite regresses), no `frame-ancestors`/`X-Frame-Options` (**the app pages are frameable →
-  clickjacking the login/player**), no `X-Content-Type-Options: nosniff`, no `Referrer-Policy`.
-  The *content* origin is hardened to the teeth while the *app* origin is bare. **Highest
-  priority.** → `tinkerpadai-sandbox-bci.3`
+- **R1 — App origin serves no security headers. ✅ CLOSED (`tinkerpadai-sandbox-bci.3`).**
+  `siteHandler` now seals *every* response leaving the app origin — pages, the JSON projection,
+  the delegated session/API responses (the login page included), AND its error responses — through
+  one outermost `harden()`. The handler is TOTAL like the content origin's `sealed()`: a read/
+  invariant failure becomes a loud, sealed 500 here rather than propagating unsealed to the origin-
+  agnostic runtime edge, so no branch escapes the seal. Headers: `Content-Security-Policy` with
+  `frame-ancestors 'self'` + `base-uri 'none'` + `form-action 'self'` + `object-src 'none'`,
+  `X-Frame-Options: SAMEORIGIN` (the legacy twin closing clickjacking of login/player),
+  `X-Content-Type-Options: nosniff`, and `Referrer-Policy: same-origin`. A full `script-src` is
+  deliberately deferred — the app runs inline scripts (index.html, player), so locking it needs
+  per-script hashes/nonces and is tracked separately, not landed half-done.
 - **R2 — No guard that content origin ≠ app origin.** If `TINKERPAD_CONTENT_ORIGIN` is
   misconfigured to the app host, the split collapses (raw playground HTML same-origin with the
   app). Today a same-host config routes *everything* to the content handler (app dies loudly-ish),
@@ -171,3 +176,8 @@ The invariants a future change must not silently regress (each has a red test):
    tags stay minted through the `Tag()` brand rather than stored raw (V6).
 4. The session cookie stays `HttpOnly` + `SameSite=Strict` + `Secure` + `__Host-`.
 5. The content host serves nothing but `contentHandler`; raw bytes never appear on the app host.
+6. Every app-origin response carries the `harden()` seal — `frame-ancestors 'self'` /
+   `X-Frame-Options` (anti-clickjacking), `base-uri`/`form-action`/`object-src`, `nosniff`, and
+   `Referrer-Policy` — on *every* branch: the delegated login page and the error 500 included, since
+   `siteHandler` is total. Removing the seal, letting a branch bypass it, or making the handler
+   throw past it re-opens R1.

@@ -41,6 +41,34 @@ const html = (body: string, status = 200): Response =>
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 
+// Defense-in-depth for the TRUSTED origin — the one that actually holds the session credential.
+// The content origin (contentHandler) is already sealed; this is its counterpart, and the audit's
+// gap R1: the app pages (login, player, commons) shipped with only content-type, so ANY site could
+// frame them → clickjacking of the login form. These directives close that and the adjacent cheap
+// wins:
+//   frame-ancestors 'self'  : only the app may frame the app — the concrete clickjacking fix.
+//   base-uri 'none'         : no injected <base> can re-root the page's relative URLs.
+//   form-action 'self'      : a form can only post back to the app, never to an attacker.
+//   object-src 'none'       : no <object>/<embed> plugin surface.
+// A full script-src is deliberately DEFERRED: the app runs inline scripts (index.html, player), so
+// locking it needs per-script hashes/nonces — tracked separately, not smuggled in here half-done.
+const APP_CSP = ["frame-ancestors 'self'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"].join('; ');
+
+// THE ONE app-origin response seal. Every response leaving this handler — a page, the JSON
+// projection, a delegated session/API response (the login page included) — passes through here and
+// carries the same hardening headers, mirroring how the content origin seals every response in one
+// place. Applied by MUTATION, not by rebuilding: the inner handler owns body/status/content-type
+// and its own Set-Cookie; this seal only ADDS the cross-cutting security headers and never touches
+// set-cookie, so cookie integrity cannot depend on Headers copy-fold behavior. X-Frame-Options is
+// the legacy twin of frame-ancestors, kept for pre-CSP3 browsers. [LAW:single-enforcer]
+const harden = (response: Response): Response => {
+  response.headers.set('content-security-policy', APP_CSP);
+  response.headers.set('x-frame-options', 'SAMEORIGIN');
+  response.headers.set('x-content-type-options', 'nosniff');
+  response.headers.set('referrer-policy', 'same-origin');
+  return response;
+};
+
 export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => Promise<Response>) => {
   const { page, catalog, contentOrigin, sessionHandler, apiHandler } = deps;
 
@@ -71,7 +99,7 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
     );
   };
 
-  return async (request: Request): Promise<Response> => {
+  const dispatch = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
     switch (route) {
@@ -112,6 +140,24 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         const session = await sessionHandler(request);
         return session ?? apiHandler(request);
       }
+    }
+  };
+
+  // The single exit — and it is TOTAL, exactly like the content origin's sealed handler: every
+  // path returns a hardened Response, none throws. A read/invariant failure (corrupt catalog,
+  // broken store) becomes a loud, SEALED 500 carrying its message here rather than propagating
+  // unsealed to the origin-agnostic runtime edge — so no app-origin response, error path included,
+  // ever escapes unhardened, and no raw stack leaks. It is NOT relabeled as a 404: a genuinely
+  // absent resource is a 404 that dispatch RETURNS as a value, never a throw. The runtime edge's
+  // try/catch stays as the last-resort backstop for a bug in this handler, the accepted
+  // total-handler + edge pattern the content origin already uses — not a duplicate enforcer.
+  // [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:types-are-the-program]
+  return async (request: Request): Promise<Response> => {
+    try {
+      return harden(await dispatch(request));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return harden(json({ error: message }, 500));
     }
   };
 };

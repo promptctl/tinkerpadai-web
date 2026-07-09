@@ -8,6 +8,9 @@ import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
 
+// The type of the assembled request handler, memoized per isolate below.
+type Handler = (request: Request) => Promise<Response>;
+
 // THE CLOUDFLARE WORKER ENTRY — the edge composition root, sibling to the Node entry (nodeApp.ts).
 // It is the only edge-specific effectful top of the steel thread: it reads the environment (bindings
 // and secrets), builds the SAME app graph makeApp assembles everywhere — swapping in R2 for the
@@ -56,33 +59,47 @@ const required = (env: Env, name: keyof Env): string => {
   return value;
 };
 
+// The request handler, built ONCE per isolate and reused. An isolate's `env` is fixed for its whole
+// life, and the app is a pure function of `env` — the R2/D1 adapters are stateless wrappers over
+// stable bindings, and the router's parsed content host and handler closures derive only from
+// config — so constructing the whole graph on the first request and caching it is correct, and
+// spends the per-request budget on I/O rather than on rebuilding stateless wrappers each fetch. The
+// cache is a single module-owned cell with one accessor and a documented invariant (env-stable ⇒
+// handler-stable); it is derived state, never shared mutable domain state.
+// [LAW:no-shared-mutable-globals] [LAW:effects-at-boundaries]
+let cachedHandler: Handler | undefined;
+
+const handlerFor = (env: Env): Handler => {
+  if (cachedHandler !== undefined) return cachedHandler;
+
+  const clientId = required(env, 'GITHUB_CLIENT_ID');
+  const clientSecret = required(env, 'GITHUB_CLIENT_SECRET');
+  const oauthCallbackUrl = required(env, 'TINKERPAD_OAUTH_CALLBACK_URL');
+  const contentOrigin = required(env, 'TINKERPAD_CONTENT_ORIGIN');
+
+  const app = makeApp({
+    // Generation is disabled at the first public deploy — an empty registry the front door reads as
+    // "no generation UI". Public generation turns on later with the credits ledger + API driver
+    // (tinkerpadai-providers-u1h). [LAW:dataflow-not-control-flow]
+    registry: new ProviderRegistry(),
+    store: makeR2ArtifactStore(env.ARTIFACTS),
+    catalog: makeD1Catalog(env.DB),
+    sessionStore: makeD1SessionStore(env.DB, { now: () => Date.now(), ttlMs: EDGE_SESSION_TTL_MS }),
+    // No provider means no turns are ever created, so the disposer is unreachable — a no-op is the
+    // contract's sanctioned value for "a provider with nothing to release". [LAW:dataflow-not-control-flow]
+    disposeTurn: async () => undefined,
+    oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
+    oauthCallbackUrl,
+    // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]
+    cookieSecurity: { secure: true },
+  });
+
+  cachedHandler = makeFrontDoorRouter({ app, page, contentOrigin });
+  return cachedHandler;
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const clientId = required(env, 'GITHUB_CLIENT_ID');
-    const clientSecret = required(env, 'GITHUB_CLIENT_SECRET');
-    const oauthCallbackUrl = required(env, 'TINKERPAD_OAUTH_CALLBACK_URL');
-    const contentOrigin = required(env, 'TINKERPAD_CONTENT_ORIGIN');
-
-    // The app graph, built per request from the edge bindings. makeApp is pure composition (no I/O),
-    // so rebuilding it costs only closure allocation — cheaper than caching a mutable singleton across
-    // requests and free of any binding-lifetime or isolate-reuse assumption. [LAW:no-shared-mutable-globals]
-    const app = makeApp({
-      // Generation is disabled at the first public deploy — an empty registry the front door reads as
-      // "no generation UI". Public generation turns on later with the credits ledger + API driver
-      // (tinkerpadai-providers-u1h). [LAW:dataflow-not-control-flow]
-      registry: new ProviderRegistry(),
-      store: makeR2ArtifactStore(env.ARTIFACTS),
-      catalog: makeD1Catalog(env.DB),
-      sessionStore: makeD1SessionStore(env.DB, { now: () => Date.now(), ttlMs: EDGE_SESSION_TTL_MS }),
-      // No provider means no turns are ever created, so the disposer is unreachable — a no-op is the
-      // contract's sanctioned value for "a provider with nothing to release". [LAW:dataflow-not-control-flow]
-      disposeTurn: async () => undefined,
-      oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
-      oauthCallbackUrl,
-      // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]
-      cookieSecurity: { secure: true },
-    });
-
-    return makeFrontDoorRouter({ app, page, contentOrigin })(request);
+    return handlerFor(env)(request);
   },
 };

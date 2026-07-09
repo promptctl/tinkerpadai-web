@@ -1,9 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { Catalog, CatalogStore } from './catalog.js';
-import { hydrateStoredDoc, makeCatalog } from './catalog.js';
+import { EMPTY_CATALOG, hydrateStoredDoc, makeCatalog } from './catalog.js';
 import type { CatalogDoc } from './types.js';
-
-const EMPTY: CatalogDoc = { playgrounds: [] };
 
 // The single row that holds the whole catalog document. The CatalogStore seam is document-oriented
 // (read the whole doc, write the whole doc), so the faithful D1 backing is one row keyed to a fixed
@@ -35,7 +33,7 @@ export const makeD1Catalog = (db: D1Database): Catalog => {
         .first<{ doc: string }>();
       // No row is the legitimate initial state (empty catalog). A thrown query (e.g. missing table)
       // is a real failure and propagates — absence of a ROW is not the absence of the TABLE.
-      if (row === null) return EMPTY;
+      if (row === null) return EMPTY_CATALOG;
       return hydrateStoredDoc(JSON.parse(row.doc) as CatalogDoc);
     },
     async write(doc: CatalogDoc): Promise<void> {

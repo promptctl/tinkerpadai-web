@@ -1,11 +1,9 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Catalog, CatalogStore } from './catalog.js';
-import { hydrateStoredDoc, makeCatalog } from './catalog.js';
+import { EMPTY_CATALOG, hydrateStoredDoc, makeCatalog } from './catalog.js';
 import { isNotFound } from './fsErrors.js';
 import type { CatalogDoc } from './types.js';
-
-const EMPTY: CatalogDoc = { playgrounds: [] };
 
 // The local-file backend: the whole catalog as one JSON document at `path`. An absent
 // file is the legitimate initial state (empty catalog); any other read error is a real
@@ -17,7 +15,7 @@ export const makeFileCatalog = (path: string): Catalog => {
       try {
         return hydrateStoredDoc(JSON.parse(await readFile(path, 'utf8')) as CatalogDoc);
       } catch (err) {
-        if (isNotFound(err)) return EMPTY;
+        if (isNotFound(err)) return EMPTY_CATALOG;
         throw err;
       }
     },

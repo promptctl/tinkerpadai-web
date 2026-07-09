@@ -21,9 +21,14 @@ const withCookie = (url: string, cookie: string): Request =>
 // Pull the tp_session value out of a Set-Cookie header so a test can replay it as a Cookie.
 const cookieFromSetCookie = (setCookie: string): string => setCookie.split(';')[0]!;
 
-// Pull a named cookie's value out of a Set-Cookie line (value is everything up to the first ;).
+const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Pull a named cookie's value out of a Set-Cookie line (value is everything up to the first ;). The
+// name must sit on a cookie boundary — string start or just after `; ` — and is regex-escaped, so
+// `valueOf(x, 'tp_session')` can never substring-match `__Host-tp_session=` (the two are distinct
+// cookies). Mirrors production readCookie's strict `===` name equality. [LAW:behavior-not-structure]
 const valueOf = (setCookie: string, name: string): string => {
-  const match = new RegExp(`${name}=([^;]*)`).exec(setCookie);
+  const match = new RegExp(`(?:^|;\\s*)${escapeRegex(name)}=([^;]*)`).exec(setCookie);
   if (match === null) throw new Error(`no ${name} in: ${setCookie}`);
   return match[1]!;
 };

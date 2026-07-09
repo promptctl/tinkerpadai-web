@@ -65,6 +65,12 @@ export interface CatalogStore {
   write(doc: CatalogDoc): Promise<void>;
 }
 
+// The empty catalog — the one initial state every backend starts from and returns when nothing is
+// stored yet (no file, no D1 row, a fresh memory instance). It lives here, on the module that owns
+// the CatalogDoc shape, so a change to what "empty" means is made once rather than in each backend.
+// [LAW:one-source-of-truth]
+export const EMPTY_CATALOG: CatalogDoc = { playgrounds: [] };
+
 // The forward-compatible shape upgrade applied at the read boundary of EVERY persisted backend
 // (file, D1, any future store). Bytes on disk or in a database row can predate a field the current
 // type requires: tags arrived with the discovery epic, so a playground written before then has a

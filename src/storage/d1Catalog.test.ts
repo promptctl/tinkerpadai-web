@@ -82,6 +82,13 @@ describe('makeD1Catalog', () => {
     await expect(makeD1Catalog(db).listPlaygrounds()).rejects.toThrow('each playground must be an object');
   });
 
+  it('fails LOUDLY when a playground session has an empty/absent turns array (load-bearing invariant)', async () => {
+    const { db, setRaw } = makeFakeD1();
+    // A session with no turns would crash later in summarize (turns[0]); catch it at the boundary.
+    setRaw('{"playgrounds":[{"id":"pg","session":{"sessionId":"s","providerId":"fake","lineage":null,"author":"a","tags":[],"turns":[]}}]}');
+    await expect(makeD1Catalog(db).listPlaygrounds()).rejects.toThrow('non-empty array');
+  });
+
   it('hydrates a legacy tag-less document to an empty tag list at the read boundary', async () => {
     const { db, setRaw } = makeFakeD1();
     // A document written before the tags field existed: the session carries no `tags`.

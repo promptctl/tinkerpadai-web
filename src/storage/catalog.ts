@@ -94,18 +94,28 @@ export const hydrateStoredDoc = (doc: unknown): CatalogDoc => {
   const playgrounds = (doc as { playgrounds: readonly unknown[] }).playgrounds;
   return {
     playgrounds: playgrounds.map((entry) => {
-      // Validate each element to the depth this function dereferences (`.session.tags`) — so a
-      // tampered array like [null, 42] fails loudly with the SAME clear message as a bad outer shape,
-      // not a cryptic "cannot read properties of null" that contradicts the intent above. The guard is
-      // legitimate validation AT the persisted-input trust boundary. [LAW:no-defensive-null-guards]
-      // [LAW:no-silent-failure]
+      // Validate each element against the STRUCTURAL INVARIANTS the catalog universally relies on: a
+      // playground is an object with a session object whose `turns` is a NON-EMPTY array. `turns`
+      // non-empty is load-bearing — the type declares it a non-empty tuple and every derivation
+      // (currentTurnOf, recipeOf, summarize) destructures `[first, ...]` — so a tampered element that
+      // breaks it must fail HERE with a clear message, not later in summarize with a cryptic
+      // `turns[0]` TypeError. This validates the skeleton, deliberately NOT every leaf field: we are
+      // the sole legitimate writer, a full field-by-field validator would duplicate the Playground
+      // type as runtime checks that drift from it, and the threat is gross corruption / manual
+      // tampering, not malformed leaves. [LAW:types-are-the-program] [LAW:no-silent-failure]
+      // [LAW:one-source-of-truth]
+      const session = (entry as { session?: unknown } | null)?.session as { turns?: unknown } | undefined;
       if (
         typeof entry !== 'object' ||
         entry === null ||
-        typeof (entry as { session?: unknown }).session !== 'object' ||
-        (entry as { session?: unknown }).session === null
+        typeof session !== 'object' ||
+        session === null ||
+        !Array.isArray(session.turns) ||
+        session.turns.length === 0
       ) {
-        throw new Error('stored catalog document is malformed: each playground must be an object with a session');
+        throw new Error(
+          'stored catalog document is malformed: each playground must be an object with a session whose turns is a non-empty array',
+        );
       }
       const p = entry as Playground;
       // Legacy bytes genuinely lack the `tags` field the type now promises — the known forward

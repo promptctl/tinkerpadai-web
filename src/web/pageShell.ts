@@ -100,6 +100,15 @@ const SHELL_STYLES = `
   .page-head .lede { color: var(--muted); font-size: 1rem; margin-top: 0.4rem; }
   .page-head .lede a { font-weight: 500; }
 
+  /* ── LEGAL (ground rules / privacy) — narrow, readable prose over the shared container ── */
+  .legal { max-width: 720px; }
+  .legal section { margin-top: 2rem; }
+  .legal h2 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; color: var(--text); margin-bottom: 0.6rem; }
+  .legal p { color: var(--text-2); margin-bottom: 0.9rem; }
+  .legal ul { color: var(--text-2); margin: 0 0 0.9rem 1.2rem; }
+  .legal li { margin-bottom: 0.5rem; }
+  .legal a { font-weight: 500; }
+
   /* ── CARD GRID ─────────────────────────────── */
   .card-grid {
     display: grid;
@@ -208,6 +217,8 @@ export const siteFooter = (): string => `<footer class="site-footer">
       <ul class="footer-links">
         <li><a href="/commons">Commons</a></li>
         <li><a href="/">Build</a></li>
+        <li><a href="/terms">Ground rules</a></li>
+        <li><a href="/privacy">Privacy</a></li>
       </ul>
     </div>
     <div class="footer-bottom">© 2026 TinkerPad. All playgrounds are public by default.</div>

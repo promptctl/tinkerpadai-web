@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { makeApp } from '../app.js';
+import { makeNodeApp } from './nodeApp.js';
 import { makeGitHubOAuthProvider } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
@@ -37,10 +37,14 @@ const main = async (): Promise<void> => {
     );
   }
 
-  const app = makeApp({
+  // The Node entry binds a plain http socket, so cookies cannot be Secure here — that is the honest
+  // transport, not a weakened default. The HTTPS edge (src/web/worker.ts) is the production target
+  // that hardens the cookie with { secure: true }. [LAW:no-silent-failure]
+  const app = makeNodeApp({
     dataDir,
     oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
     oauthCallbackUrl,
+    cookieSecurity: { secure: false },
   });
 
   // Bind the content origin FIRST: the player's iframe src needs its concrete URL, so that

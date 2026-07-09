@@ -22,12 +22,19 @@ export const readCookie = (header: string | null, name: string): string | null =
 // The security attributes of a Set-Cookie. There is no `Domain` field on purpose: omitting it
 // makes the cookie HOST-SCOPED — bound to the exact host that set it (the app origin), so it is
 // unreachable from a different-host content origin by construction, not by a runtime guard.
-// `Secure` and a `__Host-` name prefix are the production hardening (they require HTTPS, which
-// local dev over http://127.0.0.1 cannot offer) and land with deployment. [LAW:single-enforcer]
+// `secure` is REQUIRED, not defaulted: every caller states its transport posture explicitly, so
+// there is no silent "forgot to mark it Secure". It is a VALUE the composition root supplies (true
+// on the HTTPS edge, false on http loopback dev), never an ambient read of the environment — the
+// `__Host-` name prefix that pairs with it is chosen the same way. [LAW:types-are-the-program]
+// [LAW:dataflow-not-control-flow]
 export interface CookieAttributes {
   readonly httpOnly: boolean;
   readonly sameSite: 'Strict' | 'Lax' | 'None';
   readonly path: string;
+  // Emit the `Secure` attribute — the browser then withholds the cookie from any non-HTTPS
+  // request. Required for a `__Host-`-prefixed name and for any credential behind TLS; false only
+  // where the transport genuinely cannot offer HTTPS (http://127.0.0.1 dev). [LAW:single-enforcer]
+  readonly secure: boolean;
   // The cookie's max age in seconds, or absent for a SESSION cookie that the browser drops when it
   // closes. Genuine optionality — its absence is the session-cookie semantics the login relies on,
   // and Max-Age=0 is how logout tells the browser to drop the cookie immediately. The store owns
@@ -36,14 +43,15 @@ export interface CookieAttributes {
 }
 
 // Serialize a Set-Cookie header value. SameSite + Path + HttpOnly are always present; Max-Age is
-// emitted only when given (a session cookie omits it); Domain is never emitted (host-scoping, see
-// above). SameSite=Strict is the CSRF defense — the browser withholds this cookie from cross-site
-// requests, so a forged write from another origin arrives without it and is gated. No separate
-// CSRF token is needed. [LAW:single-enforcer]
+// emitted only when given (a session cookie omits it); Secure is emitted when the transport is
+// HTTPS; Domain is never emitted (host-scoping, see above). SameSite=Strict is the CSRF defense —
+// the browser withholds this cookie from cross-site requests, so a forged write from another origin
+// arrives without it and is gated. No separate CSRF token is needed. [LAW:single-enforcer]
 export const serializeCookie = (name: string, value: string, attrs: CookieAttributes): string => {
   const parts = [`${name}=${value}`, `Path=${attrs.path}`];
   if (attrs.maxAge !== undefined) parts.push(`Max-Age=${attrs.maxAge}`);
   parts.push(`SameSite=${attrs.sameSite}`);
   if (attrs.httpOnly) parts.push('HttpOnly');
+  if (attrs.secure) parts.push('Secure');
   return parts.join('; ');
 };

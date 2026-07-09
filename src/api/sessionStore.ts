@@ -24,16 +24,22 @@ export interface SessionStoreDeps {
   readonly ttlMs: number;
 }
 
+// Every operation is async. A durable backend (Cloudflare D1/KV at the edge) reaches the session
+// record over I/O, so the seam's truthful type is a Promise — the in-memory dev store simply
+// resolves immediately. A synchronous signature would be a type "too strong but false" for any
+// store that survives a process restart, forcing that store to lie or block. The resolver and the
+// enforcer await these, so the async reality lives in the type, not in folklore about which backend
+// is wired. [LAW:types-are-the-program] [LAW:effects-at-boundaries]
 export interface SessionStore {
   // Mint a new session for a principal and return its opaque token (the cookie value). The session
   // is alive until its ttl elapses.
-  create(subject: Subject): string;
+  create(subject: Subject): Promise<string>;
   // The principal a token authenticates, or null when no LIVE session carries that token — absent,
   // expired, and destroyed are one observable value (null) the resolver matches.
-  lookup(token: string): Subject | null;
+  lookup(token: string): Promise<Subject | null>;
   // End a session now (logout). Idempotent: destroying an absent or already-dead token is a
   // harmless no-op, so a logout never needs to know whether a session was really there.
-  destroy(token: string): void;
+  destroy(token: string): Promise<void>;
 }
 
 // What the store holds per token. `expiresAt` is computed once at create (now + ttl) and is the one
@@ -50,7 +56,7 @@ export const makeMemorySessionStore = (deps: SessionStoreDeps): SessionStore => 
   return {
     // 32 random bytes, base64url — URL- and cookie-safe (no `;`, `=`, or whitespace), with
     // ~256 bits of entropy so a token cannot be guessed. [LAW:no-silent-failure]
-    create: (subject) => {
+    create: async (subject) => {
       const token = randomBytes(32).toString('base64url');
       sessions.set(token, { subject, expiresAt: now() + ttlMs });
       return token;
@@ -58,7 +64,7 @@ export const makeMemorySessionStore = (deps: SessionStoreDeps): SessionStore => 
     // Absent → null; expired → evict and null; live → its principal. Lazy eviction on observation
     // keeps the map from accumulating dead sessions in a long-lived process — the store reclaiming
     // a session it knows is dead, which is the lifecycle owner doing its job, not a hidden effect.
-    lookup: (token) => {
+    lookup: async (token) => {
       const record = sessions.get(token);
       if (record === undefined) return null;
       if (now() >= record.expiresAt) {
@@ -67,7 +73,7 @@ export const makeMemorySessionStore = (deps: SessionStoreDeps): SessionStore => 
       }
       return record.subject;
     },
-    destroy: (token) => {
+    destroy: async (token) => {
       sessions.delete(token);
     },
   };

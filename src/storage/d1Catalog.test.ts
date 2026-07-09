@@ -68,6 +68,13 @@ describe('makeD1Catalog', () => {
     await expect(makeD1Catalog(db).listPlaygrounds()).rejects.toThrow();
   });
 
+  it('fails LOUDLY with a clear message on valid JSON of the wrong shape (manual tampering)', async () => {
+    const { db, setRaw } = makeFakeD1();
+    // Valid JSON, wrong shape — e.g. someone set the cell to a number via `wrangler d1 execute`.
+    setRaw('42');
+    await expect(makeD1Catalog(db).listPlaygrounds()).rejects.toThrow('stored catalog document is malformed');
+  });
+
   it('hydrates a legacy tag-less document to an empty tag list at the read boundary', async () => {
     const { db, setRaw } = makeFakeD1();
     // A document written before the tags field existed: the session carries no `tags`.

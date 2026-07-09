@@ -59,18 +59,20 @@ const required = (env: Env, name: keyof Env): string => {
   return value;
 };
 
-// The request handler, built ONCE per isolate and reused. An isolate's `env` is fixed for its whole
-// life, and the app is a pure function of `env` — the R2/D1 adapters are stateless wrappers over
-// stable bindings, and the router's parsed content host and handler closures derive only from
-// config — so constructing the whole graph on the first request and caching it is correct, and
-// spends the per-request budget on I/O rather than on rebuilding stateless wrappers each fetch. The
-// cache is a single module-owned cell with one accessor and a documented invariant (env-stable ⇒
-// handler-stable); it is derived state, never shared mutable domain state.
-// [LAW:no-shared-mutable-globals] [LAW:effects-at-boundaries]
-let cachedHandler: Handler | undefined;
+// The request handler, built ONCE per isolate and reused — memoized on the `env` it was built from.
+// An isolate's `env` is fixed for its whole life, and the app is a pure function of `env` (the R2/D1
+// adapters are stateless wrappers over stable bindings; the router's parsed content host and handler
+// closures derive only from config). So the graph is constructed on the first request and reused,
+// spending the per-request budget on I/O rather than rebuilding stateless wrappers each fetch. The
+// cache is KEYED on `env` identity, so the signature stays honest — the handler is a value derived
+// from `env`, not an ignored parameter — and a different `env` (never happens in a stable isolate,
+// but the type permits it) rebuilds rather than returning a stale handler. One module-owned cell,
+// one accessor, documented invariant. [LAW:no-shared-mutable-globals] [LAW:dataflow-not-control-flow]
+// [LAW:no-ambient-temporal-coupling]
+let cached: { readonly env: Env; readonly handler: Handler } | undefined;
 
 const handlerFor = (env: Env): Handler => {
-  if (cachedHandler !== undefined) return cachedHandler;
+  if (cached !== undefined && cached.env === env) return cached.handler;
 
   const clientId = required(env, 'GITHUB_CLIENT_ID');
   const clientSecret = required(env, 'GITHUB_CLIENT_SECRET');
@@ -94,12 +96,27 @@ const handlerFor = (env: Env): Handler => {
     cookieSecurity: { secure: true },
   });
 
-  cachedHandler = makeFrontDoorRouter({ app, page, contentOrigin });
-  return cachedHandler;
+  const handler = makeFrontDoorRouter({ app, page, contentOrigin });
+  cached = { env, handler };
+  return handler;
 };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    return handlerFor(env)(request);
+    // THE EDGE ERROR BOUNDARY — the Worker's equivalent of the Node socket's try/catch in serve().
+    // Any failure building the graph (a missing secret) or serving a request (a D1/R2 error — real
+    // now that the seams are async and remote, e.g. a session-mint write that fails) becomes a loud
+    // 500 carrying its message, never a generic runtime crash that tells the caller nothing. Two
+    // separate runtime edges (Node socket, Worker fetch) each own their own boundary; this is not a
+    // duplicate enforcer. [LAW:no-silent-failure] [LAW:single-enforcer]
+    try {
+      return await handlerFor(env)(request);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return new Response(JSON.stringify({ error: message }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
   },
 };

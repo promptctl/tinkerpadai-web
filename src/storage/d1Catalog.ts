@@ -34,7 +34,7 @@ export const makeD1Catalog = (db: D1Database): Catalog => {
       // No row is the legitimate initial state (empty catalog). A thrown query (e.g. missing table)
       // is a real failure and propagates — absence of a ROW is not the absence of the TABLE.
       if (row === null) return EMPTY_CATALOG;
-      return hydrateStoredDoc(JSON.parse(row.doc) as CatalogDoc);
+      return hydrateStoredDoc(JSON.parse(row.doc));
     },
     async write(doc: CatalogDoc): Promise<void> {
       await db

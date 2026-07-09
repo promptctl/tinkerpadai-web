@@ -13,7 +13,7 @@ export const makeFileCatalog = (path: string): Catalog => {
   const backend: CatalogStore = {
     async read(): Promise<CatalogDoc> {
       try {
-        return hydrateStoredDoc(JSON.parse(await readFile(path, 'utf8')) as CatalogDoc);
+        return hydrateStoredDoc(JSON.parse(await readFile(path, 'utf8')));
       } catch (err) {
         if (isNotFound(err)) return EMPTY_CATALOG;
         throw err;

@@ -81,14 +81,25 @@ export const EMPTY_CATALOG: CatalogDoc = { playgrounds: [] };
 // this same seam. It lives on the CatalogStore seam (not in one backend) so both the file and D1
 // adapters apply the identical migration — the in-memory store needs none, as it only ever holds
 // current-shape objects. [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:types-are-the-program]
-export const hydrateStoredDoc = (doc: CatalogDoc): CatalogDoc => ({
-  playgrounds: doc.playgrounds.map((p) =>
-    // The guard is legitimate defensive validation AT the trust boundary (persisted external input),
-    // not control flow hiding a bug: legacy bytes genuinely lack the field the type now promises.
-    // [LAW:no-defensive-null-guards]
-    Array.isArray(p.session.tags) ? p : { ...p, session: { ...p.session, tags: [] } },
-  ),
-});
+export const hydrateStoredDoc = (doc: unknown): CatalogDoc => {
+  // `unknown`, not `CatalogDoc`: this IS the boundary where untyped persisted bytes become the typed
+  // document, so it validates rather than trusts a cast. A stored value that isn't the expected
+  // { playgrounds: [...] } shape — gross corruption or manual tampering (`wrangler d1 execute` setting
+  // the cell to `42`) — fails LOUDLY with a clear message, never a downstream "cannot read
+  // properties of undefined" that hides what actually went wrong. The per-field `tags` upgrade below
+  // is the known forward-compatible migration. [LAW:types-are-the-program] [LAW:no-silent-failure]
+  if (typeof doc !== 'object' || doc === null || !Array.isArray((doc as { playgrounds?: unknown }).playgrounds)) {
+    throw new Error('stored catalog document is malformed: expected { playgrounds: [...] }');
+  }
+  return {
+    playgrounds: (doc as CatalogDoc).playgrounds.map((p) =>
+      // The guard is legitimate defensive validation AT the trust boundary (persisted external input),
+      // not control flow hiding a bug: legacy bytes genuinely lack the field the type now promises.
+      // [LAW:no-defensive-null-guards]
+      Array.isArray(p.session.tags) ? p : { ...p, session: { ...p.session, tags: [] } },
+    ),
+  };
+};
 
 // The latest turn of a session, derived from its turns in order. Version history IS
 // the turns; the current turn is simply the last one. Derived, never stored, so it

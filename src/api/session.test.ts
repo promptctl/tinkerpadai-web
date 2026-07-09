@@ -320,6 +320,21 @@ describe('makeSessionHandler — DELETE /session (logout)', () => {
     expect(await res!.json()).toEqual({ identity: null });
     expect(res!.headers.get('set-cookie') ?? '').toContain('Max-Age=0');
   });
+
+  it('under a secure policy clears the __Host- session cookie (the hardened name), Secure', async () => {
+    // The cleared name must match the name that was SET — under secure that is __Host-tp_session, not
+    // the bare name; clearing the bare name would leave the hardened cookie intact. [LAW:one-source-of-truth]
+    const store = newStore();
+    const token = await store.create(Subject('github:42'));
+    const handler = handlerWith(store, makeFakeOAuthProvider({ subject: SUBJECT }), SECURE);
+    const res = await logout(handler, `__Host-tp_session=${token}`);
+    expect(res!.status).toBe(200);
+    expect(await store.lookup(token)).toBeNull();
+    const setCookie = res!.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('__Host-tp_session=;');
+    expect(setCookie).toContain('Max-Age=0');
+    expect(setCookie).toContain('Secure');
+  });
 });
 
 describe('makeSessionHandler — pass-through', () => {

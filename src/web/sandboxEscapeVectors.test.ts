@@ -89,6 +89,22 @@ const seedHostile = async (catalog: Catalog, store: ArtifactStore): Promise<stri
   return playground.id;
 };
 
+// The content origin's sealed-response contract, asserted in ONE place: the full network-denying CSP
+// (deny-all baseline, no exfil, no form post-out, no <base> hijack, no host ever re-permitted) plus
+// nosniff. Every content-origin response — success AND error — must satisfy it, so both paths call
+// this helper; a directive dropped on either path alone turns the test red, and the two paths cannot
+// drift to different thoroughness. [LAW:single-enforcer] [LAW:one-source-of-truth]
+const expectSealedCsp = (res: Response): void => {
+  const csp = res.headers.get('content-security-policy') ?? '';
+  expect(csp).toContain("default-src 'none'"); // deny-all baseline
+  expect(csp).toContain("connect-src 'none'"); // no fetch/XHR/WebSocket/beacon exfil
+  expect(csp).toContain("form-action 'none'"); // no form post-out
+  expect(csp).toContain("base-uri 'none'"); // no <base> hijack
+  expect(csp).not.toContain("'self'"); // no host may be re-permitted
+  expect(csp).not.toContain('http'); // no external origin, ever
+  expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+};
+
 describe('sandbox escape vectors — a hostile playground demonstrably fails each', () => {
   // V1 + V3 + V7: the player frames the untrusted content with an OPAQUE origin (no allow-same-origin
   // ⇒ no reach to the app origin, cookies, or parent) and NO top-navigation (⇒ no phishing redirect).
@@ -119,28 +135,16 @@ describe('sandbox escape vectors — a hostile playground demonstrably fails eac
     const id = await seedHostile(catalog, store);
 
     const ok = await router(new Request(`${CONTENT_ORIGIN}/?id=${encodeURIComponent(id)}`));
-    const csp = ok.headers.get('content-security-policy') ?? '';
-    expect(csp).toContain("default-src 'none'");
-    expect(csp).toContain("connect-src 'none'"); // no fetch/XHR/WebSocket/beacon exfil
-    expect(csp).toContain("form-action 'none'"); // no form post-out
-    expect(csp).toContain("base-uri 'none'"); // no <base> hijack
-    expect(csp).not.toContain("'self'"); // no host may be re-permitted
-    expect(csp).not.toContain('http'); // no external origin, ever
-    expect(ok.headers.get('x-content-type-options')).toBe('nosniff');
+    expectSealedCsp(ok);
     // The raw hostile bytes ARE served here (live code) — containment is the CSP + opaque frame, not
     // escaping. Proven byte-for-byte so we know the payload is real, not neutered at the source.
     expect(await ok.text()).toBe(HOSTILE_HTML);
 
-    // Error responses stay sealed too — there is no permissive path out of the content origin. The
-    // error path is asserted with the SAME thoroughness as success: not just default-src, but the
-    // exfil barrier (connect-src) and nosniff, so a regression that drops a directive on the error
-    // path alone still turns this red.
+    // Error responses stay sealed too — there is no permissive path out of the content origin. Asserted
+    // through the SAME helper as success, so the error path cannot carry a weaker CSP than the 200 path.
     const missing = await router(new Request(`${CONTENT_ORIGIN}/?id=nope`));
     expect(missing.status).toBe(404);
-    const errCsp = missing.headers.get('content-security-policy') ?? '';
-    expect(errCsp).toContain("default-src 'none'");
-    expect(errCsp).toContain("connect-src 'none'"); // the exfil barrier must hold on error paths too
-    expect(missing.headers.get('x-content-type-options')).toBe('nosniff');
+    expectSealedCsp(missing);
   });
 
   // V5: the app host has NO raw-html route. Requesting the id on the app origin yields the front door,
@@ -204,6 +208,10 @@ describe('sandbox escape vectors — a hostile playground demonstrably fails eac
     expect(sessionCookie).toContain('HttpOnly');
     expect(sessionCookie).toContain('SameSite=Strict');
     expect(sessionCookie).toContain('Secure');
+    // Path=/ is REQUIRED by the __Host- prefix — a browser rejects a __Host- cookie without it, so a
+    // missing Path would silently leave the user with no session. Asserted so the prefix is valid, not
+    // just present.
+    expect(sessionCookie).toContain('Path=/');
     // __Host- prefix + no Domain ⇒ host-scoped: the content origin can never receive it.
     expect(sessionCookie).not.toMatch(/Domain=/i);
   });

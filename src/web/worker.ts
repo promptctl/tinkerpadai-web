@@ -44,11 +44,21 @@ export interface Env {
 // the deadline; this composition root states the policy. [LAW:no-ambient-temporal-coupling]
 const EDGE_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+// The env keys that carry a required STRING (secrets + config), distinct from the object bindings
+// (ARTIFACTS, DB). `required` accepts only these, so `required(env, 'ARTIFACTS')` is a COMPILE error
+// rather than a call that type-checks but always throws (an R2Bucket is never a string). The type
+// makes the invalid call unrepresentable. [LAW:types-are-the-program]
+type RequiredEnvKey =
+  | 'GITHUB_CLIENT_ID'
+  | 'GITHUB_CLIENT_SECRET'
+  | 'TINKERPAD_OAUTH_CALLBACK_URL'
+  | 'TINKERPAD_CONTENT_ORIGIN';
+
 // Read a required secret/var, failing LOUDLY and by name when absent — never a silent fallback to an
 // open gate or a wrong origin. `|| undefined` so an empty string is treated as unset. The GitHub
 // credentials CANNOT be minted, so their absence is a hard failure, exactly as the Node entry
 // enforces. [LAW:no-silent-failure]
-const required = (env: Env, name: keyof Env): string => {
+const required = (env: Env, name: RequiredEnvKey): string => {
   const value = env[name] || undefined;
   if (typeof value !== 'string') {
     throw new Error(

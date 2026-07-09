@@ -91,13 +91,27 @@ export const hydrateStoredDoc = (doc: unknown): CatalogDoc => {
   if (typeof doc !== 'object' || doc === null || !Array.isArray((doc as { playgrounds?: unknown }).playgrounds)) {
     throw new Error('stored catalog document is malformed: expected { playgrounds: [...] }');
   }
+  const playgrounds = (doc as { playgrounds: readonly unknown[] }).playgrounds;
   return {
-    playgrounds: (doc as CatalogDoc).playgrounds.map((p) =>
-      // The guard is legitimate defensive validation AT the trust boundary (persisted external input),
-      // not control flow hiding a bug: legacy bytes genuinely lack the field the type now promises.
-      // [LAW:no-defensive-null-guards]
-      Array.isArray(p.session.tags) ? p : { ...p, session: { ...p.session, tags: [] } },
-    ),
+    playgrounds: playgrounds.map((entry) => {
+      // Validate each element to the depth this function dereferences (`.session.tags`) — so a
+      // tampered array like [null, 42] fails loudly with the SAME clear message as a bad outer shape,
+      // not a cryptic "cannot read properties of null" that contradicts the intent above. The guard is
+      // legitimate validation AT the persisted-input trust boundary. [LAW:no-defensive-null-guards]
+      // [LAW:no-silent-failure]
+      if (
+        typeof entry !== 'object' ||
+        entry === null ||
+        typeof (entry as { session?: unknown }).session !== 'object' ||
+        (entry as { session?: unknown }).session === null
+      ) {
+        throw new Error('stored catalog document is malformed: each playground must be an object with a session');
+      }
+      const p = entry as Playground;
+      // Legacy bytes genuinely lack the `tags` field the type now promises — the known forward
+      // migration, applied here once at the read boundary.
+      return Array.isArray(p.session.tags) ? p : { ...p, session: { ...p.session, tags: [] } };
+    }),
   };
 };
 

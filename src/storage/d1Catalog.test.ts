@@ -75,6 +75,13 @@ describe('makeD1Catalog', () => {
     await expect(makeD1Catalog(db).listPlaygrounds()).rejects.toThrow('stored catalog document is malformed');
   });
 
+  it('fails LOUDLY on a well-shaped array holding a malformed element, not a cryptic TypeError', async () => {
+    const { db, setRaw } = makeFakeD1();
+    // Outer shape valid, but an element is not a playground object — must still be a clear message.
+    setRaw('{"playgrounds":[null]}');
+    await expect(makeD1Catalog(db).listPlaygrounds()).rejects.toThrow('each playground must be an object');
+  });
+
   it('hydrates a legacy tag-less document to an empty tag list at the read boundary', async () => {
     const { db, setRaw } = makeFakeD1();
     // A document written before the tags field existed: the session carries no `tags`.

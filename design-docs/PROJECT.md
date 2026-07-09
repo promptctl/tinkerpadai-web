@@ -145,12 +145,37 @@ bad playground from being *dangerous* while moderation catches what's merely
 
 ---
 
+## Decisions made
+
+- **Who pays for generation → a credit system.** *(decided 2026-07-08)* Every account
+  gets a free allotment of generations; beyond it, users buy or earn credits. The
+  public commons — browse, use, remix of existing self-contained files — stays free
+  and open, because serving static playgrounds costs almost nothing; the credit meter
+  applies only to *generation*, the one expensive step. This was chosen over
+  platform-pays (unbounded cost/abuse exposure at public scale) and bring-your-own-key
+  (which breaks frictionless creation — the load-bearing pillar — since most visitors
+  have no API key). A credit balance presumes a persistent account to hold it, and that
+  already exists — authentication is real GitHub OAuth (the session carries identity; every
+  playground has an author). So the credit model resolves the *creation* half of the still-open
+  "accounts vs. anonymous" decision: **generating requires signing in**, while browsing/using/
+  remixing the commons stays open to anonymous visitors. Consequences that now follow: the API
+  provider driver debits credits per generation, rate-limit semantics are expressed in credits
+  rather than raw request caps, and the accounts surface must carry a credit balance.
+  The first public deploy does not serve generation at the edge — it is either off, or
+  proxied to a back-end generator — so the public surface is browse/use/remix only; public
+  generation turns on once the API driver and the credit ledger exist. (This does not contradict the Status section's "verified end-to-end": the loop is
+  code-complete and verified in *dev*; gating generation at the public edge is a
+  launch-safety and economics choice, not an incompleteness — it stays off in production
+  only until the credit meter that governs its cost is built.)
+
+---
+
 ## Open decisions (not yet made)
 
-- **Who pays for generation.** Platform-hosted model (we eat the cost), bring-your-
-  own-key, or a credit system. This is the main cost lever and shapes the whole
-  economic model.
-- **Accounts vs. anonymous** creation, and how attribution/lineage is tracked.
+- **Anonymous participation and attribution.** The *creation* half is settled (see Decisions
+  made: generating requires signing in; browsing/using/remixing stays open to anonymous
+  visitors). What remains open is how attribution and remix lineage are tracked — and whether
+  anonymous visitors get any lighter-weight identity at all.
 - **Monetization, if any.** Free commons as the default; possible paid edges
   (private playgrounds, pro generation limits, teams) — or it stays a loss-leader /
   showcase. Undecided on purpose.

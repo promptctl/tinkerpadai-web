@@ -229,11 +229,13 @@ describe('makeSiteHandler', () => {
     expect(res.status).toBe(400);
   });
 
-  it('propagates a catalog read failure loudly rather than relabeling it as a 404', async () => {
-    // An unknown id is simply absent from the projection (a 404); an infra/invariant failure
-    // throws out of the read and must surface (serve() turns the throw into a loud 500), never
-    // collapsed into "not found". The player reads through listPlaygrounds, so that is the seam
-    // that fails here. [LAW:no-silent-failure]
+  it('surfaces a catalog read failure as a loud, SEALED 500 — never relabeled as a 404', async () => {
+    // An unknown id is simply absent from the projection (a returned 404); an infra/invariant
+    // failure throws out of the read and must surface as a loud 500 carrying its message, never
+    // collapsed into "not found" and never leaking a raw stack. The handler is TOTAL like the
+    // content origin, so even this error path stays hardened — the seal covers every branch.
+    // The player reads through listPlaygrounds, so that is the seam that fails here.
+    // [LAW:no-silent-failure] [LAW:single-enforcer]
     const brokenCatalog: Catalog = {
       createPlayground: async () => {
         throw new Error('not used');
@@ -249,7 +251,10 @@ describe('makeSiteHandler', () => {
       },
     };
     const { handler } = build(brokenCatalog);
-    await expect(handler(new Request('http://front.local/play?id=anything'))).rejects.toThrow('corrupt');
+    const res = await handler(new Request('http://front.local/play?id=anything'));
+    expect(res.status).toBe(500);
+    expectHardened(res);
+    expect(((await res.json()) as { error: string }).error).toContain('corrupt');
   });
 
   // The app-origin security seal (sandbox-bci.3, threat-model gap R1): the TRUSTED origin holds the

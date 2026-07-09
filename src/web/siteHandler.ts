@@ -143,7 +143,21 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
     }
   };
 
-  // The single exit: nothing leaves the app origin without the seal, exactly as the content origin
-  // routes every response through sealed(). [LAW:single-enforcer] [LAW:dataflow-not-control-flow]
-  return async (request: Request): Promise<Response> => harden(await dispatch(request));
+  // The single exit — and it is TOTAL, exactly like the content origin's sealed handler: every
+  // path returns a hardened Response, none throws. A read/invariant failure (corrupt catalog,
+  // broken store) becomes a loud, SEALED 500 carrying its message here rather than propagating
+  // unsealed to the origin-agnostic runtime edge — so no app-origin response, error path included,
+  // ever escapes unhardened, and no raw stack leaks. It is NOT relabeled as a 404: a genuinely
+  // absent resource is a 404 that dispatch RETURNS as a value, never a throw. The runtime edge's
+  // try/catch stays as the last-resort backstop for a bug in this handler, the accepted
+  // total-handler + edge pattern the content origin already uses — not a duplicate enforcer.
+  // [LAW:single-enforcer] [LAW:no-silent-failure] [LAW:types-are-the-program]
+  return async (request: Request): Promise<Response> => {
+    try {
+      return harden(await dispatch(request));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return harden(json({ error: message }, 500));
+    }
+  };
 };

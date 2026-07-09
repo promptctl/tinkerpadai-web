@@ -2,7 +2,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { makeApp } from './app.js';
+import { makeNodeApp } from './web/nodeApp.js';
 import { Subject } from './api/index.js';
 import { makeFakeOAuthProvider } from './api/__fixtures__/fakeOAuthProvider.js';
 import type { GenerationStatus } from './api/index.js';
@@ -22,10 +22,11 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
     'submits a brief and polls it through to a stored, catalogued, runnable playground',
     async () => {
       const dataDir = await mkdtemp(join(tmpdir(), 'tinkerpad-app-live-'));
-      const { service, registry, store, catalog } = makeApp({
+      const { service, registry, store, catalog } = makeNodeApp({
         dataDir,
         oauth: makeFakeOAuthProvider({ subject: Subject('live-tester') }),
         oauthCallbackUrl: 'http://127.0.0.1/session/callback',
+        cookieSecurity: { secure: false },
         driver: { pollIntervalMs: 1000 },
       });
 

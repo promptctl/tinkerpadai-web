@@ -20,12 +20,13 @@ export interface Identity {
   readonly subject: Subject;
 }
 
-// The seam itself. Resolving an Identity reads request state (a cookie, a header) — an effect
-// confined to the resolver's far side; the enforcer that calls this stays pure, branching on
-// the returned VALUE (Identity | null), never on how it was obtained. `null` is the honest
-// representation of "no identity", a value the guard matches rather than a thrown special
+// The seam itself. Resolving an Identity reads request state (a cookie) and then the session store
+// (I/O against a durable backend at the edge) — an effect confined to the resolver's far side; the
+// enforcer that calls this stays pure, awaiting and branching on the returned VALUE (Identity |
+// null), never on how it was obtained. Async because the lookup it fronts is genuine I/O; `null` is
+// the honest representation of "no identity", a value the guard matches rather than a thrown special
 // case. [LAW:effects-at-boundaries] [LAW:dataflow-not-control-flow]
-export type IdentityResolver = (request: Request) => Identity | null;
+export type IdentityResolver = (request: Request) => Promise<Identity | null>;
 
 // A fixed-identity resolver: every request resolves to the same single principal. It models the
 // honest case where there genuinely is exactly one user — used by tests that exercise non-auth
@@ -33,4 +34,4 @@ export type IdentityResolver = (request: Request) => Identity | null;
 // root now wires the session-backed resolver instead; this stays as the value that says "one
 // principal, always present", swappable for any other resolver at the seam. [LAW:one-type-per-behavior]
 const LOCAL_SUBJECT = Subject('local');
-export const localIdentityResolver: IdentityResolver = () => ({ subject: LOCAL_SUBJECT });
+export const localIdentityResolver: IdentityResolver = async () => ({ subject: LOCAL_SUBJECT });

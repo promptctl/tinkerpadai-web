@@ -11,8 +11,8 @@ import type { IdentityResolver } from './identity.js';
 // The resolvers the gate tests pin against: one that always grants the same principal (the
 // authenticated path), one that always returns null (the unauthenticated path). They stand in
 // for whatever real mechanism sits behind the seam — the enforcer only ever sees the value.
-const grantIdentity: IdentityResolver = () => ({ subject: Subject('tester') });
-const denyIdentity: IdentityResolver = () => null;
+const grantIdentity: IdentityResolver = async () => ({ subject: Subject('tester') });
+const denyIdentity: IdentityResolver = async () => null;
 
 // The HTTP surface's contract: it routes to the service, validates input at the boundary
 // (bad shape -> 400), and surfaces service failures loudly (-> non-2xx with a message).

@@ -1,0 +1,50 @@
+# Cloudflare Workers deploy config (tinkerpadai-cloudflare-8le). The Worker runs the SAME app the
+# Node entry runs, wiring R2 for artifacts and D1 for the catalog + sessions — no branch on
+# environment, only the adapters differ (see src/web/worker.ts vs src/web/nodeApp.ts).
+name = "tinkerpad"
+main = "src/web/worker.ts"
+compatibility_date = "2026-07-02"
+
+# nodejs_compat: the shared core mints ids/tokens with node:crypto (randomUUID, randomBytes) and the
+# storage seams are otherwise pure Web APIs. The flag supplies node:crypto at the edge so the same
+# catalog/artifact/session code runs unchanged on Workers. The file adapters (node:fs) are never
+# reachable from the Worker graph and are tree-shaken out.
+compatibility_flags = ["nodejs_compat"]
+
+# Bundle the committed, generated front door (src/web/index.html) as a TEXT module so
+# `import page from './index.html'` in the Worker yields its string. Run `pnpm build` in the deploy
+# pipeline first so the committed file is current (a vitest drift test also guards it).
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+# R2: immutable playground html, one object per version (src/storage/r2ArtifactStore.ts).
+# Create with: wrangler r2 bucket create tinkerpad-artifacts
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "tinkerpad-artifacts"
+
+# D1: the catalog (single-row document) and live sessions (one table). Create + capture the id with:
+#   wrangler d1 create tinkerpad   → paste the printed database_id below
+# Apply the schema with: wrangler d1 migrations apply tinkerpad
+[[d1_databases]]
+binding = "DB"
+database_name = "tinkerpad"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+migrations_dir = "migrations"
+
+# Non-secret config. The two origins MUST be different hosts — the sandbox boundary. Set these to the
+# real deployed hostnames. The GitHub OAuth secrets are NOT here; set them with:
+#   wrangler secret put GITHUB_CLIENT_ID
+#   wrangler secret put GITHUB_CLIENT_SECRET
+[vars]
+TINKERPAD_OAUTH_CALLBACK_URL = "https://app.tinkerpad.example/session/callback"
+TINKERPAD_CONTENT_ORIGIN = "https://content.tinkerpad.example"
+
+# Routes bind the app AND the separate content host to this one Worker; fetch() splits them by host.
+# Uncomment and set to real zones at deploy (both hosts point at this Worker):
+# routes = [
+#   { pattern = "app.tinkerpad.example", custom_domain = true },
+#   { pattern = "content.tinkerpad.example", custom_domain = true },
+# ]

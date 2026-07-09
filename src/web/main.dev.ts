@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { makeApp } from '../app.js';
+import { makeNodeApp } from './nodeApp.js';
 import { Subject } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
@@ -47,10 +47,13 @@ const DEV_GENERATION_TIMEOUT_MS = 10 * 60 * 1000;
 const main = async (): Promise<void> => {
   const { dataDir, port, contentPort, oauthCallbackUrl, frontDoorHost } = resolveServerConfig(import.meta.url);
 
-  const app = makeApp({
+  const app = makeNodeApp({
     dataDir,
     oauth: makeDevOAuthProvider(Subject('dev:local')),
     oauthCallbackUrl,
+    // Loopback dev over http://127.0.0.1 cannot offer HTTPS, so the cookie is not Secure. The real
+    // session dance (state round-trip, cookie minting, write-gate flip) is otherwise identical.
+    cookieSecurity: { secure: false },
     driver: { timeoutMs: DEV_GENERATION_TIMEOUT_MS },
   });
 

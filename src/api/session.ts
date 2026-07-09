@@ -3,6 +3,7 @@ import type { Subject } from '../identity/index.js';
 import type { IdentityResolver } from './identity.js';
 import type { OAuthProvider } from './oauth.js';
 import type { SessionStore } from './sessionStore.js';
+import type { CookieAttributes } from './cookies.js';
 import { readCookie, serializeCookie } from './cookies.js';
 
 // THE SESSION MECHANISM behind the identity seam. Two parts join here: the cookie-backed
@@ -13,27 +14,47 @@ import { readCookie, serializeCookie } from './cookies.js';
 // so swapping the identity provider changes only which instance is wired here, never this flow.
 // [LAW:locality-or-seam]
 
-// The single name under which the session token rides as a cookie. The resolver READS it and
-// the login callback WRITES it, so it lives once, here, where both can see it — the two sides
-// cannot drift to different names. [LAW:one-source-of-truth]
-const SESSION_COOKIE = 'tp_session';
+// THE COOKIE SECURITY POLICY — the one production-hardening decision, supplied as a VALUE by the
+// composition root rather than read from the environment inside this module. The HTTPS edge passes
+// `{ secure: true }`; http loopback dev passes `{ secure: false }`. It is the single input from
+// which both the `Secure` attribute AND the `__Host-` name prefix are derived, so the two can never
+// disagree (a `__Host-` name without Secure is rejected by the browser). This is variability living
+// in a value at a seam, not a branch on `process.env` buried in the login flow.
+// [LAW:dataflow-not-control-flow] [LAW:types-are-the-program]
+export interface CookieSecurity {
+  readonly secure: boolean;
+}
 
-// The cookie's identity attributes — the ones a browser matches on to know two Set-Cookies name
-// the SAME cookie. The callback sets the cookie with these; logout clears it by re-emitting them
-// with an empty value and Max-Age=0. They live once so the set and the clear cannot drift to a
-// different Path/SameSite and leave a logout that fails to replace the cookie it meant to.
-// SameSite=Strict is the session credential's CSRF defense — the browser withholds it from
-// cross-site requests. [LAW:one-source-of-truth]
-const SESSION_COOKIE_ATTRS = { httpOnly: true, sameSite: 'Strict', path: '/' } as const;
+// The host-scoped base names of the two auth cookies. The resolver READS the session name and the
+// login callback WRITES it, so it lives once, here, where both derive it identically and cannot
+// drift. Under a secure policy each gains the `__Host-` prefix — a browser-enforced guarantee the
+// cookie is Secure, Path=/, and Domain-less, so the host-scoping the credential boundary rests on
+// stops being merely a convention. [LAW:one-source-of-truth]
+const SESSION_COOKIE_BASE = 'tp_session';
+const STATE_COOKIE_BASE = 'tp_oauth_state';
+const hostPrefixed = (base: string, secure: boolean): string => (secure ? `__Host-${base}` : base);
 
-// THE OAUTH STATE COOKIE — the CSRF nonce of the login dance, held browser-side between the
-// authorize redirect and the callback. SameSite=**Lax**, not Strict, is LOAD-BEARING: the
-// callback arrives as a top-level navigation the identity provider triggers from ITS origin, so
-// a Strict cookie would be withheld and EVERY login would fail state verification. Lax is sent on
-// exactly this top-level cross-site GET and nothing weaker. Short-lived (the login window), HttpOnly
-// so script cannot read it. [LAW:no-ambient-temporal-coupling] [LAW:one-source-of-truth]
-const STATE_COOKIE = 'tp_oauth_state';
-const STATE_COOKIE_ATTRS = { httpOnly: true, sameSite: 'Lax', path: '/' } as const;
+// The resolved cookie policy: the effective names plus the base attributes each Set-Cookie carries.
+// SESSION is SameSite=Strict — the session credential's CSRF defense, withheld from cross-site
+// requests. STATE is SameSite=**Lax**, LOAD-BEARING: the OAuth callback arrives as a top-level
+// navigation the identity provider triggers from ITS origin, so a Strict cookie would be withheld
+// and EVERY login would fail state verification; Lax is sent on exactly this top-level cross-site GET
+// and nothing weaker. Both are HttpOnly and share the one `secure` value. Derived once from the
+// policy so the set and the clear cannot drift to a different Path/SameSite/Secure and leave a logout
+// that fails to replace the cookie it meant to. [LAW:one-source-of-truth]
+interface CookiePolicy {
+  readonly sessionName: string;
+  readonly sessionAttrs: CookieAttributes;
+  readonly stateName: string;
+  readonly stateAttrs: CookieAttributes;
+}
+const cookiePolicy = ({ secure }: CookieSecurity): CookiePolicy => ({
+  sessionName: hostPrefixed(SESSION_COOKIE_BASE, secure),
+  sessionAttrs: { httpOnly: true, sameSite: 'Strict', path: '/', secure },
+  stateName: hostPrefixed(STATE_COOKIE_BASE, secure),
+  stateAttrs: { httpOnly: true, sameSite: 'Lax', path: '/', secure },
+});
+
 // The login window: how long a started login may sit before its callback. 10 minutes — long
 // enough for a real sign-in, short enough that a stale state cannot linger. The store owns
 // session lifetime; this only bounds the half-finished login. [LAW:no-ambient-temporal-coupling]
@@ -41,18 +62,22 @@ const STATE_TTL_SECONDS = 10 * 60;
 
 // THE SWAP TARGET. A session-backed IdentityResolver: read the cookie, resolve the token to a
 // principal through the store, return the Identity or null. This replaces localIdentityResolver
-// at the composition root and nothing else changes — the enforcer branches on the returned
-// value exactly as before. [LAW:dataflow-not-control-flow]
-export const makeSessionResolver = (store: SessionStore): IdentityResolver => (request) => {
-  // HEADERS ONLY — never request.json()/body. The body is consumed downstream by the write-route
-  // handler (readJson); reading it here would leave that stream drained and break every write
-  // route's parse. This is the seam's load-bearing constraint, enforced by reading the cookie
-  // header and nothing else. [LAW:no-silent-failure]
-  const token = readCookie(request.headers.get('cookie'), SESSION_COOKIE);
-  if (token === null) return null;
-  const subject = store.lookup(token);
-  return subject === null ? null : { subject };
-};
+// at the composition root and nothing else changes — the enforcer awaits and branches on the
+// returned value exactly as before. Async because the store lookup it fronts is genuine I/O against
+// a durable backend at the edge. [LAW:dataflow-not-control-flow] [LAW:effects-at-boundaries]
+export const makeSessionResolver =
+  (store: SessionStore, security: CookieSecurity): IdentityResolver =>
+  async (request) => {
+    const { sessionName } = cookiePolicy(security);
+    // HEADERS ONLY — never request.json()/body. The body is consumed downstream by the write-route
+    // handler (readJson); reading it here would leave that stream drained and break every write
+    // route's parse. This is the seam's load-bearing constraint, enforced by reading the cookie
+    // header and nothing else. [LAW:no-silent-failure]
+    const token = readCookie(request.headers.get('cookie'), sessionName);
+    if (token === null) return null;
+    const subject = await store.lookup(token);
+    return subject === null ? null : { subject };
+  };
 
 export interface SessionHandlerDeps {
   // The store the login callback mints sessions into.
@@ -69,6 +94,10 @@ export interface SessionHandlerDeps {
   // configured value used identically at authorize and exchange time, not derived per request
   // (which would drift behind a proxy). [LAW:one-source-of-truth]
   readonly callbackUrl: string;
+  // The cookie security policy (Secure + `__Host-`), supplied by the composition root. The SAME
+  // value must reach the resolver above, so the name this handler WRITES matches the name the
+  // resolver READS. [LAW:one-source-of-truth]
+  readonly security: CookieSecurity;
 }
 
 const json = (data: unknown, status: number): Response =>
@@ -100,7 +129,10 @@ const redirect = (location: string, cookies: readonly string[]): Response => {
 export const makeSessionHandler = (
   deps: SessionHandlerDeps,
 ): ((request: Request) => Promise<Response | null>) => {
-  const { store, resolveIdentity, oauth, callbackUrl } = deps;
+  const { store, resolveIdentity, oauth, callbackUrl, security } = deps;
+  // Derived once at construction from the injected policy — the whole handler and the resolver see
+  // identical names and attributes. [LAW:one-source-of-truth]
+  const { sessionName, sessionAttrs, stateName, stateAttrs } = cookiePolicy(security);
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
@@ -110,16 +142,16 @@ export const makeSessionHandler = (
         // rides in the Lax state cookie AND in the authorize URL's state param; the callback
         // proving the two match is what rejects a forged or cross-session callback.
         const state = randomBytes(32).toString('base64url');
-        const stateCookie = serializeCookie(STATE_COOKIE, state, { ...STATE_COOKIE_ATTRS, maxAge: STATE_TTL_SECONDS });
+        const stateCookie = serializeCookie(stateName, state, { ...stateAttrs, maxAge: STATE_TTL_SECONDS });
         return redirect(oauth.authorizeUrl({ state, redirectUri: callbackUrl }), [stateCookie]);
       }
       case 'GET /session/callback': {
         // The state cookie is cleared on EVERY outcome below — it is single-use, so a started
         // login never leaves a reusable nonce behind. [LAW:no-silent-failure]
-        const clearState = serializeCookie(STATE_COOKIE, '', { ...STATE_COOKIE_ATTRS, maxAge: 0 });
+        const clearState = serializeCookie(stateName, '', { ...stateAttrs, maxAge: 0 });
         const code = url.searchParams.get('code');
         const returnedState = url.searchParams.get('state');
-        const expectedState = readCookie(request.headers.get('cookie'), STATE_COOKIE);
+        const expectedState = readCookie(request.headers.get('cookie'), stateName);
         // CSRF gate: a missing code, a missing/empty state on either side, or a mismatch is a
         // forged or expired callback — rejected loudly as 400, never exchanged. [LAW:no-silent-failure]
         if (
@@ -145,15 +177,15 @@ export const makeSessionHandler = (
           const message = error instanceof Error ? error.message : String(error);
           return new Response(JSON.stringify({ error: `oauth exchange failed: ${message}` }), { status: 502, headers });
         }
-        const token = store.create(subject);
-        const sessionCookie = serializeCookie(SESSION_COOKIE, token, SESSION_COOKIE_ATTRS);
+        const token = await store.create(subject);
+        const sessionCookie = serializeCookie(sessionName, token, sessionAttrs);
         // Home, with the session set and the spent state cleared. The browser lands authenticated.
         return redirect('/', [sessionCookie, clearState]);
       }
       case 'GET /session':
         // identity | null, derived by the SAME resolver the gate uses — whoami can never claim an
         // identity the write path would reject, or vice versa.
-        return json({ identity: resolveIdentity(request) }, 200);
+        return json({ identity: await resolveIdentity(request) }, 200);
       case 'DELETE /session': {
         // Logout: end the session server-side and tell the browser to drop the cookie. The store is
         // the lifecycle owner, so destroy() is the real end; the cleared cookie (empty value,
@@ -162,9 +194,9 @@ export const makeSessionHandler = (
         // still clear and report identity:null, so logout is idempotent. NOT a WRITE_ROUTE: it is
         // resolved here before the enforcer and needs no auth — logging out when already logged out
         // is a harmless no-op. [LAW:no-ambient-temporal-coupling] [LAW:no-silent-failure]
-        const token = readCookie(request.headers.get('cookie'), SESSION_COOKIE);
-        if (token !== null) store.destroy(token);
-        const cleared = serializeCookie(SESSION_COOKIE, '', { ...SESSION_COOKIE_ATTRS, maxAge: 0 });
+        const token = readCookie(request.headers.get('cookie'), sessionName);
+        if (token !== null) await store.destroy(token);
+        const cleared = serializeCookie(sessionName, '', { ...sessionAttrs, maxAge: 0 });
         const headers = new Headers({ 'content-type': 'application/json' });
         headers.append('set-cookie', cleared);
         return new Response(JSON.stringify({ identity: null }), { status: 200, headers });

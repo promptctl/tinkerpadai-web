@@ -252,6 +252,62 @@ describe('makeSiteHandler', () => {
     await expect(handler(new Request('http://front.local/play?id=anything'))).rejects.toThrow('corrupt');
   });
 
+  // The app-origin security seal (sandbox-bci.3, threat-model gap R1): the TRUSTED origin holds the
+  // session credential, so every response leaving it — page, JSON projection, player, AND the
+  // delegated session/API responses (the login page is the concrete clickjacking target) — must
+  // carry the anti-framing + hardening headers. This is the app-origin counterpart to the content
+  // origin's sealed-CSP test. [LAW:single-enforcer] [LAW:verifiable-goals]
+  const expectHardened = (res: Response): void => {
+    const csp = res.headers.get('content-security-policy') ?? '';
+    // The concrete clickjacking fix: only the app may frame the app.
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).toContain("base-uri 'none'");
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain("object-src 'none'");
+    // Legacy twin for pre-CSP3 browsers.
+    expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('referrer-policy')).toBe('same-origin');
+  };
+
+  it('hardens the front-door page, the JSON projection, and the player against clickjacking', async () => {
+    const catalog = makeMemoryCatalog();
+    const id = await seed(catalog, 'a color palette');
+    const { handler } = build(catalog);
+    expectHardened(await handler(new Request('http://front.local/')));
+    expectHardened(await handler(new Request('http://front.local/commons')));
+    expectHardened(await handler(new Request('http://front.local/api/playgrounds')));
+    expectHardened(await handler(new Request(`http://front.local/play?id=${encodeURIComponent(id)}`)));
+  });
+
+  it('hardens the delegated session and API responses too — the login page is not exempt', async () => {
+    // The login page is served by the session handler through the default branch. If the seal only
+    // wrapped the page helpers it would MISS the highest-value clickjacking target; the single outer
+    // seal is what guarantees no branch escapes. [LAW:single-enforcer]
+    const loginHandler = async (request: Request): Promise<Response | null> =>
+      new URL(request.url).pathname === '/session/login'
+        ? new Response('<form>sign in</form>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+        : null;
+    const { handler } = build(makeMemoryCatalog(), loginHandler);
+    expectHardened(await handler(new Request('http://front.local/session/login')));
+    // A route the session handler declines falls through to the API — still sealed.
+    expectHardened(await handler(new Request('http://front.local/providers')));
+  });
+
+  it('preserves a Set-Cookie from a delegated login response through the seal', async () => {
+    // The seal adds headers by mutation and never touches set-cookie, so a login that mints the
+    // session cookie is not corrupted by the hardening pass. [LAW:no-silent-failure]
+    const loginHandler = async (): Promise<Response | null> => {
+      const res = new Response(null, { status: 302, headers: { location: '/' } });
+      res.headers.append('set-cookie', '__Host-session=abc; Path=/; HttpOnly; Secure; SameSite=Strict');
+      return res;
+    };
+    const { handler } = build(makeMemoryCatalog(), loginHandler);
+    const res = await handler(new Request('http://front.local/session/callback'));
+    expectHardened(res);
+    expect(res.headers.getSetCookie()).toEqual(['__Host-session=abc; Path=/; HttpOnly; Secure; SameSite=Strict']);
+  });
+
   // Fork attribution flows through the real projection: a child playground forked from a parent
   // surfaces "Forked from <parent>" linking back to the parent's player, on BOTH the commons
   // list and the child's own player chrome. A non-fork surfaces none.

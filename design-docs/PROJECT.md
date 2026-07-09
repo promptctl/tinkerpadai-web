@@ -145,11 +145,26 @@ bad playground from being *dangerous* while moderation catches what's merely
 
 ---
 
+## Decisions made
+
+- **Who pays for generation → a credit system.** *(decided 2026-07-08)* Every account
+  gets a free allotment of generations; beyond it, users buy or earn credits. The
+  public commons — browse, use, remix of existing self-contained files — stays free
+  and open, because serving static playgrounds costs almost nothing; the credit meter
+  applies only to *generation*, the one expensive step. This was chosen over
+  platform-pays (unbounded cost/abuse exposure at public scale) and bring-your-own-key
+  (which breaks frictionless creation — the load-bearing pillar — since most visitors
+  have no API key). Consequences that now follow from this decision: the API provider
+  driver debits credits per generation, rate-limit semantics are expressed in credits
+  rather than raw request caps, and the accounts surface must carry a credit balance.
+  The first public deploy ships with generation disabled/tunneled at the edge (browse/
+  use/remix only); public generation turns on once the API driver and the credit ledger
+  exist.
+
+---
+
 ## Open decisions (not yet made)
 
-- **Who pays for generation.** Platform-hosted model (we eat the cost), bring-your-
-  own-key, or a credit system. This is the main cost lever and shapes the whole
-  economic model.
 - **Accounts vs. anonymous** creation, and how attribution/lineage is tracked.
 - **Monetization, if any.** Free commons as the default; possible paid edges
   (private playgrounds, pro generation limits, teams) — or it stays a loss-leader /

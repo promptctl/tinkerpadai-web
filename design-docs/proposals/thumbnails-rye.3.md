@@ -1,6 +1,6 @@
 # Preview thumbnails for the commons — design proposal
 
-**Ticket:** `tinkerpadai-discovery-rye.3` · **Status:** proposal, awaiting approval · **No code until a direction is chosen.**
+**Ticket:** `tinkerpadai-discovery-rye.3` · **Status:** direction decided 2026-07-08 (see "Decision" below) · blocked on `cloudflare-8le`.
 
 ## What the ticket asks
 
@@ -113,27 +113,29 @@ Tempting ("the iframe already runs it") but unworkable *because* the sandbox wor
 | B′ · **server-side Puppeteer** (ticket's literal ask) | **our trusted server** ❌ | Puppeteer/Playwright | ❌ **cannot** | ✅ |
 | C · client capture | (can't read pixels) | none | ✅ | ❌ impossible |
 
-## Recommendation: phase it
+## Decision (2026-07-08): do it right, no placeholder
 
-1. **Phase 1 — ship the placeholder (Option A), honestly labelled.** Lift `previewGradient`
-   into the shared front-door chrome (`src/web/frontDoorChrome.ts`, already the one source for
-   the homepage/commons/player card format) and give `playgroundCard` an image slot. The
-   commons gets its shop-window band now; one card shape everywhere. Cheap, safe, Workers-native.
-   *This does not close rye.3* — it is the fallback the real feature will reuse.
-2. **Phase 2 — true thumbnails (Option B), gated on isolated-render infra.** When
-   `cloudflare-8le` (Workers Browser Rendering) or a homelab render service exists, render each
-   version async into a `VersionId`-keyed derived blob; the card swaps placeholder → screenshot
-   when ready. This is where the ticket's acceptance is actually met.
+The user rejected the placeholder-first phasing outright — *"I don't see any point to
+implementing placeholders"* — and greenlit the real deploy. So rye.3's committed direction is
+**Option B only**: true screenshots via an isolated render sandbox, with **no gradient-placeholder
+interim**.
 
-Concretely, that suggests **re-scoping rye.3 to Phase 1** (a real, shippable, law-clean unit)
-and filing **a Phase-2 follow-up** blocked on the render infra — rather than implementing the
-literal ticket, which cannot ship to the target platform and breaches the sandbox invariant.
+Concrete shape:
 
-## What I need from you
+- **Renderer:** Cloudflare **Browser Rendering** (the Workers Puppeteer binding) — an isolated,
+  managed headless-Chrome sandbox that is a *sibling* to the player iframe, never the app server.
+  This makes rye.3 **downstream of `cloudflare-8le`** (the Workers deploy): the render capability
+  is a property of the target platform, so the thumbnail feature cannot precede the deploy.
+- **Trigger:** async, **out of the generation-create path** — enqueue "render version X" on
+  publish; generation success never waits on or fails because of a render
+  (`[LAW:no-ambient-temporal-coupling]`).
+- **Store:** the PNG as a derived blob **keyed by `VersionId`** under the existing `BlobStore`
+  seam (R2 on Workers), a sibling of the `.html` it derives from — regenerable, evictable, never a
+  field on the catalog record (`[LAW:one-source-of-truth]`).
+- **Render:** an image slot on the shared card (`playgroundCard`); until a version's thumbnail
+  exists the slot shows an honest empty/neutral state, **not** a fabricated visual
+  (`[LAW:no-silent-failure]`).
 
-- **Approve the phased split** (Phase 1 now as re-scoped rye.3; Phase 2 as a new ticket blocked
-  on render infra)? Or
-- **Phase 1 only** for now (placeholder), leave true thumbnails entirely to the cloudflare/
-  homelab epics? Or
-- **Hold rye.3 entirely** until render infra lands, and pick up other ready work
-  (e.g. `profile-ek4.1`, fully defined) in the meantime?
+**Backlog consequence:** rye.3 is blocked on `cloudflare-8le` and re-described to this shape; it
+is no longer a standalone discovery-chrome ticket. The homelab render-service alternative is
+dropped along with the homelab staging rehearsal (deploy goes straight to Cloudflare).

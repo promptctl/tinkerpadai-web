@@ -154,8 +154,12 @@ bad playground from being *dangerous* while moderation catches what's merely
   applies only to *generation*, the one expensive step. This was chosen over
   platform-pays (unbounded cost/abuse exposure at public scale) and bring-your-own-key
   (which breaks frictionless creation — the load-bearing pillar — since most visitors
-  have no API key). Consequences that now follow from this decision: the API provider
-  driver debits credits per generation, rate-limit semantics are expressed in credits
+  have no API key). A credit balance presumes a persistent account to hold it, and that
+  already exists — authentication is real GitHub OAuth (the session carries identity; every
+  playground has an author). So the credit model resolves the *creation* half of the still-open
+  "accounts vs. anonymous" decision: **generating requires signing in**, while browsing/using/
+  remixing the commons stays open to anonymous visitors. Consequences that now follow: the API
+  provider driver debits credits per generation, rate-limit semantics are expressed in credits
   rather than raw request caps, and the accounts surface must carry a credit balance.
   The first public deploy ships with generation disabled/tunneled at the edge (browse/
   use/remix only); public generation turns on once the API driver and the credit ledger

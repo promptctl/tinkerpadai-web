@@ -53,10 +53,18 @@ This settles the storage sub-question before we even pick a renderer:
   (`src/storage/types.ts:112,179`). Those carry *authoritative, classify-once* facts (author,
   tags) that must never be re-derived. A thumbnail is the opposite — pure derivation of the
   artifact. Storing it there miscategorises it and bloats the single `CatalogDoc`.
-- **Accept:** a derived blob **keyed by `VersionId`**, a sibling of the artifact under the
-  existing `BlobStore` seam (`src/storage/artifactStore.ts:29`). Same key space as the `.html`
-  it derives from, regenerable, evictable. On Workers this is an R2 object; locally a file
-  next to the `.html`. Served from the content origin, never inlined into the catalog doc.
+- **Accept:** a derived blob **keyed off the `VersionId`**, a sibling of the artifact —
+  regenerable, evictable. On Workers this is an R2 object; locally a file next to the `.html`.
+  Served from the content origin, never inlined into the catalog doc. Two things the seam needs,
+  called out so the implementer isn't misled: (1) **the `BlobStore` seam must be extended to
+  carry bytes.** Today `write(versionId, artifact: Artifact)` accepts only `Artifact =
+  { html: string }` (`src/storage/artifactStore.ts:29`); a PNG is binary, so it cannot go
+  through that signature as-is — add a bytes-typed blob kind (or a parallel thumbnail store)
+  rather than pretending the HTML seam already fits `[LAW:types-are-the-program]`. (2) **the
+  thumbnail must not share the artifact's key.** `BlobStore` keys by `VersionId` alone, so
+  writing a `.png` under the same `VersionId` would clobber the `.html`; give the thumbnail a
+  distinct key — a namespace/suffix like `thumb/<versionId>` or `<versionId>.png` — so one
+  version maps to two disjoint keys, never a silent overwrite.
 
 The version's immutability makes the cache trivially correct: a `VersionId` never changes its
 bytes, so its thumbnail never goes stale — no invalidation logic, no `[LAW:one-source-of-truth]`
@@ -131,14 +139,23 @@ Concrete shape:
   is a property of the target platform, so the thumbnail feature cannot precede the deploy.
 - **Trigger:** async, **out of the generation-create path** — enqueue "render version X" on
   publish; generation success never waits on or fails because of a render
-  (`[LAW:no-ambient-temporal-coupling]`).
-- **Store:** the PNG as a derived blob **keyed by `VersionId`** under the existing `BlobStore`
-  seam (R2 on Workers), a sibling of the `.html` it derives from — regenerable, evictable, never a
-  field on the catalog record (`[LAW:one-source-of-truth]`).
-- **Render:** an image slot on the shared card (`playgroundCard`); until a version's thumbnail
-  exists the slot shows an honest empty/neutral state, **not** a fabricated visual — a gradient
-  shown *as if* it were the playground would be a representation that lies about what the
-  playground looks like (`[FRAMING:representation]`).
+  (`[LAW:no-ambient-temporal-coupling]`). The render job carries a **bounded retry**, and a
+  render that fails past that bound is **surfaced, not swallowed**: the version is flagged
+  failed-to-render (and logged) so "failed" is distinguishable from "still pending" — otherwise a
+  crashed job leaves an eternally-empty slot that reads as "not yet" forever, a silent failure
+  (`[LAW:no-silent-failure]`).
+- **Store:** the PNG as a derived blob **keyed off the `VersionId`** (R2 on Workers), a sibling
+  of the `.html` — regenerable, evictable, never a field on the catalog record
+  (`[LAW:one-source-of-truth]`). This **extends** the `BlobStore` seam rather than reusing it
+  unchanged: today it carries only `Artifact = { html: string }`, so a PNG needs a bytes-typed
+  blob kind (or a parallel thumbnail store), under a **distinct key** from the artifact
+  (`thumb/<versionId>` / `<versionId>.png`) so it never clobbers the `.html`
+  (`[LAW:types-are-the-program]`).
+- **Render:** an image slot on the shared card (`playgroundCard`); while a version's thumbnail is
+  still **pending** the slot shows an honest empty/neutral state, **not** a fabricated visual — a
+  gradient shown *as if* it were the playground would be a representation that lies about what the
+  playground looks like (`[FRAMING:representation]`). The failed-to-render state (above) is
+  distinct from pending, not a permanent blank.
 
 **Backlog consequence:** rye.3 is blocked on `cloudflare-8le` and re-described to this shape; it
 is no longer a standalone discovery-chrome ticket. The homelab render-service alternative is

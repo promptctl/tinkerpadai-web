@@ -88,11 +88,11 @@ them stay in Gate 4.
 
 | Gate item | Why it gates launch |
 |---|---|
-| Generation economics **decision** (`economics-k91`) | Who pays — platform, BYOK, credits — shapes the provider driver, rate limits, and accounts. The decision lands in PROJECT.md; the build epic stays later. |
+| Generation economics **decision** (`economics-k91`) | Who pays — **DECIDED 2026-07-08: a credit system** (recorded in PROJECT.md). Shapes the provider driver, rate limits (expressed in credits), and accounts (a balance); the build epic (ledger + debit) stays later and gates public *generation*, not the first public deploy. |
 | `sandbox`: adversarial audit + rate limits | PROJECT.md: safety designed in from day one. Audit blocks public exposure as a structural edge. |
 | `moderation`: report + unlist | A public UGC platform with no takedown path is an incident with a countdown. Review-queue polish can follow launch; the minimal pair cannot. |
 | `legal`: terms, privacy, DMCA | Safe harbor requires the agent and procedure before the complaint arrives |
-| `cloudflare-8le`: the public deploy | The launch edge itself. `homelab-28m` rehearses the deploy earlier by rank as a staging step — it is not a launch edge in lit. |
+| `cloudflare-8le`: the public deploy | The launch edge itself, and now the direct deploy target (user, 2026-07-08): the deploy goes **straight to Cloudflare** with generation disabled/tunneled at the edge. `homelab-28m` is **dropped from the critical path** — the earlier homelab staging rehearsal is optional de-risking, not a step on the way to launch. |
 | **`launch-nkn`** | The gate ticket. Blocked by all of the above plus the seeded commons. Closing it is launching. |
 
 ## Gate 4 — the loop deepens

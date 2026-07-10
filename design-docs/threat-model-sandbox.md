@@ -187,7 +187,8 @@ The invariants a future change must not silently regress (each has a red test):
    `Referrer-Policy` — on *every* branch: the delegated login page and the error 500 included, since
    `siteHandler` is total. Removing the seal, letting a branch bypass it, or making the handler
    throw past it re-opens R1.
-7. The content origin and the app origin stay different hostnames — asserted at composition time, not
-   left to correct configuration. The edge rejects a same-hostname `TINKERPAD_CONTENT_ORIGIN`
-   (`assertDistinctOriginHosts`); Node rejects `PORT` == `TINKERPAD_CONTENT_PORT`. Removing either
-   guard re-opens R2 (raw playground HTML served where it can reach the app's cookies and session).
+7. The content origin and the app origin stay distinct origins — different hostnames at the edge,
+   different ports on Node — asserted at composition time, not left to correct configuration. The edge
+   rejects a same-hostname `TINKERPAD_CONTENT_ORIGIN` (`assertDistinctOriginHosts`); Node, where both
+   sockets share `localhost`, rejects `PORT` == `TINKERPAD_CONTENT_PORT`. Removing either guard
+   re-opens R2 (raw playground HTML served where it can reach the app's cookies and session).

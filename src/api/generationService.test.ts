@@ -19,6 +19,9 @@ import {
   ProviderCannotForkError,
 } from './generationService.js';
 import type { GenerationService } from './generationService.js';
+import { makeTestQuota } from './__fixtures__/testQuota.js';
+import { makeGenerationQuota, QuotaExceededError } from './generationQuota.js';
+import type { GenerationQuota } from './generationQuota.js';
 
 // The generation service's contract: it wires a chosen provider to the store and
 // catalog, persists exactly once on success, surfaces failure without writing anything,
@@ -37,6 +40,7 @@ interface Harness {
 const harnessFor = (
   opts: ContractProviderOptions,
   disposeTurn?: (handle: SessionHandle) => Promise<void>,
+  quota: GenerationQuota = makeTestQuota(),
 ): Harness => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
@@ -52,6 +56,7 @@ const harnessFor = (
       (async (handle) => {
         disposed.push(handle);
       }),
+    quota,
   });
   return { service, store, catalog, disposed, providerId: ProviderId(opts.id) };
 };
@@ -61,6 +66,9 @@ const harnessFor = (
 // playground, to prove a fork is authored by the forker, not the parent's author.
 const AUTHOR = Subject('ada');
 const FORKER = Subject('grace');
+// The principal driving a refine. continue takes it only as the turn's quota subject (the
+// playground keeps its own author), so which principal it is is immaterial to these tests.
+const REFINER = Subject('lin');
 
 const submit = (h: Harness, description: string): Promise<SessionHandle> =>
   h.service.submit({ providerId: h.providerId, brief: { description } }, AUTHOR);
@@ -194,7 +202,7 @@ describe('GenerationService.continue — refine an existing playground into a ne
     const ready = await h.service.poll(first);
     if (ready.state !== 'ready') throw new Error('unreachable');
 
-    const second = await h.service.continue(ready.playgroundId, { description: 'add a reset button' });
+    const second = await h.service.continue(ready.playgroundId, { description: 'add a reset button' }, REFINER);
     const continued = await h.service.poll(second);
     if (continued.state !== 'ready') throw new Error('unreachable');
     // The follow-up lands on the SAME playground, not a new one.
@@ -230,7 +238,7 @@ describe('GenerationService.continue — refine an existing playground into a ne
       tags: [],
     });
 
-    const handle = await h.service.continue(seed.id, { description: 'add a reset button' });
+    const handle = await h.service.continue(seed.id, { description: 'add a reset button' }, REFINER);
     const status = await h.service.poll(handle);
     expect(status).toEqual({ state: 'failed', error: 'continue crashed' });
 
@@ -254,14 +262,14 @@ describe('GenerationService.continue — refine an existing playground into a ne
     if (ready.state !== 'ready') throw new Error('unreachable');
 
     await expect(
-      h.service.continue(ready.playgroundId, { description: 'add a reset button' }),
+      h.service.continue(ready.playgroundId, { description: 'add a reset button' }, REFINER),
     ).rejects.toThrow(ProviderCannotContinueError);
   });
 
   it('fails loudly for an unknown playground id', async () => {
     const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true });
     await expect(
-      h.service.continue(PlaygroundId('nope'), { description: 'x' }),
+      h.service.continue(PlaygroundId('nope'), { description: 'x' }, REFINER),
     ).rejects.toThrow(PlaygroundNotFoundError);
   });
 });
@@ -415,5 +423,74 @@ describe('GenerationService.availabilityOf — the live generation toggle', () =
     await expect(h.service.availabilityOf(ProviderId('ghost'))).rejects.toThrow(
       'unknown provider: ghost',
     );
+  });
+});
+
+// The service's USE of the quota seam: it reserves at a turn's start and releases when the turn
+// settles — enforcing the per-identity cap at the one boundary the generation effect crosses, and
+// never leaking a slot. The quota's own counting is proven in generationQuota.test.ts; here we
+// assert the wiring. [LAW:behavior-not-structure]
+describe('GenerationService — per-identity generation quota', () => {
+  it('refuses a submit that would exceed the concurrent cap while a turn is in flight', async () => {
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 1, maxDaily: 100 }, now: () => 0 });
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, undefined, quota);
+    // The first turn holds the one concurrent slot — it is started but never polled to terminal.
+    await submit(h, 'a wave explorer');
+    await expect(submit(h, 'a second one')).rejects.toThrow(QuotaExceededError);
+  });
+
+  it('frees the concurrent slot once a turn settles, admitting the next submit', async () => {
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 1, maxDaily: 100 }, now: () => 0 });
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, undefined, quota);
+    const first = await submit(h, 'a wave explorer');
+    const settled = await h.service.poll(first); // settle → releases the slot
+    if (settled.state !== 'ready') throw new Error('unreachable');
+    // The freed slot admits the next generation.
+    await expect(submit(h, 'a second one')).resolves.toBeDefined();
+  });
+
+  it('also frees the slot when a turn settles as FAILED', async () => {
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 1, maxDaily: 100 }, now: () => 0 });
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: { fail: 'boom' } }, undefined, quota);
+    const first = await submit(h, 'a wave explorer');
+    const settled = await h.service.poll(first);
+    expect(settled).toEqual({ state: 'failed', error: 'boom' });
+    await expect(submit(h, 'a second one')).resolves.toBeDefined();
+  });
+
+  it('does not burn the daily budget on an invalid request that never reaches the provider', async () => {
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 100, maxDaily: 1 }, now: () => 0 });
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, undefined, quota);
+    // An unknown provider is rejected before any reservation — so the single daily slot is intact.
+    await expect(
+      h.service.submit({ providerId: ProviderId('nope'), brief: { description: 'x' } }, AUTHOR),
+    ).rejects.toThrow('unknown provider');
+    await expect(submit(h, 'the real one')).resolves.toBeDefined();
+  });
+
+  it('frees the slot when the provider fails to START a turn, so it does not leak', async () => {
+    // A provider whose startSession rejects: the turn never comes to exist, so the service must
+    // return the reserved concurrent slot right there (startTurn), not leak it forever.
+    const registry = new ProviderRegistry();
+    const base = makeFakeProvider({ id: 'boom', label: 'Boom', outcome: 'success' });
+    registry.register({
+      ...base,
+      startSession: async () => {
+        throw new Error('cannot start');
+      },
+    });
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 1, maxDaily: 100 }, now: () => 0 });
+    const service = makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog: makeMemoryCatalog(),
+      disposeTurn: async () => undefined,
+      quota,
+    });
+    const request = { providerId: ProviderId('boom'), brief: { description: 'x' } };
+    await expect(service.submit(request, AUTHOR)).rejects.toThrow('cannot start');
+    // If the failed start had leaked the one slot, this second attempt would be refused with a
+    // QuotaExceededError; instead it reaches the provider and fails with the SAME start error.
+    await expect(service.submit(request, AUTHOR)).rejects.toThrow('cannot start');
   });
 });

@@ -5,6 +5,7 @@ import { Subject } from '../identity/index.js';
 import { ProviderId, ProviderRegistry, SessionId, TurnId } from '../provider/index.js';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { makeGenerationService } from '../api/generationService.js';
+import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeReportService } from '../api/reportService.js';
 import { makeReviewService } from '../api/reviewService.js';
 import { makeHttpHandler } from '../api/httpHandler.js';
@@ -106,7 +107,7 @@ describe('remix action over the composed front door', () => {
     // handler, composed behind the site handler exactly as production does.
     const registry = new ProviderRegistry();
     registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true }));
-    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => undefined });
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => undefined, quota: makeTestQuota() });
     // ONE report store behind both intake and review, mirroring production — the review queue reads
     // exactly what the report button writes. [LAW:one-source-of-truth]
     const reportStore = makeMemoryReportStore();

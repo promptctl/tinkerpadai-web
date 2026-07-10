@@ -13,6 +13,7 @@ import type { Subject } from '../identity/index.js';
 import type { ArtifactStore, Catalog, Lineage, Playground, PlaygroundId, VersionId } from '../storage/index.js';
 import { currentTurnOf, currentVersionOf } from '../storage/index.js';
 import { deriveTags } from './deriveTags.js';
+import type { GenerationQuota, Reservation } from './generationQuota.js';
 
 // THE GENERATION SERVICE — the one boundary where the generation effect is performed,
 // wiring registry -> provider -> store -> catalog. It is provider-agnostic by
@@ -71,6 +72,11 @@ export interface GenerationServiceDeps {
   // nothing to release supplies a no-op. The service disposes unconditionally — a value
   // varying, not a branch on which provider is in play. [LAW:dataflow-not-control-flow]
   readonly disposeTurn: (handle: SessionHandle) => Promise<void>;
+  // The per-identity generation budget, consulted at the start of every turn (submit,
+  // continue, fork) and released when the turn settles. Injected as a seam so the caps and
+  // the clock are a composition-root concern and the service stays pure with respect to
+  // both — it only reserves and releases. [LAW:decomposition] [LAW:single-enforcer]
+  readonly quota: GenerationQuota;
 }
 
 export interface GenerationService {
@@ -87,18 +93,21 @@ export interface GenerationService {
   availabilityOf(providerId: ProviderId): Promise<Availability>;
 
   // Submit a brief against a chosen provider; resolves once the turn EXISTS, not once it
-  // is done. The returned handle is what the caller polls. `author` is the authenticated
-  // principal the gated write path resolved — recorded as the new playground's author when the
-  // turn succeeds (the create write is the one place this identity is persisted).
-  submit(request: GenerationRequest, author: Subject): Promise<SessionHandle>;
+  // is done. The returned handle is what the caller polls. `requester` is the authenticated
+  // principal the gated write path resolved — it is this generation's quota subject AND,
+  // because a submit creates a playground, the new playground's recorded author (the create
+  // write is the one place this identity is persisted).
+  submit(request: GenerationRequest, requester: Subject): Promise<SessionHandle>;
 
   // Refine an existing playground: send a follow-up brief into its session, producing a
   // successive version. Symmetric with submit — it registers a turn and returns the handle
   // to poll; the difference is purely the turn's TARGET (append onto this playground, not
-  // create a new one), carried as a value so the one finalize path serves both. An unknown
-  // id fails loudly (PlaygroundNotFoundError); a provider that can't iterate fails loudly
+  // create a new one), carried as a value so the one finalize path serves both. `requester` is
+  // the authenticated principal driving this turn — used ONLY as its quota subject, never as an
+  // author (an append extends a playground that already has its author). An unknown id fails
+  // loudly (PlaygroundNotFoundError); a provider that can't iterate fails loudly
   // (ProviderCannotContinueError). [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
-  continue(playgroundId: PlaygroundId, brief: Brief): Promise<SessionHandle>;
+  continue(playgroundId: PlaygroundId, brief: Brief, requester: Subject): Promise<SessionHandle>;
 
   // Fork an existing playground: branch its CURRENT artifact into a NEW independent
   // session, producing a fresh playground whose lineage points back at the parent. Like
@@ -106,12 +115,12 @@ export interface GenerationService {
   // returns the handle to poll; like continue it resolves the parent and reads its current
   // artifact as the seed. The two differences from submit are both values, not branches: the
   // turn's create target carries fork lineage, and fork carries no user brief, so the new
-  // playground's first-turn prompt is the parent's original describe. `author` is the
-  // authenticated principal performing the fork — recorded as the NEW playground's author (a
-  // remix is "by the remixer"; the parent keeps its own author). An unknown id fails loudly
-  // (PlaygroundNotFoundError); a provider that can't fork fails loudly
-  // (ProviderCannotForkError). [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
-  fork(playgroundId: PlaygroundId, author: Subject): Promise<SessionHandle>;
+  // playground's first-turn prompt is the parent's original describe. `requester` is the
+  // authenticated principal performing the fork — this turn's quota subject AND, because a fork
+  // creates a playground, its recorded author (a remix is "by the remixer"; the parent keeps its
+  // own author). An unknown id fails loudly (PlaygroundNotFoundError); a provider that can't fork
+  // fails loudly (ProviderCannotForkError). [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+  fork(playgroundId: PlaygroundId, requester: Subject): Promise<SessionHandle>;
 
   // The point-in-time status of a turn. On the first observation of a succeeded provider
   // status it performs the one effectful transition (store the file, record the version on
@@ -144,6 +153,10 @@ type TurnTarget =
 interface TurnRecord {
   readonly brief: Brief;
   readonly target: TurnTarget;
+  // The quota slot this turn holds. Freed exactly once, when the turn settles (see settle) —
+  // tying the concurrent-budget release to the same terminal transition the store+catalog write
+  // rides, so the two cannot disagree about whether the turn is still in flight. [LAW:one-source-of-truth]
+  readonly reservation: Reservation;
   // Null until the first poll observes a terminal provider status; then it holds the
   // single in-flight/settled persist. Memoizing the transition (not just a boolean) is
   // what makes the effect fire exactly once even under concurrent polls.
@@ -151,7 +164,7 @@ interface TurnRecord {
 }
 
 export const makeGenerationService = (deps: GenerationServiceDeps): GenerationService => {
-  const { registry, store, catalog, disposeTurn } = deps;
+  const { registry, store, catalog, disposeTurn, quota } = deps;
 
   // The single owner of in-flight turn state. In-memory and not evicted: a local
   // steel-thread limitation — turns in flight do not survive a process restart, while
@@ -179,6 +192,25 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       await disposeTurn(handle);
     } catch (error) {
       console.error(`tinkerpad: failed to release turn ${handle.turnId}:`, error);
+    }
+  };
+
+  // Start a provider turn under a held reservation. The reservation is taken BEFORE this — after
+  // the cheap validations, so an unknown/unforkable target never burns quota — and freed HERE iff
+  // the provider never produces a turn to poll: a startSession/continueSession/fork that rejects
+  // leaves no TurnRecord and so would never reach settle, so its concurrent slot must be returned
+  // right here or leak forever. On success the reservation rides on the TurnRecord to settle. This
+  // is the one place a reservation's fate is tied to whether a turn came to exist.
+  // [LAW:no-silent-failure] [LAW:decomposition]
+  const startTurn = async (
+    reservation: Reservation,
+    start: () => Promise<SessionHandle>,
+  ): Promise<SessionHandle> => {
+    try {
+      return await start();
+    } catch (error) {
+      reservation.release();
+      throw error;
     }
   };
 
@@ -276,6 +308,19 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     return { state: 'failed', error: message };
   };
 
+  // Seal a turn's terminal outcome: memoize the transition AND free its concurrent quota slot.
+  // The single seam both terminal branches of poll route through, so the slot is released in
+  // exactly one place. It runs only from that switch, which the double-checked memo guard reaches
+  // only while terminal is null — so release fires exactly once, synchronously, the instant the
+  // turn is DECIDED terminal (the provider is done), before persist's first await. The daily
+  // budget is NOT returned here: a generation that ran counts against the day.
+  // [LAW:no-ambient-temporal-coupling] [LAW:single-enforcer]
+  const settle = (record: TurnRecord, outcome: Promise<GenerationStatus>): Promise<GenerationStatus> => {
+    record.terminal = outcome;
+    record.reservation.release();
+    return outcome;
+  };
+
   return {
     listProviders(): readonly ProviderDescriptor[] {
       return registry.list();
@@ -290,29 +335,35 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       return registry.availabilityOf(providerId);
     },
 
-    async submit(request: GenerationRequest, author: Subject): Promise<SessionHandle> {
+    async submit(request: GenerationRequest, requester: Subject): Promise<SessionHandle> {
       // Resolve the selection by value: registry.get throws loudly on an unknown id, so
       // there is no null to branch on. [LAW:dataflow-not-control-flow]
       const provider = registry.get(request.providerId);
-      const handle = await provider.startSession(request.brief);
+      // Reserve the identity's budget AFTER resolving the provider (an unknown provider is a
+      // client error that must not burn quota) and BEFORE the provider effect — over-cap fails
+      // loudly with QuotaExceededError, never a silent queue. [LAW:no-silent-failure]
+      const reservation = quota.reserve(requester);
+      const handle = await startTurn(reservation, () => provider.startSession(request.brief));
       turns.set(handle.turnId, {
         brief: request.brief,
-        target: { kind: 'create', lineage: null, author },
+        target: { kind: 'create', lineage: null, author: requester },
+        reservation,
         terminal: null,
       });
       return handle;
     },
 
-    async continue(playgroundId: PlaygroundId, brief: Brief): Promise<SessionHandle> {
+    async continue(playgroundId: PlaygroundId, brief: Brief, requester: Subject): Promise<SessionHandle> {
       // Resolve the target playground first: an unknown id fails loudly here with the typed
       // PlaygroundNotFoundError, never a turn that targets nothing. [LAW:no-silent-failure]
       const { session } = await catalog.getPlayground(playgroundId);
       const provider = registry.get(session.providerId);
 
       // Capability is method presence. A provider that can't iterate fails loudly at submit
-      // time — never a silent no-op. The guard narrows continueSession to defined, and we
-      // call it on the provider so it keeps its receiver. [LAW:no-silent-failure]
-      if (provider.continueSession === undefined) {
+      // time — never a silent no-op. The guard narrows continueSession to defined; captured to a
+      // local so the narrowing survives into the startTurn closure below. [LAW:no-silent-failure]
+      const continueSession = provider.continueSession;
+      if (continueSession === undefined) {
         throw new ProviderCannotContinueError(session.providerId);
       }
 
@@ -333,21 +384,25 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // has a current version in the store (finalizeSuccess put it there), so this is a
       // total read, not a guard. [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
       const seed = await store.get(currentVersionOf(session));
-      const handle = await provider.continueSession(prior, brief, seed);
-      turns.set(handle.turnId, { brief, target: { kind: 'append', playgroundId }, terminal: null });
+      // Reserve only once the target is known valid and continuable (the 404/422 above must not
+      // burn quota) and before the provider effect. [LAW:no-silent-failure]
+      const reservation = quota.reserve(requester);
+      const handle = await startTurn(reservation, () => continueSession(prior, brief, seed));
+      turns.set(handle.turnId, { brief, target: { kind: 'append', playgroundId }, reservation, terminal: null });
       return handle;
     },
 
-    async fork(playgroundId: PlaygroundId, author: Subject): Promise<SessionHandle> {
+    async fork(playgroundId: PlaygroundId, requester: Subject): Promise<SessionHandle> {
       // Resolve the parent first: an unknown id fails loudly with the typed
       // PlaygroundNotFoundError, never a fork of nothing. [LAW:no-silent-failure]
       const { session } = await catalog.getPlayground(playgroundId);
       const provider = registry.get(session.providerId);
 
       // Capability is method presence. A provider that can't fork fails loudly here — never
-      // a silent no-op. The guard narrows fork to defined; we call it on the provider so it
-      // keeps its receiver. [LAW:no-silent-failure]
-      if (provider.fork === undefined) {
+      // a silent no-op. The guard narrows fork to defined; captured to a local so the narrowing
+      // survives into the startTurn closure below. [LAW:no-silent-failure]
+      const forkSession = provider.fork;
+      if (forkSession === undefined) {
         throw new ProviderCannotForkError(session.providerId);
       }
 
@@ -365,7 +420,10 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // so they cannot drift. [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
       const forkedFromVersion = currentVersionOf(session);
       const seed = await store.get(forkedFromVersion);
-      const handle = await provider.fork(parent, seed);
+      // Reserve only once the parent is known valid and forkable (the 404/422 above must not burn
+      // quota) and before the provider effect. [LAW:no-silent-failure]
+      const reservation = quota.reserve(requester);
+      const handle = await startTurn(reservation, () => forkSession(parent, seed));
 
       // fork carries no user brief, so the service owns the new playground's first-turn
       // prompt: the parent's original describe (turns[0], always present — a session enters
@@ -374,7 +432,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // distinguishing this create from submit's. [LAW:one-source-of-truth]
       const brief: Brief = { description: session.turns[0].prompt };
       const lineage: Lineage = { parentSession: session.sessionId, forkedFromVersion };
-      turns.set(handle.turnId, { brief, target: { kind: 'create', lineage, author }, terminal: null });
+      turns.set(handle.turnId, { brief, target: { kind: 'create', lineage, author: requester }, reservation, terminal: null });
       return handle;
     },
 
@@ -396,11 +454,9 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
         case 'running':
           return { state: 'running' };
         case 'succeeded':
-          record.terminal = finalizeSuccess(handle, record.brief, record.target, status.result.artifact);
-          return record.terminal;
+          return settle(record, finalizeSuccess(handle, record.brief, record.target, status.result.artifact));
         case 'failed':
-          record.terminal = finalizeFailure(handle, record.target, status.error.message);
-          return record.terminal;
+          return settle(record, finalizeFailure(handle, record.target, status.error.message));
         default: {
           const unreachable: never = status;
           return unreachable;

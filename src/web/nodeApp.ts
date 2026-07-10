@@ -4,8 +4,8 @@ import type { App } from '../app.js';
 import { ProviderRegistry, cleanupTurn, makeTmuxDriver, makeTmuxProvider } from '../provider/index.js';
 import type { TmuxDriverConfig } from '../provider/index.js';
 import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore } from '../storage/index.js';
-import { makeMemorySessionStore } from '../api/index.js';
-import type { CookieSecurity, OAuthProvider, Subject } from '../api/index.js';
+import { makeGenerationQuota, makeMemorySessionStore, DEFAULT_QUOTA_LIMITS } from '../api/index.js';
+import type { CookieSecurity, OAuthProvider, QuotaLimits, Subject } from '../api/index.js';
 
 // THE NODE COMPOSITION ROOT — the one place that knows the concrete shape of the local steel thread:
 // the provider is the tmux/Claude-Code body, storage is the local file backends, sessions live in an
@@ -36,6 +36,11 @@ export interface NodeAppConfig {
   // main.dev.ts passes the dev subject so the loop can be driven with a real admin locally. Empty is a
   // valid default (no admins → console reachable by no one). [LAW:no-silent-failure]
   readonly adminSubjects: ReadonlySet<Subject>;
+  // The per-identity generation caps. main.ts parses them from the environment; main.dev.ts omits
+  // them, so the loopback loop runs on the documented defaults. Optional because there is a sane
+  // default (unlike adminSubjects, whose empty default is a deliberate safety posture the entries
+  // always state). [LAW:no-mode-explosion]
+  readonly quotaLimits?: QuotaLimits;
   // The tmux driver config — main.dev.ts widens the generation deadline; main.ts takes the default.
   readonly driver?: TmuxDriverConfig;
   readonly providerId?: string;
@@ -57,6 +62,10 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
   const reportStore = makeFileReportStore(join(config.dataDir, 'reports.json'));
   const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: NODE_SESSION_TTL_MS });
 
+  // The generation budget, built HERE with the real clock — the same boundary the session store's
+  // clock is supplied at, keeping makeApp clock-free. In-memory, matching the single Node process.
+  const quota = makeGenerationQuota({ limits: config.quotaLimits ?? DEFAULT_QUOTA_LIMITS, now: () => Date.now() });
+
   return makeApp({
     registry,
     store,
@@ -66,6 +75,7 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
     // cleanupTurn is tmux's per-turn disposer; injecting it here is what keeps the service
     // provider-agnostic — the service releases settled turns without knowing it is tmux.
     disposeTurn: cleanupTurn,
+    quota,
     oauth: config.oauth,
     oauthCallbackUrl: config.oauthCallbackUrl,
     cookieSecurity: config.cookieSecurity,

@@ -4,6 +4,9 @@ import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeGenerationService } from './generationService.js';
+import { makeTestQuota } from './__fixtures__/testQuota.js';
+import { makeGenerationQuota } from './generationQuota.js';
+import type { GenerationQuota } from './generationQuota.js';
 import { makeReportService } from './reportService.js';
 import { makeHttpHandler } from './httpHandler.js';
 import { Subject } from './identity.js';
@@ -22,6 +25,7 @@ const denyIdentity: IdentityResolver = async () => null;
 const handlerFor = (
   opts: ContractProviderOptions,
   resolveIdentity: IdentityResolver = grantIdentity,
+  quota: GenerationQuota = makeTestQuota(),
 ): ((request: Request) => Promise<Response>) => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
@@ -33,6 +37,7 @@ const handlerFor = (
     store: makeMemoryArtifactStore(),
     catalog,
     disposeTurn: async () => undefined,
+    quota,
   });
   const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
   return makeHttpHandler(service, reports, resolveIdentity);
@@ -340,6 +345,25 @@ describe('service errors are surfaced loudly, never hidden behind a 200', () => 
     const res = await handler(post('/generations', { providerId: 'ghost', brief: { description: 'x' } }));
     expect(res.status).toBe(500);
     expect((await res.json()) as { error: string }).toMatchObject({ error: 'unknown provider: ghost' });
+  });
+});
+
+describe('a generation over the per-identity quota is a 429 carrying the limit message', () => {
+  it('maps QuotaExceededError to 429 with the verbatim message the create UI surfaces', async () => {
+    // A cap of one concurrent generation, so the SECOND submit (the first is still in flight,
+    // never polled to terminal) is refused at the API boundary. [LAW:no-silent-failure]
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 1, maxDaily: 100 }, now: () => 0 });
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, grantIdentity, quota);
+
+    const first = await handler(post('/generations', { providerId: 'fake', brief: { description: 'a counter' } }));
+    expect(first.status).toBe(201);
+
+    const refused = await handler(post('/generations', { providerId: 'fake', brief: { description: 'another' } }));
+    expect(refused.status).toBe(429);
+    const body = (await refused.json()) as { error: string };
+    // The body carries the limit message verbatim — the exact string the create UI renders. It is
+    // distinct from the 401 (auth), the 400 (bad input), and the 500 (a real fault).
+    expect(body.error).toContain('the maximum allowed');
   });
 });
 

@@ -3,6 +3,7 @@ import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { PlaygroundId, PlaygroundNotFoundError } from '../storage/index.js';
 import type { GenerationService } from './generationService.js';
 import { ProviderCannotContinueError, ProviderCannotForkError } from './generationService.js';
+import { QuotaExceededError } from './generationQuota.js';
 import type { ReportService } from './reportService.js';
 import type { Subject } from '../identity/index.js';
 import type { IdentityResolver } from './identity.js';
@@ -174,7 +175,9 @@ export const makeHttpHandler = (
       // exists, so the catch below maps those failures and there is no half-state to poll.
       case 'POST /generations/continue': {
         const { playgroundId, brief } = parseContinueRequest(await readJson(request));
-        const handle = await service.continue(playgroundId, brief);
+        // `author` here is the resolved requester the write gate produced — continue takes it as
+        // this turn's quota subject, not as an author (the playground keeps its own author).
+        const handle = await service.continue(playgroundId, brief, author);
         return json({ handle }, 201);
       }
       // The fork path: branch an existing playground at its current version into a NEW,
@@ -240,6 +243,11 @@ export const makeHttpHandler = (
       // Unprocessable on semantic grounds, exactly like the continue case above — 422, never a
       // 500 that misreads a client-actionable condition as a server fault. [LAW:no-silent-failure]
       if (error instanceof ProviderCannotForkError) return json({ error: error.message }, 422);
+      // The identity is over its concurrent or daily generation budget: a rate limit, not a fault.
+      // 429 (Too Many Requests) is the honest status — distinct from the 422s (a per-playground
+      // capability gap) and never a 500 (a server fault). The message states the limit and when it
+      // resets; the create UI surfaces it verbatim through its generic error path. [LAW:no-silent-failure]
+      if (error instanceof QuotaExceededError) return json({ error: error.message }, 429);
       // Any other failure from the service is surfaced loudly with its message — never a 200
       // hiding an error, never a silent empty body. Finer status taxonomy for the remaining
       // 500s (e.g. unknown provider as 404) is a later refinement; the message is always

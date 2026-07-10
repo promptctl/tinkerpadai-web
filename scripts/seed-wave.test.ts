@@ -287,6 +287,25 @@ describe('resolveConfig', () => {
   it('fails loudly on a malformed base URL rather than routing silently', () => {
     expect(() => resolveConfig(argv('m.json'), { TINKERPAD_URL: 'not a url' })).toThrow(UsageError);
   });
+
+  it('derives the liveness ceiling from the DEFAULT policy when no policy env is set (15min × 2 × 1.5)', () => {
+    expect(resolveConfig(argv('m.json'), {}).pollCeilingMs).toBe(15 * 60 * 1000 * 2 * 1.5);
+  });
+
+  it('derives the liveness ceiling from the OPERATOR policy env, so it tracks a widened server deadline', () => {
+    const config = resolveConfig(argv('m.json'), {
+      TINKERPAD_GENERATION_TIMEOUT_MS: String(20 * 60 * 1000),
+      TINKERPAD_MAX_GENERATION_ATTEMPTS: '3',
+    });
+    // 20 min × 3 attempts × 1.5 margin = the server's worst case, widened to match.
+    expect(config.pollCeilingMs).toBe(20 * 60 * 1000 * 3 * 1.5);
+  });
+
+  it('fails loudly on an invalid policy env, exactly as the server boot does', () => {
+    expect(() => resolveConfig(argv('m.json'), { TINKERPAD_GENERATION_TIMEOUT_MS: 'soon' })).toThrow(
+      'TINKERPAD_GENERATION_TIMEOUT_MS',
+    );
+  });
 });
 
 // A scripted BriefDriver: `post` returns the next queued response per path, `delay` is a
@@ -318,6 +337,11 @@ const scriptedDriver = (
   };
 };
 
+// A concrete liveness ceiling for the generateOne tests — its exact value is immaterial to the poll
+// enumeration (the driver's `now` controls whether it trips), so a fixed 45 min stands in for the
+// value resolveConfig derives from the policy. The ceiling-trip test drives `now` past it.
+const CEILING_MS = 45 * 60 * 1000;
+
 describe('generateOne — terminal enumeration', () => {
   const entry = brief('design', 'a card');
 
@@ -329,7 +353,7 @@ describe('generateOne — terminal enumeration', () => {
         { status: 200, data: { state: 'ready', playgroundId: 'pg-1' } },
       ],
     });
-    await expect(generateOne(entry, 'claude-code-tmux', driver)).resolves.toEqual({ state: 'ready', playgroundId: 'pg-1' });
+    await expect(generateOne(entry, 'claude-code-tmux', driver, CEILING_MS)).resolves.toEqual({ state: 'ready', playgroundId: 'pg-1' });
   });
 
   it('sends the chosen provider and the brief to /generations, then the returned handle to /poll', async () => {
@@ -341,7 +365,7 @@ describe('generateOne — terminal enumeration', () => {
       },
       posted,
     );
-    await generateOne(entry, 'provider-x', driver);
+    await generateOne(entry, 'provider-x', driver, CEILING_MS);
     expect(posted[0]).toEqual({
       path: '/generations',
       body: { providerId: 'provider-x', brief: { description: 'a card' } },
@@ -351,19 +375,19 @@ describe('generateOne — terminal enumeration', () => {
 
   it('fails the brief when submit is not a 201-with-handle', async () => {
     const driver = scriptedDriver({ generations: [{ status: 401, data: { error: 'auth' } }] });
-    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver, CEILING_MS);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/submit: HTTP 401/);
   });
 
   it('surfaces a server-reported failed state', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'failed', error: 'timed out' } }] });
-    await expect(generateOne(entry, 'claude-code-tmux', driver)).resolves.toEqual({ state: 'failed', error: 'timed out' });
+    await expect(generateOne(entry, 'claude-code-tmux', driver, CEILING_MS)).resolves.toEqual({ state: 'failed', error: 'timed out' });
   });
 
   it('says so when a failed state carries no error message rather than reporting "undefined"', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'failed' } }] });
-    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver, CEILING_MS);
     expect(outcome.state).toBe('failed');
     const error = (outcome as Extract<Outcome, { state: 'failed' }>).error;
     expect(error).toMatch(/non-string error/);
@@ -372,7 +396,7 @@ describe('generateOne — terminal enumeration', () => {
 
   it('emits the payload when a failed state carries an object error rather than "[object Object]"', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'failed', error: { code: 42 } } }] });
-    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver, CEILING_MS);
     expect(outcome.state).toBe('failed');
     const error = (outcome as Extract<Outcome, { state: 'failed' }>).error;
     expect(error).toMatch(/non-string error/);
@@ -381,21 +405,21 @@ describe('generateOne — terminal enumeration', () => {
 
   it('fails loudly on a ready without a playgroundId rather than spinning forever', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'ready' } }] });
-    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver, CEILING_MS);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);
   });
 
   it('rejects a ready with an empty-string playgroundId rather than reporting a hollow success', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'ready', playgroundId: '' } }] });
-    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver, CEILING_MS);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);
   });
 
   it('fails loudly on an unknown terminal state — a protocol mismatch, not a wait', async () => {
     const driver = scriptedDriver({ poll: [{ status: 200, data: { state: 'exploded' } }] });
-    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver, CEILING_MS);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/unexpected response shape/);
   });
@@ -408,7 +432,7 @@ describe('generateOne — terminal enumeration', () => {
       poll: Array.from({ length: 5 }, () => ({ status: 200, data: { state: 'pending' } })),
       now: () => (tick++ === 0 ? 0 : 60 * 60 * 1000),
     });
-    const outcome = await generateOne(entry, 'claude-code-tmux', driver);
+    const outcome = await generateOne(entry, 'claude-code-tmux', driver, CEILING_MS);
     expect(outcome.state).toBe('failed');
     expect((outcome as Extract<Outcome, { state: 'failed' }>).error).toMatch(/never reported a terminal state/);
   });
@@ -562,7 +586,7 @@ describe('runSeed — the on-ramp wiring', () => {
 
   it('drives a manifest through the full loop to exit code 0', async () => {
     stubWave();
-    const config = { manifestPath: 'm.json', concurrency: 1, base: 'http://test.local' };
+    const config = { manifestPath: 'm.json', concurrency: 1, base: 'http://test.local', pollCeilingMs: CEILING_MS };
     const read = (): Promise<string> => Promise.resolve(JSON.stringify([{ type: 'design', description: 'a card' }]));
     await expect(runSeed(config, {}, read)).resolves.toBe(0);
   });
@@ -580,7 +604,7 @@ describe('runSeed — the on-ramp wiring', () => {
       if (url.endsWith('/poll')) return Promise.resolve(new Response(JSON.stringify({ state: 'failed', error: 'generation timed out' }), { status: 200 }));
       throw new Error(`unexpected fetch: ${url}`);
     });
-    const config = { manifestPath: 'm.json', concurrency: 1, base: 'http://test.local' };
+    const config = { manifestPath: 'm.json', concurrency: 1, base: 'http://test.local', pollCeilingMs: CEILING_MS };
     const read = (): Promise<string> => Promise.resolve(JSON.stringify([{ type: 'design', description: 'a card' }]));
     await expect(runSeed(config, {}, read)).resolves.toBe(1);
   });

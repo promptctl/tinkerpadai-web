@@ -53,6 +53,13 @@ const PANE_TAIL_FILE = 'pane.tail';
 // The surfaced failure reason, written beside a preserved workdir so the on-disk record states WHY the
 // turn failed — a timeout leaves no other marker, and a functional defect's load errors live only here.
 const FAILURE_FILE = 'failure.txt';
+// The turn's world on disk: the two launch-time facts that are NOT pure functions of the handle — its
+// deadline and whether a cold continue re-seeded it. Written at launch, reaped WITH the workdir by
+// cleanupTurn, so a turn's whole world lives in exactly one place and is disposed atomically. This is
+// what replaced the in-memory map that used to shadow it: a map keyed by turnId outlived the workdir it
+// described, growing unbounded and drifting into a spurious 'running' when a reaped turn was re-polled
+// (ppu.5). [LAW:one-source-of-truth]
+const TURN_FILE = 'turn.json';
 // How much scrollback to preserve — enough to see the trailing activity of a stalled or crashed turn,
 // bounded so a runaway pane cannot write an unbounded file.
 const PANE_TAIL_LINES = 200;
@@ -63,12 +70,22 @@ const PANE_TAIL_LINES = 200;
 // constant rather than re-declaring the literal. [LAW:one-source-of-truth]
 export const WORKDIR_ROOT = join(tmpdir(), 'tinkerpad-gen');
 
-// Per-turn world state the driver owns: where its files live, what its tmux session
-// is called, when it must give up, and whether this turn re-seeded a cold workdir (so
-// progress can say so honestly). [LAW:one-source-of-truth]
+// The driver's in-memory VIEW of a turn's world, RECONSTRUCTED on demand from the handle
+// and the workdir — never held in a long-lived map. dir and session are pure functions of
+// the handle; deadline and reseeded are read from the turn's on-disk state (TURN_FILE).
+// Reconstructing per call is what makes the workdir the single source of truth: there is no
+// second in-memory copy to grow unbounded or to outlive the files cleanupTurn reaps.
+// [LAW:one-source-of-truth] [LAW:no-shared-mutable-globals]
 interface TurnWorld {
   readonly dir: string;
   readonly session: string;
+  readonly deadline: number;
+  readonly reseeded: boolean;
+}
+
+// The persisted half of a turn's world — exactly the two facts not derivable from the handle.
+// The whole of what the workdir must carry to be the turn's single source of truth.
+interface TurnState {
   readonly deadline: number;
   readonly reseeded: boolean;
 }
@@ -121,6 +138,39 @@ const dirExists = async (dir: string): Promise<boolean> => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
+};
+
+// Record a turn's world into its workdir at launch. Written wholesale each turn (begin/continue/fork),
+// so a continue that re-enters a warm workdir simply overwrites the prior turn's state — no stale marker
+// to clear, unlike the shell-written exit sentinel. This is the write half of the single source of truth
+// for a turn's lifecycle. [LAW:one-source-of-truth]
+const writeTurnState = (dir: string, state: TurnState): Promise<void> =>
+  writeFile(join(dir, TURN_FILE), JSON.stringify(state), 'utf8');
+
+// Assert a parsed value has the turn-state shape. turn.json round-trips through the filesystem, which a
+// crash or torn write can corrupt; a corrupt read that happened to parse to the wrong shape (an object
+// with an undefined deadline) would make `Date.now() > deadline` always false and drift the turn into the
+// exact silent 'running-forever' this design exists to prevent. So the shape is checked at the read
+// boundary and a violation throws, never trusted through a bare cast. (Malformed JSON already throws from
+// JSON.parse; this covers the valid-JSON-wrong-shape half.) [LAW:no-silent-failure] [LAW:types-are-the-program]
+const isTurnState = (value: unknown): value is TurnState =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as TurnState).deadline === 'number' &&
+  typeof (value as TurnState).reseeded === 'boolean';
+
+// Reconstruct a turn's world from disk. dir and session are pure functions of the handle; deadline and
+// reseeded are read from the turn's on-disk state. A missing state file means the turn never ran here or
+// its workdir was already reaped (by cleanupTurn or the idle GC); a present-but-corrupt one means a torn
+// write. Both are loud, honest failures, NOT a silent 'running' that drifts to a spurious timeout the way
+// an in-memory map outliving its workdir did (ppu.5). [LAW:one-source-of-truth] [LAW:no-silent-failure]
+const worldOf = async (handle: SessionHandle): Promise<TurnWorld> => {
+  const dir = dirOf(handle);
+  const raw = await readOrNull(join(dir, TURN_FILE));
+  if (raw === null) throw new Error(`unknown turn: ${handle.turnId}`);
+  const parsed: unknown = JSON.parse(raw);
+  if (!isTurnState(parsed)) throw new Error(`corrupt turn state for ${handle.turnId}: ${raw}`);
+  return { dir, session: sessionName(handle), deadline: parsed.deadline, reseeded: parsed.reseeded };
 };
 
 // The one closing instruction every turn's prompt ends with. EVERY generation this driver
@@ -177,13 +227,6 @@ const forkPromptFor = (artifactPath: string): string =>
 export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
   const pollIntervalMs = config.pollIntervalMs ?? 750;
   const timeoutMs = config.timeoutMs;
-  const worlds = new Map<string, TurnWorld>();
-
-  const worldOf = (handle: SessionHandle): TurnWorld => {
-    const world = worlds.get(handle.turnId);
-    if (world === undefined) throw new Error(`unknown turn: ${handle.turnId}`);
-    return world;
-  };
 
   const tmux = (args: readonly string[]): Promise<unknown> => run('tmux', [...args]);
 
@@ -293,9 +336,12 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
       const paneCommand =
         `claude -p "$(cat ${PROMPT_FILE})" --dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
+      // Persist the turn's world BEFORE spawning the session: the tmux session is the un-cleanable
+      // resource, so every fallible step precedes it. A write failure here leaves no orphaned pane —
+      // only a workdir the idle GC reaps — never a live agent with no cleanup path.
+      // [LAW:no-ambient-temporal-coupling]
+      await writeTurnState(dir, { deadline: Date.now() + timeoutMs, reseeded: false });
       await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
-
-      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs, reseeded: false });
     },
 
     // Resume the prior turn and refine its artifact. The follow-up runs in the SAME
@@ -344,9 +390,11 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
       const paneCommand =
         `claude -p "$(cat ${PROMPT_FILE})" ${continueFlag}--dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
+      // Written to `dir` = dirOf(priorHandle); since a continue is pinned to the SAME session, that is
+      // dirOf(handle) too, so poll(handle) reconstructs this exact state. Written BEFORE the session spawns,
+      // so a state-write failure never orphans a live pane. [LAW:one-source-of-truth] [LAW:no-ambient-temporal-coupling]
+      await writeTurnState(dir, { deadline: Date.now() + timeoutMs, reseeded: !warm });
       await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
-
-      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs, reseeded: !warm });
     },
 
     // Branch a NEW independent session from a seed artifact. `handle` already carries a
@@ -369,13 +417,14 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
       const paneCommand =
         `claude -p "$(cat ${PROMPT_FILE})" --dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
+      // Persist the turn's world before spawning, so a state-write failure never orphans a live pane —
+      // the session is the last, un-cleanable effect. [LAW:no-ambient-temporal-coupling]
+      await writeTurnState(dir, { deadline: Date.now() + timeoutMs, reseeded: false });
       await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
-
-      worlds.set(handle.turnId, { dir, session, deadline: Date.now() + timeoutMs, reseeded: false });
     },
 
     async poll(handle: SessionHandle): Promise<DriverSnapshot> {
-      const world = worldOf(handle);
+      const world = await worldOf(handle);
       const exitRaw = await readOrNull(join(world.dir, EXIT_FILE));
       if (exitRaw !== null) return settle(world, exitRaw);
 
@@ -388,7 +437,7 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
     },
 
     async *progress(handle: SessionHandle): AsyncIterable<ProgressEvent> {
-      const world = worldOf(handle);
+      const world = await worldOf(handle);
       // The opening status is ONE event whose message varies with the turn's state: a
       // re-seeded turn refines the durable artifact without its prior conversation, so it
       // says so — surfacing that loss of context rather than hiding it — while every other
@@ -416,12 +465,16 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
 
 // Remove one session's temp workdir by handle (the same dir dirOf resolves — one source
 // of truth for where it lives, never a second path that can drift). It disposes the whole
-// session because the workdir IS the session's, shared by every turn. Removing it is
-// always safe: continue re-seeds a missing workdir from the durable store, so this only
-// drops the session's cache to cold, never destroys its continuability. The eager,
-// by-handle disposer for a failed create (reclaimOnFailure); the idle bulk sweep is
-// evictIdleWorkdirs. Separate from the driver because cleanup is the app's call to make,
-// not part of generating. [LAW:decomposition] [LAW:one-source-of-truth]
+// session because the workdir IS the session's, shared by every turn — including each turn's
+// on-disk world state (TURN_FILE), so removing the workdir disposes the turn's world in the
+// one place it lives. That is why there is no separate in-memory map to reach and no drift to
+// reconcile: after this runs, worldOf(handle) finds no state and fails loudly rather than
+// misreporting a reaped turn as running (ppu.5). Removing it is always safe: continue re-seeds
+// a missing workdir from the durable store, so this only drops the session's cache to cold,
+// never destroys its continuability. The eager, by-handle disposer for a failed create
+// (reclaimOnFailure); the idle bulk sweep is evictIdleWorkdirs. Separate from the driver
+// because cleanup is the app's call to make, not part of generating.
+// [LAW:decomposition] [LAW:one-source-of-truth]
 export const cleanupTurn = async (handle: SessionHandle): Promise<void> => {
   await rm(dirOf(handle), { recursive: true, force: true });
 };

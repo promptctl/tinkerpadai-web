@@ -14,6 +14,8 @@ import type { ArtifactStore, Catalog, Lineage, Playground, PlaygroundId, Version
 import { currentTurnOf, currentVersionOf, SelfContainmentError } from '../storage/index.js';
 import { deriveTags } from './deriveTags.js';
 import type { GenerationQuota, Reservation } from './generationQuota.js';
+import { FunctionalDefectError } from './artifactValidation.js';
+import type { ArtifactValidator } from './artifactValidation.js';
 
 // THE GENERATION SERVICE — the one boundary where the generation effect is performed,
 // wiring registry -> provider -> store -> catalog. It is provider-agnostic by
@@ -87,6 +89,13 @@ export interface GenerationServiceDeps {
   // parseQuotaLimits) — not re-guarded here, so this service trusts a value already proven valid,
   // exactly as makeGenerationQuota trusts its limits. [LAW:single-enforcer] [LAW:one-type-per-behavior]
   readonly maxAttempts: number;
+  // The functional-quality gate: does a succeeded attempt's artifact actually RUN, or is it built-but-
+  // broken (an uncaught error on load)? Injected, not imported, so the service stays pure with respect to
+  // it and the composition root decides how isolated the browser is — the Node root a local headless
+  // Chrome, the edge a no-op (generation is disabled there). Consulted once per succeeded attempt, before
+  // the artifact is stored. A functional defect is a TYPED rejection routed to the failed-turn path; any
+  // other rejection is an infra fault that propagates loudly. [LAW:effects-at-boundaries] [LAW:decomposition]
+  readonly validateArtifact: ArtifactValidator;
 }
 
 export interface GenerationService {
@@ -192,7 +201,7 @@ interface TurnRecord {
 }
 
 export const makeGenerationService = (deps: GenerationServiceDeps): GenerationService => {
-  const { registry, store, catalog, disposeTurn, quota, maxAttempts } = deps;
+  const { registry, store, catalog, disposeTurn, quota, maxAttempts, validateArtifact } = deps;
 
   // The single owner of in-flight turn state. In-memory and not evicted: a local
   // steel-thread limitation — turns in flight do not survive a process restart, while
@@ -297,6 +306,24 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     target: TurnTarget,
     artifact: Artifact,
   ): Promise<GenerationStatus> => {
+    // BEFORE storing anything: does the artifact actually RUN? A provider can succeed and produce a
+    // self-contained file that still throws an uncaught error on load — a built-but-broken generation
+    // (wave-1 shipped 2 of 24). Route a functional defect through the SAME failed-turn path a provider
+    // failure and a self-containment refusal take — actionable message, workdir reclaimed per target,
+    // TERMINAL (never retried: retry is a provider-'failed' concern, and a deterministic broken artifact
+    // would only reproduce). Only the TYPED FunctionalDefectError is a generation failure; any other
+    // rejection is an infra fault (the validator's browser could not launch) that MUST propagate loudly,
+    // never relabelled as a quality failure — the type is the discriminator, exactly as with
+    // SelfContainmentError below. Running before store.put means a broken artifact never enters storage.
+    // [LAW:effects-at-boundaries] [LAW:no-silent-failure] [LAW:types-are-the-program]
+    try {
+      await validateArtifact(artifact);
+    } catch (error) {
+      if (error instanceof FunctionalDefectError) {
+        return finalizeFailure(handle, target, error.message);
+      }
+      throw error;
+    }
     let version: VersionId;
     try {
       version = await store.put(artifact);

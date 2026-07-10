@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
 import { parseAdminSubjects } from '../app.js';
 import { makeGitHubOAuthProvider, parseGenerationPolicy, parseQuotaLimits } from '../api/index.js';
+import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
@@ -62,6 +63,11 @@ const main = async (): Promise<void> => {
       timeoutMs: process.env.TINKERPAD_GENERATION_TIMEOUT_MS,
       maxAttempts: process.env.TINKERPAD_MAX_GENERATION_ATTEMPTS,
     }),
+    // The browser the functional-validation gate drives — TINKERPAD_CHROME_PATH if set, else a probed
+    // known install. Resolved here at the effect boundary; missing Chrome fails boot loudly, because a
+    // Node deployment that generates without validating would silently re-admit the broken-artifact class
+    // this gate exists to close. [LAW:no-silent-failure]
+    browserExecutablePath: resolveBrowserExecutablePath(process.env),
   });
 
   // Bind the content origin FIRST: the player's iframe src needs its concrete URL, so that

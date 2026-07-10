@@ -2,7 +2,7 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import page from './index.html';
 import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { makeGenerationQuota, makeGitHubOAuthProvider, parseMaxGenerationAttempts, parseQuotaLimits } from '../api/index.js';
+import { makeGenerationQuota, makeGitHubOAuthProvider, parseMaxGenerationAttempts, parseQuotaLimits, passThroughValidator } from '../api/index.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
@@ -146,6 +146,11 @@ const handlerFor = (env: Env): Handler => {
     // the edge has no driver, so the per-attempt deadline has no consumer and is not read (validating
     // it would risk bricking the whole Worker on an invalid inert value). [LAW:decomposition]
     maxAttempts: parseMaxGenerationAttempts(env.TINKERPAD_MAX_GENERATION_ATTEMPTS),
+    // No provider means no turn is ever admitted, so the functional gate is unreachable — the pass-through
+    // is the contract's sanctioned value, exactly like the no-op disposeTurn. When public generation turns
+    // on at the edge (providers-u1h), an ISOLATED render sandbox (not a browser in this trusted Worker)
+    // swaps in behind this seam. [LAW:dataflow-not-control-flow]
+    validateArtifact: passThroughValidator,
     oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
     oauthCallbackUrl,
     // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]

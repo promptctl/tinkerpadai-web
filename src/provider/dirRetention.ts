@@ -43,14 +43,20 @@ export const evictExpiredDirs = async (opts: EvictExpiredDirsOptions): Promise<r
   });
   const entries = await Promise.all(
     names.map(async (name): Promise<AgedEntry | null> => {
-      // A child removed between the readdir above and this stat — a concurrent reclaim, e.g. cleanupTurn
-      // reaping a workdir while the janitor sweeps — is a REAL absence: the entry is already gone, so there
-      // is nothing to evict. Lift that into a null the filter drops, so one vanished child never rejects the
-      // whole sweep. Any other stat error is a genuine fault and throws loudly.
-      // [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
-      const stats = await stat(join(opts.root, name)).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return null;
-        throw error;
+      const path = join(opts.root, name);
+      // A single unreadable child must never abort the whole sweep — that would let one bad entry block
+      // reclamation of every other expired record every interval, and in the DURABLE diagnostics dir that
+      // is unbounded growth: the exact failure this sweep exists to prevent, hidden behind a per-interval
+      // error that reads as transient. So a failed stat skips only THAT child (null the filter drops),
+      // split by meaning: ENOENT is a real absence (the child was reclaimed between readdir and stat) —
+      // expected, skip quietly; any other fault (EACCES, EIO, ELOOP) is a genuine problem on that entry —
+      // skip it too, but surface it loudly so it is never swallowed. [LAW:dataflow-not-control-flow]
+      // [LAW:no-silent-failure]
+      const stats = await stat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') {
+          console.error(`tinkerpad: skipping unreadable retention entry ${path}:`, error);
+        }
+        return null;
       });
       return stats === null ? null : { name, mtimeMs: stats.mtimeMs };
     }),

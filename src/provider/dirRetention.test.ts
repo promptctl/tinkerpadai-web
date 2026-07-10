@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { evictExpiredDirs, expiredByAge } from './dirRetention.js';
 import type { AgedEntry } from './dirRetention.js';
 
@@ -77,6 +77,24 @@ describe('evictExpiredDirs — removes aged children, keeps fresh ones', () => {
     const evicted = await evictExpiredDirs({ root, maxAgeMs: 10_000, nowMs: now });
 
     expect(evicted).toEqual([cold]);
+  });
+
+  it('skips an unreadable child (non-ENOENT) loudly and still evicts the aged ones', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dir-retention-'));
+    const now = Date.now();
+    const cold = await makeChild(now - 60_000);
+    // A symlink loop makes stat throw ELOOP — a real, non-ENOENT fault on that entry (the durable dir's
+    // EACCES/EIO analogue). One bad child must not abort the sweep: the aged dir is still evicted, and the
+    // fault is surfaced loudly rather than swallowed. [LAW:no-silent-failure]
+    await symlink(join(root, 'loop-b'), join(root, 'loop-a'));
+    await symlink(join(root, 'loop-a'), join(root, 'loop-b'));
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const evicted = await evictExpiredDirs({ root, maxAgeMs: 10_000, nowMs: now });
+
+    expect(evicted).toEqual([cold]);
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('skipping unreadable retention entry'), expect.anything());
+    errorLog.mockRestore();
   });
 
   it('treats a missing root as an empty set, never an error', async () => {

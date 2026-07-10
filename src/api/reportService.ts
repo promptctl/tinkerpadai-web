@@ -1,5 +1,5 @@
 import type { Subject } from '../identity/index.js';
-import type { Catalog, PlaygroundId, Report, ReportStore } from '../storage/index.js';
+import type { CatalogReader, PlaygroundId, Report, ReportStore } from '../storage/index.js';
 
 // THE REPORT SERVICE — the one boundary that records a moderation signal, wiring the catalog (to
 // prove the target exists) and the report store (to persist). It is the signal-collection half of
@@ -17,9 +17,11 @@ export interface ReportService {
 }
 
 export interface ReportServiceDeps {
-  // The read seam used ONLY to prove the reported playground exists. The report path never mutates
-  // the catalog — reporting is not a catalog concern — so it takes the read surface and nothing more.
-  readonly catalog: Catalog;
+  // The read seam used ONLY to prove the reported playground exists. Typed as CatalogReader (just
+  // getPlayground), not the full Catalog, so the type system ENFORCES that reporting never mutates the
+  // catalog — a future edit that reached for createPlayground/appendTurn would not compile. The
+  // invariant lives in the type, not a comment. [LAW:types-are-the-program] [LAW:decomposition]
+  readonly catalog: CatalogReader;
   // Where the signal is persisted. The store mints the report's id and timestamp; this service only
   // supplies the resolved reporter, target, and reason. [LAW:one-source-of-truth]
   readonly reports: ReportStore;

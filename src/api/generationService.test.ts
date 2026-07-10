@@ -53,9 +53,6 @@ const harnessFor = (
   // Default pass-through, so every existing success assertion sees the artifact stored unconditionally;
   // the functional-gate suite injects a validator that rejects to exercise the built-but-broken path.
   validateArtifact: ArtifactValidator = passThroughValidator,
-  // Default the real clock; the retention suite injects a controllable one to drive settle-time
-  // stamping and eviction deterministically.
-  now: () => number = () => Date.now(),
 ): Harness => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
@@ -76,7 +73,7 @@ const harnessFor = (
     quota,
     maxAttempts,
     validateArtifact,
-    now,
+    now: () => Date.now(),
   });
   return { service, store, catalog, disposed, disposedReasons, providerId: ProviderId(opts.id) };
 };
@@ -1015,10 +1012,36 @@ describe('GenerationService.poll — retry: a failed provider attempt is retried
 // injected so both settle-time stamping and the eviction cutoff are deterministic — no wall clock, no
 // timer, in the mechanism tests. [LAW:no-shared-mutable-globals] [LAW:no-ambient-temporal-coupling]
 describe('GenerationService.evictSettledTurns — retention bounds the turns map', () => {
+  // These tests vary only two things — the clock and (once) the provider's running-poll count — and use
+  // ONLY the service, so they build it directly through makeGenerationService's named-object deps rather
+  // than threading defaults through harnessFor's positional parameters. Callers override exactly what
+  // they need, nothing more. [LAW:composability]
+  const retentionService = (
+    now: () => number,
+    opts: ContractProviderOptions = { id: 'fake', label: 'Fake', outcome: 'success' },
+  ): { service: GenerationService; providerId: ProviderId } => {
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider(opts));
+    const service = makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog: makeMemoryCatalog(),
+      disposeTurn: async () => {},
+      quota: makeTestQuota(),
+      maxAttempts: 1,
+      validateArtifact: passThroughValidator,
+      now,
+    });
+    return { service, providerId: ProviderId(opts.id) };
+  };
+
+  const submitTo = (h: { service: GenerationService; providerId: ProviderId }, description: string): Promise<SessionHandle> =>
+    h.service.submit({ providerId: h.providerId, brief: { description } }, AUTHOR);
+
   it('evicts a settled request once the cutoff reaches its settle time; a later poll then fails loudly', async () => {
     const clock = { t: 1_000 };
-    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, undefined, undefined, 1, passThroughValidator, () => clock.t);
-    const handle = await submit(h, 'a wave explorer');
+    const h = retentionService(() => clock.t);
+    const handle = await submitTo(h, 'a wave explorer');
 
     // Settle at t=5000 — the stamp the sweeper's cutoff is compared against.
     clock.t = 5_000;
@@ -1042,15 +1065,8 @@ describe('GenerationService.evictSettledTurns — retention bounds the turns map
     const clock = { t: 1_000 };
     // runningPolls: 1 — the first poll observes `running`, so the request is genuinely in flight
     // (settledAtMs still null) across an eviction attempt at the maximum possible cutoff.
-    const h = harnessFor(
-      { id: 'fake', label: 'Fake', outcome: 'success', runningPolls: 1 },
-      undefined,
-      undefined,
-      1,
-      passThroughValidator,
-      () => clock.t,
-    );
-    const handle = await submit(h, 'a slow one');
+    const h = retentionService(() => clock.t, { id: 'fake', label: 'Fake', outcome: 'success', runningPolls: 1 });
+    const handle = await submitTo(h, 'a slow one');
     expect((await h.service.poll(handle)).state).toBe('running');
 
     // Even a cutoff at the end of time cannot reclaim a record that has not settled — its memoized
@@ -1063,13 +1079,13 @@ describe('GenerationService.evictSettledTurns — retention bounds the turns map
 
   it('evicts only the records settled at or before the cutoff, leaving newer ones', async () => {
     const clock = { t: 100 };
-    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, undefined, undefined, 1, passThroughValidator, () => clock.t);
+    const h = retentionService(() => clock.t);
 
-    const older = await submit(h, 'older');
+    const older = await submitTo(h, 'older');
     expect((await h.service.poll(older)).state).toBe('ready'); // settled at t=100
 
     clock.t = 200;
-    const newer = await submit(h, 'newer');
+    const newer = await submitTo(h, 'newer');
     expect((await h.service.poll(newer)).state).toBe('ready'); // settled at t=200
 
     // Cutoff between the two settle times: the older is reclaimed, the newer retained.

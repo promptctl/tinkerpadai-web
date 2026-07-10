@@ -3,7 +3,7 @@ import { makeNodeApp } from './nodeApp.js';
 import { DEFAULT_GENERATION_POLICY, Subject, startTurnRetentionSweeper } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
 import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.js';
-import { startWorkdirJanitor } from '../provider/index.js';
+import { diagnosticsDirOf, startDiagnosticsRetentionSweeper, startWorkdirJanitor } from '../provider/index.js';
 import { generateIndexHtml } from './generateIndexHtml.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
@@ -96,6 +96,11 @@ const main = async (): Promise<void> => {
   // sibling of the workdir janitor. Started here in the runtime entry for the same reason: a background
   // timer is a runtime effect makeApp must not own. [LAW:effects-at-boundaries]
   startTurnRetentionSweeper(app.service);
+
+  // The durable-diagnostics retention sweeper — bounds the diagnostics dir ppu.4 fills with a record per
+  // failed generation. Started here in the runtime entry for the same reason as its siblings: a background
+  // timer is a runtime effect makeApp must not own. [LAW:effects-at-boundaries] [LAW:one-source-of-truth]
+  startDiagnosticsRetentionSweeper(diagnosticsDirOf(dataDir));
 
   console.log(`[DEV] TinkerPad front door listening on ${url} (data: ${dataDir})`);
   console.log(`[DEV] TinkerPad playground content origin on ${content.url} (sandboxed, untrusted)`);

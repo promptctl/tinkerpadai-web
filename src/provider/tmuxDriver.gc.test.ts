@@ -2,38 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { WORKDIR_ROOT, evictIdleWorkdirs, expiredWorkdirs } from './tmuxDriver.js';
-import type { WorkdirEntry } from './tmuxDriver.js';
+import { WORKDIR_ROOT, evictIdleWorkdirs } from './tmuxDriver.js';
 
-// The idle-workdir GC. The PURE policy (expiredWorkdirs) is exercised exhaustively and
-// deterministically here; the EFFECT (evictIdleWorkdirs) is exercised against real dirs
-// with controlled mtimes so the readdir/stat/rm glue is proven without the live agent.
-// The full re-seed-after-eviction round trip is the live test's job. [LAW:behavior-not-structure]
+// The idle-workdir GC's binding of the shared age mechanism. The mechanism itself (the pure policy and the
+// scan/stat/rm effect) is exercised exhaustively in dirRetention.test.ts; here we prove the WORKDIR
+// binding — evictIdleWorkdirs reclaims cold dirs under WORKDIR_ROOT and leaves warm ones — against real
+// dirs with controlled mtimes. The full re-seed-after-eviction round trip is the live test's job.
+// [LAW:behavior-not-structure]
 
 // The driver keys every workdir under WORKDIR_ROOT; the test stages dirs under that same exported
 // constant so there is no mirrored literal to drift from. [LAW:one-source-of-truth]
 const ROOT = WORKDIR_ROOT;
-
-describe('expiredWorkdirs — the pure idle policy', () => {
-  const entry = (name: string, mtimeMs: number): WorkdirEntry => ({ name, mtimeMs });
-
-  it('selects nothing from an empty set — data flow, not a special case', () => {
-    expect(expiredWorkdirs([], 1000, 100)).toEqual([]);
-  });
-
-  it('evicts only dirs idle longer than maxIdleMs, keeping recently-touched ones', () => {
-    const now = 10_000;
-    const entries = [entry('fresh', 9_950), entry('stale', 8_000), entry('warm', 9_000)];
-    // idle = now - mtime, expired when strictly greater than maxIdleMs (1000):
-    // fresh=50 keep, stale=2000 evict, warm=1000 keep (not strictly greater).
-    expect(expiredWorkdirs(entries, now, 1000)).toEqual(['stale']);
-  });
-
-  it('treats exactly-at-the-threshold as still fresh', () => {
-    expect(expiredWorkdirs([entry('x', 0)], 1000, 1000)).toEqual([]);
-    expect(expiredWorkdirs([entry('x', 0)], 1001, 1000)).toEqual(['x']);
-  });
-});
 
 describe('evictIdleWorkdirs — removes cold dirs, keeps warm ones', () => {
   const created: string[] = [];

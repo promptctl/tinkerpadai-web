@@ -13,17 +13,23 @@ export {
   makeTmuxDriver,
   cleanupTurn,
   makeWorkdirDiagnostics,
-  expiredWorkdirs,
+  diagnosticsDirOf,
+  startDiagnosticsRetentionSweeper,
   evictIdleWorkdirs,
   startWorkdirJanitor,
 } from './tmuxDriver.js';
 export type {
   TmuxDriverConfig,
-  WorkdirEntry,
   EvictWorkdirsOptions,
   WorkdirJanitorConfig,
   WorkdirJanitor,
+  DiagnosticsRetentionSweeperConfig,
+  DiagnosticsRetentionSweeper,
 } from './tmuxDriver.js';
+
+// The age-based directory-retention mechanism shared by the workdir janitor and the diagnostics sweeper.
+export { expiredByAge, evictExpiredDirs } from './dirRetention.js';
+export type { AgedEntry, EvictExpiredDirsOptions } from './dirRetention.js';
 export type { CodeGenDriver, DriverSnapshot } from './codeGenDriver.js';
 export {
   ProviderId,

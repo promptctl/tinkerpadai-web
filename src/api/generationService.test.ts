@@ -36,12 +36,15 @@ interface Harness {
   readonly store: ArtifactStore;
   readonly catalog: ReturnType<typeof makeMemoryCatalog>;
   readonly disposed: SessionHandle[];
+  // The reason threaded to the disposer for each disposed turn, in order — the surfaced failure the
+  // Node root preserves into the diagnostics record (ppu.4). Parallel to `disposed`. [LAW:one-source-of-truth]
+  readonly disposedReasons: string[];
   readonly providerId: ProviderId;
 }
 
 const harnessFor = (
   opts: ContractProviderOptions & { readonly html?: string },
-  disposeTurn?: (handle: SessionHandle) => Promise<void>,
+  disposeTurn?: (handle: SessionHandle, reason: string) => Promise<void>,
   quota: GenerationQuota = makeTestQuota(),
   // Default 1 = no retry, so every existing failure/dispose assertion sees exactly one attempt;
   // the retry suite opts into a larger budget.
@@ -55,20 +58,22 @@ const harnessFor = (
   const store = makeMemoryArtifactStore();
   const catalog = makeMemoryCatalog();
   const disposed: SessionHandle[] = [];
+  const disposedReasons: string[] = [];
   const service = makeGenerationService({
     registry,
     store,
     catalog,
     disposeTurn:
       disposeTurn ??
-      (async (handle) => {
+      (async (handle, reason) => {
         disposed.push(handle);
+        disposedReasons.push(reason);
       }),
     quota,
     maxAttempts,
     validateArtifact,
   });
-  return { service, store, catalog, disposed, providerId: ProviderId(opts.id) };
+  return { service, store, catalog, disposed, disposedReasons, providerId: ProviderId(opts.id) };
 };
 
 // The authenticated principal the gated write path would resolve. The service records it as the
@@ -202,6 +207,9 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     // The turn is still released even though nothing was stored.
     expect(h.disposed).toEqual([handle]);
+    // The surfaced reason is threaded to the disposer, so the diagnostics record states WHY the turn
+    // failed — the failed create's evidence is preserved, not reaped blind (ppu.4). [LAW:one-source-of-truth]
+    expect(h.disposedReasons).toEqual(['skill crashed']);
   });
 
   it('re-throws a non-self-containment store failure — an infra fault is NOT relabelled as a generation failure', async () => {
@@ -243,6 +251,9 @@ describe('GenerationService.poll — a provider that succeeds but yields a non-s
     // Nothing entered the commons, and the create turn was released like any other failed first turn.
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     expect(h.disposed).toEqual([handle]);
+    // The actionable refusal is the reason the diagnostics record preserves (ppu.4): the offending file
+    // survives in the workdir, its rejection stated alongside. [LAW:one-source-of-truth]
+    expect(h.disposedReasons[0]).toContain('not self-contained');
   });
 });
 
@@ -270,6 +281,11 @@ describe('GenerationService.poll — a provider that succeeds but yields a built
 
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     expect(h.disposed).toEqual([handle]);
+    // The load errors live ONLY in the surfaced reason (the broken artifact itself is preserved in the
+    // workdir); threading that reason to the disposer is what carries them into the diagnostics record,
+    // satisfying the ppu.3 forward note. [LAW:one-source-of-truth]
+    expect(h.disposedReasons[0]).toContain('not functional');
+    expect(h.disposedReasons[0]).toContain('TypeError');
   });
 
   it('runs the gate BEFORE store.put — a broken artifact never enters storage', async () => {
@@ -786,6 +802,9 @@ interface FlakyHarness {
   readonly store: ArtifactStore;
   readonly catalog: ReturnType<typeof makeMemoryCatalog>;
   readonly disposed: SessionHandle[];
+  // The reason threaded to the disposer per reclaim, in order — proves an INTERMEDIATE retry reclaim
+  // preserves its own attempt's failure, not only the terminal one (ppu.2/ppu.4 note). [LAW:one-source-of-truth]
+  readonly disposedReasons: string[];
   readonly providerId: ProviderId;
   readonly starts: () => number;
 }
@@ -801,18 +820,20 @@ const flakyHarness = (
   const store = makeMemoryArtifactStore();
   const catalog = makeMemoryCatalog();
   const disposed: SessionHandle[] = [];
+  const disposedReasons: string[] = [];
   const service = makeGenerationService({
     registry,
     store,
     catalog,
-    disposeTurn: async (handle) => {
+    disposeTurn: async (handle, reason) => {
       disposed.push(handle);
+      disposedReasons.push(reason);
     },
     quota,
     maxAttempts,
     validateArtifact: passThroughValidator,
   });
-  return { service, store, catalog, disposed, providerId: ProviderId(opts.id), starts };
+  return { service, store, catalog, disposed, disposedReasons, providerId: ProviderId(opts.id), starts };
 };
 
 // Poll a handle to its terminal outcome the way a real client does: repeatedly, until ready or
@@ -874,6 +895,10 @@ describe('GenerationService.poll — retry: a failed provider attempt is retried
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     // Both failed create attempts were reclaimed (the retry reclaimed the first, the settle the second).
     expect(h.disposed).toHaveLength(2);
+    // Each reclaim threaded ITS OWN attempt's reason — the intermediate retry preserved 'attempt 1',
+    // the terminal settle 'attempt 2'. A fails-then-retries request no longer destroys the first
+    // attempt's evidence blind (ppu.2/ppu.4 note). [LAW:one-source-of-truth]
+    expect(h.disposedReasons).toEqual(['attempt 1 failed', 'attempt 2 failed']);
   });
 
   it('maxAttempts = 1 disables retry — a failed create settles after a single attempt', async () => {

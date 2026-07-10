@@ -1,7 +1,13 @@
 import { join } from 'node:path';
 import { makeApp } from '../app.js';
 import type { App } from '../app.js';
-import { ProviderRegistry, cleanupTurn, makeTmuxDriver, makeTmuxProvider } from '../provider/index.js';
+import {
+  ProviderRegistry,
+  cleanupTurn,
+  makeTmuxDriver,
+  makeTmuxProvider,
+  makeWorkdirDiagnostics,
+} from '../provider/index.js';
 import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore } from '../storage/index.js';
 import { makeGenerationQuota, makeMemorySessionStore, DEFAULT_QUOTA_LIMITS } from '../api/index.js';
 import type { CookieSecurity, GenerationPolicy, OAuthProvider, QuotaLimits, Subject } from '../api/index.js';
@@ -72,6 +78,11 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
 
   const store = makeFileArtifactStore(join(config.dataDir, 'artifacts'));
   const catalog = makeFileCatalog(join(config.dataDir, 'catalog.json'));
+  // Where a failed turn's evidence is preserved before its workdir is reclaimed (ppu.4). Durable, under
+  // the data dir beside artifacts/catalog — NOT tmpdir, which the idle GC and reboots wipe — so a
+  // timeout or failure can be diagnosed after the fact instead of reaped. The failure disposer below
+  // copies the workdir here, then cleanupTurn reclaims it. [LAW:decomposition]
+  const preserveDiagnostics = makeWorkdirDiagnostics(join(config.dataDir, 'diagnostics'));
   const reportStore = makeFileReportStore(join(config.dataDir, 'reports.json'));
   const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: NODE_SESSION_TTL_MS });
 
@@ -85,9 +96,16 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
     catalog,
     reportStore,
     sessionStore,
-    // cleanupTurn is tmux's per-turn disposer; injecting it here is what keeps the service
-    // provider-agnostic — the service releases settled turns without knowing it is tmux.
-    disposeTurn: cleanupTurn,
+    // tmux's failure disposer, composed here as preserve-then-reclaim: the failed turn's workdir is
+    // copied into the durable diagnostics dir (with the surfaced reason) BEFORE cleanupTurn removes it,
+    // so evidence survives the reap (ppu.4). Injecting the composed disposer keeps the service
+    // provider-agnostic — it releases failed turns without knowing it is tmux, or that anything is
+    // preserved. Preservation is best-effort (it never throws), so a real cleanup fault still surfaces
+    // through the service's release seam. [LAW:decomposition] [LAW:no-silent-failure]
+    disposeTurn: async (handle, reason) => {
+      await preserveDiagnostics(handle, reason);
+      await cleanupTurn(handle);
+    },
     quota,
     // The retry half of the policy flows to the service, the single owner of turn lifecycle.
     maxAttempts: config.generationPolicy.maxAttempts,

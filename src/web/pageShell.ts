@@ -168,7 +168,7 @@ const SHELL_STYLES = `
 // preference for users who never chose. The toggle button lives in siteNav, so a page without a
 // nav (the player) simply has no button to bind; the lookup returning null is genuine optionality
 // at the DOM boundary, not a swallowed error. [LAW:no-defensive-null-guards]
-const THEME_TOGGLE_SCRIPT = `
+export const THEME_TOGGLE_SCRIPT = `
   const root = document.documentElement;
   const PREF = 'tp-theme';
   const toggle = document.getElementById('themeToggle');

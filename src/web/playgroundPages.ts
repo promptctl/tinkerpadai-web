@@ -293,7 +293,7 @@ export interface PlayerView {
 // NAVIGATES to the new fork's own player, since fork yields an INDEPENDENT playground whose
 // id is the poll's terminal value. Neither action ever re-asks for a provider — continue and
 // fork resolve it from the session. [LAW:decomposition] [LAW:no-mode-explosion]
-const PLAYER_SCRIPT = `
+export const PLAYER_SCRIPT = `
   const $ = (id) => document.getElementById(id);
   const actions = $('actions');
   const form = $('refine');

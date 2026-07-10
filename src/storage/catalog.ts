@@ -29,10 +29,23 @@ export class PlaygroundNotFoundError extends Error {
   }
 }
 
+// THE CATALOG READ SURFACE — the ability to resolve one playground by id, and nothing more. It is
+// its own interface so a consumer that only needs to PROVE a playground exists (the moderation report
+// service) can depend on exactly that, and the type system forbids it reaching a catalog WRITE. The
+// invariant "reports never write the catalog" then lives in the type, not a comment a future edit
+// could quietly break. A full Catalog is a CatalogReader (it extends this), so nothing that already
+// holds a Catalog changes. [LAW:decomposition] [LAW:types-are-the-program]
+export interface CatalogReader {
+  // The full record for one playground — session, turns, versions, lineage. An
+  // unknown id fails loudly rather than returning a null callers must guard.
+  // [LAW:no-silent-failure] [LAW:no-defensive-null-guards]
+  getPlayground(id: PlaygroundId): Promise<Playground>;
+}
+
 // THE CATALOG SEAM. The single source of truth for what playgrounds exist (public by
 // default; design-docs/PROJECT.md). It records the session -> turns -> versions shape
 // and fork lineage; browsing and running read from here and never touch the provider.
-export interface Catalog {
+export interface Catalog extends CatalogReader {
   // Record a brand-new playground from a session's first succeeded turn. The catalog
   // mints and returns the PlaygroundId. [LAW:single-enforcer]
   createPlayground(input: NewPlayground): Promise<Playground>;
@@ -44,11 +57,6 @@ export interface Catalog {
   // a turn whose handle names a different session is rejected, not silently stitched on.
   // [LAW:one-source-of-truth] [LAW:no-silent-failure]
   appendTurn(id: PlaygroundId, turn: NewTurn): Promise<Playground>;
-
-  // The full record for one playground — session, turns, versions, lineage. An
-  // unknown id fails loudly rather than returning a null callers must guard.
-  // [LAW:no-silent-failure] [LAW:no-defensive-null-guards]
-  getPlayground(id: PlaygroundId): Promise<Playground>;
 
   // The commons listing (p0v.6), in insertion order. An empty catalog yields an empty
   // list — data flow, not a special case. [LAW:dataflow-not-control-flow]

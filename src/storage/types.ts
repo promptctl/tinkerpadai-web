@@ -1,8 +1,9 @@
-// The data types of the two persistence seams — ArtifactStore (immutable files
-// keyed by version) and Catalog (the source of truth for what playgrounds exist).
-// As with the provider seam, these types ARE the program: the adapter bodies are
-// residue once the shapes are right. See design-docs/PROJECT.md for why the commons
-// is the single source of truth and why a playground's file is "just a file".
+// The data types of the persistence seams — ArtifactStore (immutable files keyed by
+// version), Catalog (the source of truth for what playgrounds exist), and ReportStore
+// (moderation signals recorded against playgrounds). As with the provider seam, these
+// types ARE the program: the adapter bodies are residue once the shapes are right. See
+// design-docs/PROJECT.md for why the commons is the single source of truth and why a
+// playground's file is "just a file".
 
 import type { Subject } from '../identity/index.js';
 import type { ProviderId, SessionHandle, SessionId } from '../provider/index.js';
@@ -240,4 +241,48 @@ export interface NewTurn {
 // Playgrounds are kept in insertion order so the commons lists them deterministically.
 export interface CatalogDoc {
   readonly playgrounds: readonly Playground[];
+}
+
+// The identity of one moderation report. Minted by the ReportStore on record — a reporter
+// raises a signal, they do not own its identity — exactly as the Catalog mints PlaygroundId.
+export type ReportId = Brand<string, 'ReportId'>;
+export const ReportId = (raw: string): ReportId => raw as ReportId;
+
+// A MODERATION REPORT — one signal recorded against a playground: who raised it, why, and when.
+// This is the signal-collection half of moderation (the sandbox contains what is dangerous; a
+// report catches what is merely unwanted). It is deliberately NOT a catalog concern: the catalog
+// is the PUBLIC source of truth for what exists, while a report is a private moderation signal
+// whose reporter must never cross into the public read path. `reporter` is a plain Subject, not
+// nullable, because reporting is an authenticated write (the same single gate the generation write
+// path uses), so "every report has a known reporter" is a true theorem the type states once.
+// [LAW:types-are-the-program] [LAW:decomposition] [LAW:one-source-of-truth]
+export interface Report {
+  readonly id: ReportId;
+  readonly playgroundId: PlaygroundId;
+  readonly reporter: Subject;
+  // Why the reporter flagged it — free text. Moderation reasons are genuinely open-ended at this
+  // stage ("harmful, illegal, spam, shouldn't be here"), so this is not a premature category enum;
+  // triage into categories is the review queue's concern (moderation-5g7.2), not the signal's shape.
+  // [LAW:no-mode-explosion]
+  readonly reason: string;
+  // When the report was recorded, as an ISO-8601 string minted by the store at record time. The
+  // clock is a world effect the store owns at its boundary, exactly as the store mints the id.
+  // [LAW:effects-at-boundaries]
+  readonly at: string;
+}
+
+// What the report write path hands the store: the target playground, the resolved reporter, and the
+// reason. `id` and `at` are absent because the store mints them (identity and clock are effects the
+// store owns), precisely mirroring how NewPlayground carries no PlaygroundId. [LAW:one-source-of-truth]
+export interface NewReport {
+  readonly playgroundId: PlaygroundId;
+  readonly reporter: Subject;
+  readonly reason: string;
+}
+
+// The whole persisted reports document — the unit a ReportStore backend reads and writes, the
+// document-oriented sibling of CatalogDoc. Reports are kept in insertion order so the review queue
+// (moderation-5g7.2) lists them oldest-first deterministically without a second sort key.
+export interface ReportsDoc {
+  readonly reports: readonly Report[];
 }

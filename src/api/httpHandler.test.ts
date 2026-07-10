@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
-import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeGenerationService } from './generationService.js';
+import { makeReportService } from './reportService.js';
 import { makeHttpHandler } from './httpHandler.js';
 import { Subject } from './identity.js';
 import type { IdentityResolver } from './identity.js';
@@ -24,13 +25,17 @@ const handlerFor = (
 ): ((request: Request) => Promise<Response>) => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
+  // One catalog shared by generation (the write that creates a playground) and the report service
+  // (which proves the reported playground exists) — so a report can target what generation just made.
+  const catalog = makeMemoryCatalog();
   const service = makeGenerationService({
     registry,
     store: makeMemoryArtifactStore(),
-    catalog: makeMemoryCatalog(),
+    catalog,
     disposeTurn: async () => undefined,
   });
-  return makeHttpHandler(service, resolveIdentity);
+  const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
+  return makeHttpHandler(service, reports, resolveIdentity);
 };
 
 const post = (path: string, body: unknown): Request =>
@@ -215,6 +220,86 @@ describe('POST /generations/fork then POST /poll — the remix round trip', () =
   });
 });
 
+describe('POST /reports — recording a moderation signal', () => {
+  it('records a report against an existing playground as 201 with the RESOLVED reporter', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+
+    const res = await handler(post('/reports', { playgroundId, reason: 'this is spam' }));
+    expect(res.status).toBe(201);
+    const { report } = (await res.json()) as {
+      report: { id: string; playgroundId: string; reporter: string; reason: string; at: string };
+    };
+    expect(report.playgroundId).toBe(playgroundId);
+    // The reporter is the AUTHENTICATED subject the gate resolved (grantIdentity -> 'tester'), so a
+    // client cannot forge who raised the report.
+    expect(report.reporter).toBe('tester');
+    expect(report.reason).toBe('this is spam');
+    expect(typeof report.id).toBe('string');
+    expect(Number.isNaN(Date.parse(report.at))).toBe(false);
+  });
+
+  it('ignores a client-supplied reporter field — identity comes only from the gate', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+
+    const res = await handler(post('/reports', { playgroundId, reason: 'spam', reporter: 'github:impostor' }));
+    expect(res.status).toBe(201);
+    const { report } = (await res.json()) as { report: { reporter: string } };
+    expect(report.reporter).toBe('tester');
+  });
+
+  it('rejects a report against an unknown playground loudly as 404', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const res = await handler(post('/reports', { playgroundId: 'ghost', reason: 'spam' }));
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('rejects a report with a missing reason as 400', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/reports', { playgroundId }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a report with an empty reason as 400', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/reports', { playgroundId, reason: '' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a whitespace-only reason as 400 at the boundary, independent of client trimming', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/reports', { playgroundId, reason: '   \n\t ' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('stores the trimmed reason, not the client-sent surrounding whitespace', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/reports', { playgroundId, reason: '  this is spam  ' }));
+    expect(res.status).toBe(201);
+    const { report } = (await res.json()) as { report: { reason: string } };
+    expect(report.reason).toBe('this is spam');
+  });
+
+  it('rejects a report with a missing playgroundId as 400', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const res = await handler(post('/reports', { reason: 'spam' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an over-long reason as 400 at the trust boundary', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/reports', { playgroundId, reason: 'x'.repeat(2001) }));
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /poll — a failed generation surfaces the error as data, not an empty file', () => {
   it('reports state failed with the surfaced message', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: { fail: 'skill crashed' } });
@@ -266,6 +351,7 @@ describe('the identity enforcement boundary — the write path is gated, the rea
     '/generations/continue',
     '/generations/fork',
     '/poll',
+    '/reports',
   ];
 
   it.each(writeRoutes)(

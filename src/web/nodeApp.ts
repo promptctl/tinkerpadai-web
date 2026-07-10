@@ -3,7 +3,7 @@ import { makeApp } from '../app.js';
 import type { App } from '../app.js';
 import { ProviderRegistry, cleanupTurn, makeTmuxDriver, makeTmuxProvider } from '../provider/index.js';
 import type { TmuxDriverConfig } from '../provider/index.js';
-import { makeFileArtifactStore, makeFileCatalog } from '../storage/index.js';
+import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore } from '../storage/index.js';
 import { makeMemorySessionStore } from '../api/index.js';
 import type { CookieSecurity, OAuthProvider } from '../api/index.js';
 
@@ -50,12 +50,14 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
 
   const store = makeFileArtifactStore(join(config.dataDir, 'artifacts'));
   const catalog = makeFileCatalog(join(config.dataDir, 'catalog.json'));
+  const reportStore = makeFileReportStore(join(config.dataDir, 'reports.json'));
   const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: NODE_SESSION_TTL_MS });
 
   return makeApp({
     registry,
     store,
     catalog,
+    reportStore,
     sessionStore,
     // cleanupTurn is tmux's per-turn disposer; injecting it here is what keeps the service
     // provider-agnostic — the service releases settled turns without knowing it is tmux.

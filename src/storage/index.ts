@@ -8,7 +8,7 @@ export { makeArtifactStore } from './artifactStore.js';
 export { makeMemoryArtifactStore } from './memoryArtifactStore.js';
 export { makeFileArtifactStore } from './fileArtifactStore.js';
 
-export type { Catalog, CatalogStore } from './catalog.js';
+export type { Catalog, CatalogReader, CatalogStore } from './catalog.js';
 export {
   makeCatalog,
   hydrateStoredDoc,
@@ -22,16 +22,25 @@ export {
 export { makeMemoryCatalog } from './memoryCatalog.js';
 export { makeFileCatalog } from './fileCatalog.js';
 
-export { VersionId, PlaygroundId, Tag, tryTag } from './types.js';
+export type { ReportStore, ReportStoreBackend } from './reportStore.js';
+export { makeReportStore, hydrateReportsDoc, EMPTY_REPORTS } from './reportStore.js';
+export { makeMemoryReportStore } from './memoryReportStore.js';
+export { makeFileReportStore } from './fileReportStore.js';
+export { makeD1ReportStore } from './d1ReportStore.js';
+
+export { VersionId, PlaygroundId, ReportId, Tag, tryTag } from './types.js';
 export type {
   CatalogDoc,
   ForkAttribution,
   Lineage,
   NewPlayground,
+  NewReport,
   ParentRef,
   Playground,
   PlaygroundSummary,
   Recipe,
+  Report,
+  ReportsDoc,
   SessionRecord,
   Tags,
   TurnRecord,

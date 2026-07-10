@@ -302,6 +302,23 @@ describe('renderPlayer', () => {
     expect(html).toContain('/generations/fork');
   });
 
+  // The report control is moderation's signal-collection affordance. It lives OUTSIDE the
+  // generation-gated action region so it works even when generation is off, carries its own
+  // playground id, and wires to the auth-gated POST /reports. The id is outside data, so it crosses
+  // the single enforcer into the attribute. [LAW:decomposition] [LAW:single-enforcer]
+  it('renders a report control wired to POST /reports, independent of the action region', () => {
+    const html = renderPlayer(view);
+    expect(html).toContain('id="report"');
+    expect(html).toContain('id="report-submit"');
+    expect(html).toContain('/reports');
+    // It carries its own playground id — and the id here is inert (the fixture's is 'abc'); the
+    // hostile-id escaping is proven by the prompt/recipe cases, since the SAME escapeHtml enforces it.
+    expect(html).toContain('data-playground-id="abc"');
+    // The report control is NOT nested in the generation-gated #actions footer — it must survive an
+    // empty registry. Its markup precedes the actions region in the document.
+    expect(html.indexOf('id="report"')).toBeLessThan(html.indexOf('id="actions"'));
+  });
+
   // The player carries the SAME fork attribution the commons does: a forked playground links
   // back to its parent in the chrome, a non-fork shows none — data flow, not a special case.
   it('attributes a forked playground to its parent in the chrome', () => {

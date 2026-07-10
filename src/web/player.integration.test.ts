@@ -5,8 +5,10 @@ import { Subject } from '../identity/index.js';
 import { ProviderId, ProviderRegistry, SessionId, TurnId } from '../provider/index.js';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { makeGenerationService } from '../api/generationService.js';
+import { makeReportService } from '../api/reportService.js';
 import { makeHttpHandler } from '../api/httpHandler.js';
 import { localIdentityResolver } from '../api/identity.js';
+import { makeMemoryReportStore } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
@@ -102,13 +104,14 @@ describe('remix action over the composed front door', () => {
     const registry = new ProviderRegistry();
     registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true }));
     const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => undefined });
+    const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
     const site = await serve({
       handler: makeSiteHandler({
         page: PAGE,
         catalog,
         contentOrigin: 'http://content.local',
         sessionHandler: async () => null,
-        apiHandler: makeHttpHandler(service, localIdentityResolver),
+        apiHandler: makeHttpHandler(service, reports, localIdentityResolver),
       }),
       port: 0,
     });

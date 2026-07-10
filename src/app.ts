@@ -1,9 +1,10 @@
 import { ProviderRegistry } from './provider/index.js';
 import type { SessionHandle } from './provider/index.js';
-import type { ArtifactStore, Catalog } from './storage/index.js';
+import type { ArtifactStore, Catalog, ReportStore } from './storage/index.js';
 import {
   makeGenerationService,
   makeHttpHandler,
+  makeReportService,
   makeSessionHandler,
   makeSessionResolver,
 } from './api/index.js';
@@ -47,6 +48,10 @@ export interface AppDeps {
   readonly store: ArtifactStore;
   // The single source of truth for what playgrounds exist: a JSON file on Node, D1 at the edge.
   readonly catalog: Catalog;
+  // Where moderation reports are persisted: a JSON file on Node, D1 at the edge. A separate seam from
+  // the catalog because a report is a private moderation signal, not part of the public commons — the
+  // same reason the store never crosses into the read path. [LAW:decomposition]
+  readonly reportStore: ReportStore;
   // Live sessions and their lifecycle: an in-memory map on Node (dies with the process, which is
   // correct for dev), a durable D1-backed store at the edge (survives Worker cold starts).
   readonly sessionStore: SessionStore;
@@ -69,9 +74,15 @@ export interface AppDeps {
 }
 
 export const makeApp = (deps: AppDeps): App => {
-  const { registry, store, catalog, sessionStore, disposeTurn, oauth, oauthCallbackUrl, cookieSecurity } = deps;
+  const { registry, store, catalog, reportStore, sessionStore, disposeTurn, oauth, oauthCallbackUrl, cookieSecurity } =
+    deps;
 
   const service = makeGenerationService({ registry, store, catalog, disposeTurn });
+
+  // The moderation report service — reads the catalog to prove a reported playground exists, then
+  // records the signal. It shares the catalog with generation (one source of truth for what exists)
+  // but persists to its own store. [LAW:decomposition] [LAW:one-source-of-truth]
+  const reports = makeReportService({ catalog, reports: reportStore });
 
   // THE IDENTITY MECHANISM, wired behind the seam. One store owns live sessions; the resolver reads a
   // request's cookie THROUGH that store to a principal (or null), and the same resolver both gates
@@ -86,7 +97,7 @@ export const makeApp = (deps: AppDeps): App => {
     service,
     store,
     catalog,
-    handler: makeHttpHandler(service, resolveIdentity),
+    handler: makeHttpHandler(service, reports, resolveIdentity),
     sessionHandler: makeSessionHandler({
       store: sessionStore,
       resolveIdentity,

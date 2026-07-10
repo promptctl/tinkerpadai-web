@@ -25,6 +25,24 @@ describe('parseGenerationPolicy', () => {
     });
   });
 
+  it('defaults timeoutMs while reading an explicit maxAttempts — the symmetric direction', () => {
+    expect(parseGenerationPolicy({ timeoutMs: undefined, maxAttempts: '3' })).toEqual({
+      timeoutMs: DEFAULT_GENERATION_POLICY.timeoutMs,
+      maxAttempts: 3,
+    });
+  });
+
+  it('rejects non-decimal notations Number would otherwise accept (hex, scientific)', () => {
+    // 0x10 → 16 and 1e3 → 1000 both pass Number.isSafeInteger; the decimal guard rejects them so an
+    // operator's typo is a loud failure, not a silently-wrong deadline. [LAW:no-silent-failure]
+    expect(() => parseGenerationPolicy({ timeoutMs: '0x10', maxAttempts: undefined })).toThrow(
+      'TINKERPAD_GENERATION_TIMEOUT_MS',
+    );
+    expect(() => parseGenerationPolicy({ timeoutMs: '1e3', maxAttempts: undefined })).toThrow(
+      'TINKERPAD_GENERATION_TIMEOUT_MS',
+    );
+  });
+
   it('fails loudly on a non-integer deadline rather than silently defaulting', () => {
     expect(() => parseGenerationPolicy({ timeoutMs: 'soon', maxAttempts: undefined })).toThrow(
       'TINKERPAD_GENERATION_TIMEOUT_MS',
@@ -62,5 +80,13 @@ describe('parseMaxGenerationAttempts', () => {
 
   it('fails loudly on an invalid value rather than silently defaulting', () => {
     expect(() => parseMaxGenerationAttempts('0')).toThrow('TINKERPAD_MAX_GENERATION_ATTEMPTS');
+  });
+
+  it('rejects a non-integer string, driving that path through this parser specifically', () => {
+    expect(() => parseMaxGenerationAttempts('soon')).toThrow('TINKERPAD_MAX_GENERATION_ATTEMPTS');
+  });
+
+  it('rejects a fractional value', () => {
+    expect(() => parseMaxGenerationAttempts('1.5')).toThrow('TINKERPAD_MAX_GENERATION_ATTEMPTS');
   });
 });

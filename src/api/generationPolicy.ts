@@ -34,8 +34,13 @@ export const DEFAULT_GENERATION_POLICY: GenerationPolicy = {
 // an UNSET value is the honest "use the default". [LAW:no-silent-failure]
 const parsePositiveInt = (value: string | undefined, name: string, min: number, fallback: number): number => {
   if (value === undefined) return fallback;
-  const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min) {
+  // A plain decimal integer only. Number() alone would silently accept 0x10 → 16, 0o10 → 8, 0b10 → 2,
+  // 1e3 → 1000 — all pass Number.isSafeInteger, so an operator's hex/scientific typo becomes a
+  // wrong-but-accepted value. Reject anything but base-ten digits at the boundary, then bound it (the
+  // isSafeInteger guard still catches a decimal string past MAX_SAFE_INTEGER). [LAW:no-silent-failure]
+  const trimmed = value.trim();
+  const n = Number(trimmed);
+  if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(n) || n < min) {
     throw new Error(`${name}=${JSON.stringify(value)} is not an integer >= ${min}`);
   }
   return n;

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { ArtifactStore } from './artifactStore.js';
 import { makeFileArtifactStore } from './fileArtifactStore.js';
 import { makeMemoryArtifactStore } from './memoryArtifactStore.js';
+import { MAX_ARTIFACT_BYTES } from './selfContainment.js';
 import { VersionId } from './types.js';
 
 // The provider-agnostic contract every ArtifactStore must satisfy, run against each
@@ -69,6 +70,19 @@ describe.each(ADAPTERS)('ArtifactStore contract: $name', ({ open }) => {
       // does so BEFORE writing — a refused artifact leaves no version behind to be mistaken for real.
       await expect(store.put({ html: '<script src="https://cdn.example.com/x.js"></script>' })).rejects.toThrow(
         /not self-contained.*https:\/\/cdn\.example\.com\/x\.js/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  it('refuses an oversize artifact at the seam — the size cap is gated through the same single enforcer', async () => {
+    const { store, close } = await open();
+    try {
+      // The oversize path is the enforcer's OTHER branch; every backend must surface it identically and
+      // before any write, exactly as the external-resource path does.
+      await expect(store.put({ html: 'a'.repeat(MAX_ARTIFACT_BYTES + 1) })).rejects.toThrow(
+        /not self-contained.*over the .* limit/,
       );
     } finally {
       await close();

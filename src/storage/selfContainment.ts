@@ -186,10 +186,16 @@ const srcAttr = (name: string): RegExp =>
 const SCRIPT_SRC = srcAttr('script');
 const IMG_SRC = srcAttr('img');
 const LINK_TAG = openTag('link');
+// A whole <script> element, opening tag through the first </script> — the boundary a browser also uses
+// (inline JS cannot contain a literal </script>). Used to BLANK script bodies before CSS extraction so
+// a <style> element written as a string literal inside JS is never mistaken for real CSS.
+const SCRIPT_BLOCK = new RegExp(`<script\\b${TAG_INNER}*>[\\s\\S]*?</script>`, 'gi');
 const STYLE_BLOCK = new RegExp(`<style\\b${TAG_INNER}*>([\\s\\S]*?)</style>`, 'gi');
-// A style="" / style='' attribute value, anchored to a real attribute boundary (see attrValue) so it
-// is not read out of `data-style`. Group [1]/[2] carry the inline CSS.
-const STYLE_ATTR = /(?<![-\w])style\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+// A style="" / style='' / style=unquoted attribute value, anchored to a real attribute boundary (see
+// attrValue) so it is not read out of `data-style`. All three legal quoting forms are covered — the
+// same shape attrValue reads — so an unquoted `style=background:url(…)` (legal, spaceless) is not a gap.
+// Groups [1]/[2]/[3] carry the inline CSS (double / single / unquoted). [LAW:one-type-per-behavior]
+const STYLE_ATTR = /(?<![-\w])style\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
 // The value-carrying groups differ per pattern (quoted / single-quoted / unquoted / url-wrapped).
 const CSS_IMPORT = /@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*))\s*\)|"([^"]*)"|'([^']*)')/gi;
 const CSS_URL = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*))\s*\)/gi;
@@ -230,9 +236,12 @@ interface CssRegion {
 
 // THE CSS DOMAIN, extracted. url()/@import are CSS constructs — they mean "load this" only inside CSS,
 // which in HTML is exactly <style> block contents and style="" attribute values. Scanning ONLY these,
-// never the whole file, is what keeps the CSS detectors out of <script> JS (where `new URL(...)` is a
-// URL parser, not a resource load) and out of body text. The detector's input is cut to match its
-// domain — the alternative (scanning the file) is a seam cut in the wrong place. [LAW:decomposition]
+// never the whole file, keeps the CSS detectors out of <script> JS (where `new URL(...)` is a URL
+// parser, not a resource load) and out of body text. The caller additionally blanks <script> bodies
+// before calling in (see findSelfContainmentViolation), so a <style> element written as a string
+// literal inside JS is not extracted either — together, CSS detectors never see <script> content. The
+// detector's input is cut to match its domain; scanning the whole file would be a seam cut in the wrong
+// place. [LAW:decomposition]
 const cssRegions = (html: string): CssRegion[] => {
   const regions: CssRegion[] = [];
   for (const m of html.matchAll(STYLE_BLOCK)) {
@@ -241,8 +250,11 @@ const cssRegions = (html: string): CssRegion[] => {
     regions.push({ text: inner.replace(/\/\*[\s\S]*?\*\//g, ''), offset });
   }
   for (const m of html.matchAll(STYLE_ATTR)) {
-    const value = m[1] ?? m[2] ?? '';
-    const offset = (m.index ?? 0) + (m[0].length - 1 - value.length);
+    const value = m[1] ?? m[2] ?? m[3] ?? '';
+    // A quoted value (groups 1/2) ends one char before the match end (the closing quote); an unquoted
+    // value (group 3) ends AT the match end. The offset points at the value's start either way.
+    const trailingQuote = m[3] === undefined ? 1 : 0;
+    const offset = (m.index ?? 0) + (m[0].length - trailingQuote - value.length);
     regions.push({ text: value, offset });
   }
   return regions;
@@ -288,11 +300,17 @@ export const findSelfContainmentViolation = (artifact: Artifact): SelfContainmen
   // runtime) are out of static reach — the CSP neutralizes those at runtime; this gate catches the
   // clear, common ingest violations. [FRAMING:representation]
   const scannable = artifact.html.replace(/<!--[\s\S]*?-->/g, '');
+  // For the CSS detectors ONLY, blank <script> bodies with equal-length whitespace: a <style> element
+  // written as a string literal inside JS is then not extracted as CSS, closing the one remaining path
+  // by which <script> content could reach a CSS detector. Length-preserving, so every hit index stays
+  // in the same coordinate space as the src/link/img scans over `scannable` — earliest-reporting stays
+  // exact. src/link/img still scan the intact `scannable` (they need the real <script src>).
+  const cssScannable = scannable.replace(SCRIPT_BLOCK, (m) => ' '.repeat(m.length));
   const hits = [
     ...scanSrc(scannable, 'script', SCRIPT_SRC),
     ...scanLinks(scannable),
     ...scanSrc(scannable, 'image', IMG_SRC),
-    ...scanCss(scannable),
+    ...scanCss(cssScannable),
   ];
   const earliest = hits.reduce<SinkHit | null>((best, hit) => (best === null || hit.index < best.index ? hit : best), null);
   if (earliest === null) return null;

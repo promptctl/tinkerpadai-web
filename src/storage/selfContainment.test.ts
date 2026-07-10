@@ -90,6 +90,10 @@ describe('self-containment: accepts artifacts that depend on nothing external', 
     expect(ok('<div style="background:url(data:image/gif;base64,R0lGOD)"></div>')).toBeNull();
   });
 
+  it('accepts a <style> element written as a string literal inside inline JS (not real CSS)', () => {
+    expect(ok('<script>const css = "<style>@import url(https://evil.example.com/x.css)</style>";</script>')).toBeNull();
+  });
+
   it('accepts the real href even when a data-href attribute precedes it (attribute-boundary read)', () => {
     expect(
       ok('<link rel="stylesheet" data-href="https://cdn.example.com/x.css" href="data:text/css,body{margin:0}">'),
@@ -169,6 +173,11 @@ describe('self-containment: rejects external resource references, naming the sin
 
   it('rejects an external url() in an inline style="" attribute', () => {
     const v = findSelfContainmentViolation({ html: '<div style="background:url(https://x.example.com/bg.png)"></div>' });
+    expect(v).toEqual({ kind: 'external-resource', sink: 'css-url', reference: 'https://x.example.com/bg.png' });
+  });
+
+  it('rejects an external url() in an UNQUOTED style attribute (all legal quoting forms covered)', () => {
+    const v = findSelfContainmentViolation({ html: '<div style=background:url(https://x.example.com/bg.png)></div>' });
     expect(v).toEqual({ kind: 'external-resource', sink: 'css-url', reference: 'https://x.example.com/bg.png' });
   });
 

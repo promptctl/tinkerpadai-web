@@ -44,6 +44,13 @@ describe('resolveServerConfig — two-origin port split', () => {
     expect(() => resolveServerConfig(import.meta.url)).toThrow(/5000[\s\S]*TINKERPAD_CONTENT_PORT/);
   });
 
+  it('throws when PORT=65535 derives an out-of-range content port (65536), never clamping onto it', () => {
+    // A clamp instead of a throw here would silently collapse both origins onto one port — the exact
+    // failure this PR guards. The derived-default guard fires before the collision check is reached.
+    process.env.PORT = '65535';
+    expect(() => resolveServerConfig(import.meta.url)).toThrow(/not a valid port number/);
+  });
+
   it('accepts explicitly distinct ports', () => {
     process.env.PORT = '4000';
     process.env.TINKERPAD_CONTENT_PORT = '9999';

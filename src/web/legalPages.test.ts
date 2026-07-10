@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CONTACT_EMAIL, GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
+import { COPYRIGHT_DOC, CONTACT_EMAIL, GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
 
 // The legal pages' contract is their MEANING, not their markup: the ground rules must tell the
 // honest "no company, no contract" truth and still carry the disclaimer that protects the operator;
@@ -63,5 +63,36 @@ describe('PRIVACY_DOC — grounded in what the code collects', () => {
 
   it('routes data and takedown requests to the one contact address', () => {
     expect(html).toContain(`mailto:${CONTACT_EMAIL}`);
+  });
+});
+
+describe('COPYRIGHT_DOC — takedown-on-notice, without a fabricated safe harbor', () => {
+  const html = renderLegalDoc(COPYRIGHT_DOC);
+
+  it('documents the elements of a valid takedown notice', () => {
+    expect(html).toContain('under penalty of perjury');
+    expect(html).toContain('good faith');
+    expect(html).toContain('electronic signature');
+  });
+
+  it('offers a real re-review path for wrongful removals', () => {
+    expect(html).toContain('think it was a mistake');
+    expect(html).toContain('put it back if the takedown was wrong');
+  });
+
+  it('removes repeat infringers, in line with the ground rules', () => {
+    expect(html).toContain('Repeat infringers');
+  });
+
+  it('routes every copyright notice to the one contact address, never a second enforcer', () => {
+    expect(html).toContain(`mailto:${CONTACT_EMAIL}`);
+  });
+
+  // The load-bearing honesty of this page is what it does NOT claim: the operator is anonymous, so
+  // there is no §512 safe harbor and no registered designated agent to name. Asserting their absence
+  // keeps a future edit from quietly reintroducing a claim that would be false. [FRAMING:representation]
+  it('claims no DMCA safe harbor and names no registered agent', () => {
+    expect(html.toLowerCase()).not.toContain('safe harbor');
+    expect(html.toLowerCase()).not.toContain('designated agent');
   });
 });

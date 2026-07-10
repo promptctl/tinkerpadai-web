@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
 import { parseAdminSubjects } from '../app.js';
-import { makeGitHubOAuthProvider } from '../api/index.js';
+import { makeGitHubOAuthProvider, parseQuotaLimits } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
@@ -49,6 +49,12 @@ const main = async (): Promise<void> => {
     // The moderation admin allowlist, from the environment — a comma-separated list of subjects
     // (github:<id>). Absent means no admins, so the console is reachable by no one until configured.
     adminSubjects: parseAdminSubjects(process.env.TINKERPAD_ADMIN_SUBJECTS),
+    // The per-identity generation caps, from the environment — a set-but-invalid value fails boot
+    // loudly; absent falls back to the documented defaults.
+    quotaLimits: parseQuotaLimits({
+      maxConcurrent: process.env.TINKERPAD_MAX_CONCURRENT_GENERATIONS,
+      maxDaily: process.env.TINKERPAD_MAX_DAILY_GENERATIONS,
+    }),
   });
 
   // Bind the content origin FIRST: the player's iframe src needs its concrete URL, so that

@@ -76,6 +76,21 @@ describe('tmux driver — a turn world is the workdir, reconstructed from disk',
     await expect(driver.poll(handle)).rejects.toThrow(/unknown turn/);
   });
 
+  it('a corrupt (wrong-shape) turn state fails LOUDLY, never drifts into running-forever', async () => {
+    // turn.json round-trips through the filesystem; a torn write could parse to the wrong shape. An object
+    // with no deadline would make the timeout check `Date.now() > undefined` always false and hang the turn
+    // in 'running' with no error — the same silent failure absence already guards against. Poll must reject.
+    // [LAW:no-silent-failure]
+    const driver = makeTmuxDriver({ pollIntervalMs: 1, timeoutMs: 60_000 });
+    const handle = handleFor(`session-${randomUUID()}`);
+    const dir = join(WORKDIR_ROOT, handle.sessionId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'turn.json'), JSON.stringify({ reseeded: false }), 'utf8'); // deadline missing
+    staged.push(dir);
+
+    await expect(driver.poll(handle)).rejects.toThrow(/corrupt turn state/);
+  });
+
   it('the timeout deadline is read from the workdir, not an in-memory clock capture', async () => {
     // A staged deadline already in the past, no exit sentinel: poll must map that on-disk deadline to a
     // loud timeout failure — proving the deadline the driver enforces is the one persisted at launch.

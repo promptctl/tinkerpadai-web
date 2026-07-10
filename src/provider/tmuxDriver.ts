@@ -147,18 +147,30 @@ const dirExists = async (dir: string): Promise<boolean> => {
 const writeTurnState = (dir: string, state: TurnState): Promise<void> =>
   writeFile(join(dir, TURN_FILE), JSON.stringify(state), 'utf8');
 
+// Assert a parsed value has the turn-state shape. turn.json round-trips through the filesystem, which a
+// crash or torn write can corrupt; a corrupt read that happened to parse to the wrong shape (an object
+// with an undefined deadline) would make `Date.now() > deadline` always false and drift the turn into the
+// exact silent 'running-forever' this design exists to prevent. So the shape is checked at the read
+// boundary and a violation throws, never trusted through a bare cast. (Malformed JSON already throws from
+// JSON.parse; this covers the valid-JSON-wrong-shape half.) [LAW:no-silent-failure] [LAW:types-are-the-program]
+const isTurnState = (value: unknown): value is TurnState =>
+  typeof value === 'object' &&
+  value !== null &&
+  typeof (value as TurnState).deadline === 'number' &&
+  typeof (value as TurnState).reseeded === 'boolean';
+
 // Reconstruct a turn's world from disk. dir and session are pure functions of the handle; deadline and
 // reseeded are read from the turn's on-disk state. A missing state file means the turn never ran here or
-// its workdir was already reaped (by cleanupTurn or the idle GC) — a loud, honest failure, NOT a silent
-// 'running' that drifts to a spurious timeout the way an in-memory map outliving its workdir did (ppu.5).
-// The state is data this module wrote itself, so it is trusted like the exit sentinel is, not re-validated
-// as untrusted input. [LAW:one-source-of-truth] [LAW:no-silent-failure]
+// its workdir was already reaped (by cleanupTurn or the idle GC); a present-but-corrupt one means a torn
+// write. Both are loud, honest failures, NOT a silent 'running' that drifts to a spurious timeout the way
+// an in-memory map outliving its workdir did (ppu.5). [LAW:one-source-of-truth] [LAW:no-silent-failure]
 const worldOf = async (handle: SessionHandle): Promise<TurnWorld> => {
   const dir = dirOf(handle);
   const raw = await readOrNull(join(dir, TURN_FILE));
   if (raw === null) throw new Error(`unknown turn: ${handle.turnId}`);
-  const { deadline, reseeded } = JSON.parse(raw) as TurnState;
-  return { dir, session: sessionName(handle), deadline, reseeded };
+  const parsed: unknown = JSON.parse(raw);
+  if (!isTurnState(parsed)) throw new Error(`corrupt turn state for ${handle.turnId}: ${raw}`);
+  return { dir, session: sessionName(handle), deadline: parsed.deadline, reseeded: parsed.reseeded };
 };
 
 // The one closing instruction every turn's prompt ends with. EVERY generation this driver

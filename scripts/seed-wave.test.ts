@@ -301,7 +301,10 @@ describe('resolveConfig', () => {
     expect(config.pollCeilingMs).toBe(20 * 60 * 1000 * 3 * 1.5);
   });
 
-  it('fails loudly on an invalid policy env, exactly as the server boot does', () => {
+  it('fails loudly on an invalid policy env — as a UsageError, so the entry exits 2 (config error)', () => {
+    // The TYPE is the contract: a config-validation failure is a UsageError (exit 2), never a plain
+    // Error the entry would misclassify as a runtime fault (exit 1). The message stays diagnosable.
+    expect(() => resolveConfig(argv('m.json'), { TINKERPAD_GENERATION_TIMEOUT_MS: 'soon' })).toThrow(UsageError);
     expect(() => resolveConfig(argv('m.json'), { TINKERPAD_GENERATION_TIMEOUT_MS: 'soon' })).toThrow(
       'TINKERPAD_GENERATION_TIMEOUT_MS',
     );

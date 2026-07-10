@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_PORT, FRONT_DOOR_HOST } from '../src/web/frontDoorDefaults.js';
 import { parseGenerationPolicy } from '../src/api/index.js';
+import type { GenerationPolicy } from '../src/api/index.js';
 
 // THE SEEDING DRIVER CORE: turn a briefs manifest into commons playgrounds by driving
 // the real public write path — loopback login, POST /generations, POST /poll — exactly
@@ -414,13 +415,21 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   }
   // The liveness ceiling, derived from the runtime generation policy read through the SAME
   // parseGenerationPolicy seam the server uses — so a set-but-invalid TINKERPAD_GENERATION_TIMEOUT_MS /
-  // _MAX_GENERATION_ATTEMPTS fails the seeder loudly here, exactly as it fails the server's boot, and
-  // a shared env yields a ceiling that matches the server's worst case (attempts × deadline × margin).
-  // [LAW:one-source-of-truth] [LAW:no-silent-failure]
-  const policy = parseGenerationPolicy({
-    timeoutMs: env.TINKERPAD_GENERATION_TIMEOUT_MS,
-    maxAttempts: env.TINKERPAD_MAX_GENERATION_ATTEMPTS,
-  });
+  // _MAX_GENERATION_ATTEMPTS fails the seeder loudly here, and a shared env yields a ceiling that
+  // matches the server's worst case (attempts × deadline × margin). parseGenerationPolicy throws a
+  // plain Error; resolveConfig's contract is that a config-validation failure is a UsageError (the
+  // entry maps its TYPE to exit 2 — a bad invocation — vs exit 1 for a runtime fault), so its message
+  // is rethrown as one, exactly as the concurrency/URL validations above.
+  // [LAW:one-source-of-truth] [LAW:types-are-the-program] [LAW:no-silent-failure]
+  let policy: GenerationPolicy;
+  try {
+    policy = parseGenerationPolicy({
+      timeoutMs: env.TINKERPAD_GENERATION_TIMEOUT_MS,
+      maxAttempts: env.TINKERPAD_MAX_GENERATION_ATTEMPTS,
+    });
+  } catch (error) {
+    throw new UsageError(error instanceof Error ? error.message : String(error));
+  }
   const pollCeilingMs = policy.timeoutMs * policy.maxAttempts * POLL_CEILING_MARGIN;
   return { manifestPath, concurrency, base, pollCeilingMs };
 };

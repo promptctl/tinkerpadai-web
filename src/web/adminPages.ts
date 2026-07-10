@@ -14,6 +14,11 @@ import { renderPageShell, siteNav } from './pageShell.js';
 
 // The playground-id link into the player, so a reviewer can open a still-listed playground to judge
 // it. (An already-unlisted one shows the "removed" notice there — the reviewer relists to inspect.)
+// The id crosses TWO boundaries here, the same idiom playgroundPages.playHref documents: URL-encode
+// for the query slot, then html-escape for the attribute. So the escapeHtml is not redundant with the
+// encodeURIComponent — it is the one attribute-boundary enforcer applied to EVERY value entering an
+// attribute (the same one actionForm applies to the id in its hidden input, which needs no
+// URL-encoding because there the id is a plain value, not a URL). [LAW:single-enforcer]
 const playHref = (id: PlaygroundId): string => `/play?id=${escapeHtml(encodeURIComponent(id))}`;
 
 // The visibility badge — the current listing rendered as a labelled pill, so the reviewer sees at a

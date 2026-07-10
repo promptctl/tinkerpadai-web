@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertDistinctOriginHosts } from './originGuard.js';
+import { appOriginOf, assertDistinctOriginHosts } from './originGuard.js';
 
 // The two-origin distinctness invariant, asserted as behavior: distinct hostnames pass, a shared
 // hostname is rejected loudly with a message that names the collapse and the remedy. Distinctness is
@@ -77,6 +77,32 @@ describe('assertDistinctOriginHosts', () => {
   it('rejects a non-http(s) scheme even when it carries a host (e.g. ftp)', () => {
     expect(() => assertDistinctOriginHosts('https://app.tinkerpad.test', 'ftp://content.tinkerpad.test')).toThrow(
       rejectedAsBadOrigin,
+    );
+  });
+});
+
+// appOriginOf derives the app origin (for the content CSP's frame-ancestors) from the OAuth callback
+// URL — the canonical app-origin source — dropping the path, keeping a non-default port, and failing
+// loudly on anything that is not a real web origin. Asserted as behavior. [LAW:behavior-not-structure]
+describe('appOriginOf', () => {
+  it('reduces the callback URL to its bare origin — scheme + host, path dropped', () => {
+    expect(appOriginOf('https://app.tinkerpad.test/session/callback')).toBe('https://app.tinkerpad.test');
+  });
+
+  it('keeps a non-default port so the framing source matches the app the browser sees', () => {
+    // The Node loopback runs the app on an explicit port; frame-ancestors must carry it or the browser
+    // would not match the framing document's origin.
+    expect(appOriginOf('http://localhost:5173/session/callback')).toBe('http://localhost:5173');
+  });
+
+  it('rejects a malformed callback URL with a named config error, never a bare Invalid URL', () => {
+    expect(() => appOriginOf('app.tinkerpad.test/callback')).toThrow(/The OAuth callback URL must be a valid absolute URL/);
+  });
+
+  it('rejects a non-web scheme with no hostname rather than yielding an empty framing source', () => {
+    // An empty frame-ancestors source would silently permit no framing — a data: callback must fail loud.
+    expect(() => appOriginOf('data:text/html,hello')).toThrow(
+      /must be (a valid absolute URL|an http\(s\) URL with a hostname)/,
     );
   });
 });

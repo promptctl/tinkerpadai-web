@@ -24,12 +24,17 @@ export interface FrontDoorRouterDeps {
   // the host a request is matched against and the origin the player links to cannot drift apart.
   // [LAW:one-source-of-truth]
   readonly contentOrigin: string;
+  // The app's own origin (scheme://host[:port]) — the ONE origin allowed to frame a playground, scoped
+  // into the content CSP's frame-ancestors. The entry derives it from the OAuth callback URL (appOriginOf)
+  // and passes it here, exactly as it passes contentOrigin — a composition-root value, not something the
+  // router computes. [LAW:decomposition]
+  readonly appOrigin: string;
 }
 
 export const makeFrontDoorRouter = (
   deps: FrontDoorRouterDeps,
 ): ((request: Request) => Promise<Response>) => {
-  const { app, page, contentOrigin } = deps;
+  const { app, page, contentOrigin, appOrigin } = deps;
   const contentHost = new URL(contentOrigin).host;
   const site = makeSiteHandler({
     page,
@@ -40,7 +45,7 @@ export const makeFrontDoorRouter = (
     reviewService: app.reviewService,
     isAdminRequest: app.isAdminRequest,
   });
-  const content = makeContentHandler({ catalog: app.catalog, store: app.store });
+  const content = makeContentHandler({ catalog: app.catalog, store: app.store, appOrigin });
   return (request: Request): Promise<Response> => {
     const host = new URL(request.url).host;
     return host === contentHost ? content(request) : site(request);

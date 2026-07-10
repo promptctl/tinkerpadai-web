@@ -47,7 +47,7 @@ const makeMemoryApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     cookieSecurity: { secure: true },
     adminSubjects: new Set(),
   });
-  const router = makeFrontDoorRouter({ app, page: '<!doctype html><title>front door</title>', contentOrigin: CONTENT_ORIGIN });
+  const router = makeFrontDoorRouter({ app, page: '<!doctype html><title>front door</title>', contentOrigin: CONTENT_ORIGIN, appOrigin: APP_ORIGIN });
   return { catalog, store, router };
 };
 

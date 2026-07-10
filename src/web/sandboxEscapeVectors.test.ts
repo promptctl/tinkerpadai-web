@@ -77,6 +77,7 @@ const makeSecureApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     app,
     page: '<!doctype html><title>front door</title>front door',
     contentOrigin: CONTENT_ORIGIN,
+    appOrigin: APP_ORIGIN,
   });
   return { catalog, store, router };
 };
@@ -107,8 +108,13 @@ const expectSealedCsp = (res: Response): void => {
   expect(csp).toContain("connect-src 'none'"); // no fetch/XHR/WebSocket/beacon exfil
   expect(csp).toContain("form-action 'none'"); // no form post-out
   expect(csp).toContain("base-uri 'none'"); // no <base> hijack
-  expect(csp).not.toContain("'self'"); // no host may be re-permitted
-  expect(csp).not.toContain('http'); // no external origin, ever
+  // Only the app's player may frame a playground (R4) — a third party cannot hotlink/embed it. The app
+  // origin appears ONLY here, so strip this framing-control directive before asserting no host leaks
+  // into a RESOURCE-load directive (the original network-denying guarantee, now stated precisely).
+  expect(csp).toContain(`frame-ancestors ${APP_ORIGIN}`);
+  const withoutFrameAncestors = csp.replace(`frame-ancestors ${APP_ORIGIN}`, '');
+  expect(withoutFrameAncestors).not.toContain("'self'"); // no host may be re-permitted for a load
+  expect(withoutFrameAncestors).not.toContain('http'); // no external origin for any subresource, ever
   expect(res.headers.get('x-content-type-options')).toBe('nosniff');
 };
 
@@ -126,6 +132,9 @@ describe('sandbox escape vectors — a hostile playground demonstrably fails eac
 
     const iframe = /<iframe[\s\S]*?<\/iframe>/.exec(body)?.[0] ?? '';
     expect(iframe).toContain('sandbox="allow-scripts"');
+    // R4: an explicit deny-all permissions policy — no powerful feature is delegated to the frame.
+    // Belt-and-suspenders over the opaque sandbox, so it survives a future sandbox-attribute change.
+    expect(iframe).toContain('allow=""');
     // The load-bearing ABSENCES — each token would reopen a vector.
     expect(iframe).not.toContain('allow-same-origin'); // V1: opaque origin, no reach to app/parent
     expect(iframe).not.toContain('allow-top-navigation'); // V3: no phishing redirect of the top frame

@@ -24,6 +24,8 @@ import type { RunningServer } from './server.js';
 
 const RAW_HTML = '<!doctype html><html><body><h1>hello</h1><script>void 0</script></body></html>';
 const PAGE = '<!doctype html><title>front door</title>';
+// The app origin scoped into the content CSP's frame-ancestors — a distinct host from the content origin.
+const APP_ORIGIN = 'https://app.tinkerpad.test';
 
 const seed = async (catalog: Catalog, store: ArtifactStore): Promise<PlaygroundId> => {
   const version = await store.put({ html: RAW_HTML });
@@ -49,7 +51,7 @@ describe('commons + sandboxed player over two real origins', () => {
     const store = makeMemoryArtifactStore();
     const id = await seed(catalog, store);
 
-    const content = await serve({ handler: makeContentHandler({ catalog, store }), port: 0 });
+    const content = await serve({ handler: makeContentHandler({ catalog, store, appOrigin: APP_ORIGIN }), port: 0 });
     servers.push(content);
 
     const apiHandler = async (): Promise<Response> => new Response('nope', { status: 404 });
@@ -77,17 +79,21 @@ describe('commons + sandboxed player over two real origins', () => {
     // Authorship is projected over the real catalog onto the commons chrome, end to end.
     expect(commons).toContain('by ada');
 
-    // The player frames the foreign content origin in an allow-scripts (NOT same-origin) sandbox.
+    // The player frames the foreign content origin in an allow-scripts (NOT same-origin) sandbox, with
+    // an explicit deny-all permissions policy.
     const player = await (await fetch(`${site.url}/play?id=${encodeURIComponent(id)}`)).text();
     expect(player).toContain('sandbox="allow-scripts"');
     expect(player).not.toContain('allow-same-origin');
+    expect(player).toContain('allow=""');
     const expectedSrc = `${content.url}/?id=${encodeURIComponent(id)}`;
     expect(player).toContain(`src="${expectedSrc}"`);
 
-    // Following that src to the content origin yields the raw html under the strict CSP.
+    // Following that src to the content origin yields the raw html under the strict CSP, scoped so only
+    // the app origin may frame it.
     const framed = await fetch(expectedSrc);
     expect(framed.status).toBe(200);
     expect(framed.headers.get('content-security-policy')).toContain("connect-src 'none'");
+    expect(framed.headers.get('content-security-policy')).toContain(`frame-ancestors ${APP_ORIGIN}`);
     expect(await framed.text()).toBe(RAW_HTML);
   });
 });

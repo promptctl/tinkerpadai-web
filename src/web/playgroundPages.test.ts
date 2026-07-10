@@ -278,6 +278,8 @@ describe('renderPlayer', () => {
     expect(html).toContain('src="http://c.local/?id=abc"');
     expect(html).toContain('sandbox="allow-scripts"');
     expect(html).not.toContain('allow-same-origin');
+    // An explicit deny-all permissions policy — no powerful feature delegated to the sandboxed frame.
+    expect(html).toContain('allow=""');
   });
 
   // The action region wires both follow-ups to the SAME generation API (continue/fork + the

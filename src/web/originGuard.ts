@@ -14,14 +14,15 @@
 // there is a distinct-PORT invariant enforced where the ports are resolved, not a hostname comparison
 // this function could meaningfully make. [LAW:decomposition]
 
-// Parse an origin to its hostname, failing with a NAMED error for anything that is not a real web
-// origin. This guard is the first place the edge parses these config values, so a bad one must surface
-// as a clear config error naming the culprit — not a bare "Invalid URL", and never a SILENT pass. The
+// Parse a config value to a real web origin, failing with a NAMED error for anything that is not one.
+// This guard is the first place the edge parses these config values, so a bad one must surface as a
+// clear config error naming the culprit — not a bare "Invalid URL", and never a SILENT pass. The
 // strongest true shape for a two-origin web deployment is an http(s) URL with a non-empty hostname:
 // schemes like data:/javascript:/file: parse without throwing but yield an empty hostname, which would
-// otherwise slip past the distinctness check (an empty host differs from any real one). Reject them.
+// otherwise slip past the distinctness check (an empty host differs from any real one) or, worse,
+// become an empty `frame-ancestors` source that silently permits no framing. Reject them.
 // [LAW:no-silent-failure] [LAW:types-are-the-program]
-const hostnameOf = (role: string, origin: string): string => {
+const parseWebOrigin = (role: string, origin: string): URL => {
   let url: URL;
   try {
     url = new URL(origin);
@@ -31,8 +32,21 @@ const hostnameOf = (role: string, origin: string): string => {
   if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '') {
     throw new Error(`${role} must be an http(s) URL with a hostname (e.g. https://host.example), but got "${origin}".`);
   }
-  return url.hostname;
+  return url;
 };
+
+const hostnameOf = (role: string, origin: string): string => parseWebOrigin(role, origin).hostname;
+
+// The app origin (scheme://host[:port]), derived from the OAuth callback URL — the CANONICAL app-origin
+// source, since the callback is registered on the app origin by construction (the login CSRF cookie must
+// be present on it). There is NO standalone app-origin config value; minting one would be a second source
+// of truth that could drift from the callback. The content CSP's `frame-ancestors` consumes this so only
+// the app's player may frame a playground, and the same http(s)+hostname validation applies — a malformed
+// callback URL fails LOUDLY and named here rather than yielding an empty framing source that permits no
+// one. `URL.origin` serializes to a valid `frame-ancestors` source (a non-default port is kept, the
+// default port dropped). [LAW:one-source-of-truth] [LAW:no-silent-failure]
+export const appOriginOf = (oauthCallbackUrl: string): string =>
+  parseWebOrigin('The OAuth callback URL', oauthCallbackUrl).origin;
 
 export const assertDistinctOriginHosts = (appOrigin: string, contentOrigin: string): void => {
   // hostname, not host: browser cookies — the __Host- session cookie especially — are scoped to the

@@ -8,7 +8,7 @@ import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
 import { makeD1ReportStore } from '../storage/d1ReportStore.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
-import { assertDistinctOriginHosts } from './originGuard.js';
+import { appOriginOf, assertDistinctOriginHosts } from './originGuard.js';
 
 // The type of the assembled request handler, memoized per isolate below.
 type Handler = (request: Request) => Promise<Response>;
@@ -178,7 +178,9 @@ const handlerFor = (env: Env): Handler => {
     adminSubjects: parseAdminSubjects(env.TINKERPAD_ADMIN_SUBJECTS),
   });
 
-  const handler = makeFrontDoorRouter({ app, page, contentOrigin });
+  // The app origin scoped into the content CSP's frame-ancestors — derived from the OAuth callback URL,
+  // the canonical app-origin source (no standalone app-origin config exists). [LAW:one-source-of-truth]
+  const handler = makeFrontDoorRouter({ app, page, contentOrigin, appOrigin: appOriginOf(oauthCallbackUrl) });
   cached = { env, handler };
   return handler;
 };

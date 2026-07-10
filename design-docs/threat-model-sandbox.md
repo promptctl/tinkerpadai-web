@@ -147,9 +147,16 @@ side, which is backwards for the origin that actually holds the asset.
   agnostic runtime edge, so no branch escapes the seal. Headers: `Content-Security-Policy` with
   `frame-ancestors 'self'` + `base-uri 'none'` + `form-action 'self'` + `object-src 'none'`,
   `X-Frame-Options: SAMEORIGIN` (the legacy twin closing clickjacking of login/player),
-  `X-Content-Type-Options: nosniff`, and `Referrer-Policy: same-origin`. A full `script-src` is
-  deliberately deferred — the app runs inline scripts (index.html, player), so locking it needs
-  per-script hashes/nonces and is tracked separately, not landed half-done.
+  `X-Content-Type-Options: nosniff`, and `Referrer-Policy: same-origin`. The `script-src` backstop —
+  deferred at `bci.3` because the app runs inline scripts — landed in `tinkerpadai-sandbox-bci.6`: a
+  hash-based `script-src` (SHA-256 of each of the app's static inline scripts — the derived inventory
+  in `appCsp.ts`, no host source and no `'unsafe-inline'`), derived once from the served front-door
+  page and applied by the
+  same `harden()` seal. Hashes, not a nonce, because every app inline script is static — a hash is a
+  pure function of the script's bytes, so the policy and the markup share one source of truth with no
+  per-response state to thread. So even if a V6 escaping callsite regressed and injected markup, an
+  injected inline `<script>` has a different body → a different hash → the browser refuses it, on the
+  origin that holds the `__Host-` session credential.
 - **R2 — No guard that content origin ≠ app origin. ✅ CLOSED (`tinkerpadai-sandbox-bci.4`).**
   A composition-time invariant now rejects a config where the two origins share a **hostname** (the
   granularity that matters: cookies — the `__Host-` session especially — are hostname-scoped and ignore
@@ -194,7 +201,10 @@ The invariants a future change must not silently regress (each has a red test):
    `X-Frame-Options` (anti-clickjacking), `base-uri`/`form-action`/`object-src`, `nosniff`, and
    `Referrer-Policy` — on *every* branch: the delegated login page and the error 500 included, since
    `siteHandler` is total. Removing the seal, letting a branch bypass it, or making the handler
-   throw past it re-opens R1.
+   throw past it re-opens R1. The seal's `script-src` admits only the SHA-256 of the app's own inline
+   scripts (no `'unsafe-inline'`, no host source) derived from the served page in `appCsp.ts`; adding
+   `'unsafe-inline'`, a host source, or leaving an app inline script out of the derived inventory
+   re-opens R1's injected-inline-script half (or breaks the app — loudly, as a console violation).
 7. The content origin and the app origin stay distinct origins — different hostnames at the edge,
    different ports on Node — asserted at composition time, not left to correct configuration. The edge
    rejects a same-hostname `TINKERPAD_CONTENT_ORIGIN` (`assertDistinctOriginHosts`); Node, where both

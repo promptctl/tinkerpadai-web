@@ -6,11 +6,12 @@ import {
   makeGenerationService,
   makeHttpHandler,
   makeMemorySessionStore,
+  makeReportService,
   makeSessionHandler,
   makeSessionResolver,
 } from '../api/index.js';
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
-import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { serve } from './server.js';
 import type { RunningServer } from './server.js';
@@ -39,6 +40,7 @@ const startFrontDoor = async (): Promise<RunningServer> => {
     catalog,
     disposeTurn: async () => undefined,
   });
+  const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
 
   const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60 * 60 * 1000 });
   const security = { secure: false } as const;
@@ -54,7 +56,7 @@ const startFrontDoor = async (): Promise<RunningServer> => {
       callbackUrl: 'http://app.local/session/callback',
       security,
     }),
-    apiHandler: makeHttpHandler(service, resolveIdentity),
+    apiHandler: makeHttpHandler(service, reports, resolveIdentity),
   });
   return serve({ handler, port: 0 });
 };
@@ -120,6 +122,49 @@ describe('the generation gate over the composed front door', () => {
     const status = (await poll.json()) as { state: string; playgroundId?: string };
     expect(status.state).toBe('ready');
     expect(typeof status.playgroundId).toBe('string');
+  });
+
+  it('gates a report until login, then records it against the real session identity', async () => {
+    running = await startFrontDoor();
+    const base = running.url;
+
+    const report = (playgroundId: string, cookie?: string): Promise<Response> =>
+      fetch(`${base}/reports`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+        body: JSON.stringify({ playgroundId, reason: 'this is spam' }),
+      });
+
+    // Log in and mint a real playground to report (generation is itself gated, so this rides the
+    // authenticated path end to end).
+    const cookie = await completeLogin(base);
+    const submit = await fetch(`${base}/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ providerId: 'fake', brief: { description: 'a tiny counter' } }),
+    });
+    const { handle } = (await submit.json()) as { handle: unknown };
+    const poll = await fetch(`${base}/poll`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ handle }),
+    });
+    const playgroundId = ((await poll.json()) as { playgroundId: string }).playgroundId;
+
+    // 1. Unauthenticated report → 401 at the SAME gate the generation write uses.
+    expect((await report(playgroundId)).status).toBe(401);
+
+    // 2. The SAME report, carrying the cookie → 201, and the recorded reporter is the session
+    // subject resolved by the gate — not any client-supplied value. This is the whole path over a
+    // real socket: cookie → resolver → gate → service → store.
+    const recorded = await report(playgroundId, cookie);
+    expect(recorded.status).toBe(201);
+    const { report: signal } = (await recorded.json()) as {
+      report: { playgroundId: string; reporter: string; reason: string };
+    };
+    expect(signal.playgroundId).toBe(playgroundId);
+    expect(signal.reporter).toBe('github:7');
+    expect(signal.reason).toBe('this is spam');
   });
 
   it('rejects a forged callback state as 400 and grants no usable session cookie', async () => {

@@ -25,7 +25,18 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_expires_at ON sessions (expires_at);
 
+-- Moderation reports as a single-row JSON document (src/storage/d1ReportStore.ts). The
+-- ReportStoreBackend seam is document-oriented (read/write the whole doc), so the faithful backing is
+-- one row whose `doc` column holds the serialized ReportsDoc — the sibling of the catalog row above.
+-- `id` is fixed to 1 by the adapter; the CHECK makes a second row unrepresentable rather than merely
+-- unused.
+CREATE TABLE reports (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  doc TEXT NOT NULL
+);
+
 -- Rollback (manual, forward-only tooling) — run to reverse this migration. DROP INDEX is implied by
 -- DROP TABLE, listed only for clarity:
+--   wrangler d1 execute tinkerpad --command "DROP TABLE IF EXISTS reports;"
 --   wrangler d1 execute tinkerpad --command "DROP TABLE IF EXISTS sessions;"
 --   wrangler d1 execute tinkerpad --command "DROP TABLE IF EXISTS catalog;"

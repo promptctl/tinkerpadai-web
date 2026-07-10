@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { makeApp } from '../app.js';
 import { ProviderRegistry, ProviderId, SessionId, TurnId } from '../provider/index.js';
 import type { SessionHandle } from '../provider/index.js';
-import { makeMemoryArtifactStore, makeMemoryCatalog, Tag } from '../storage/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore, Tag } from '../storage/index.js';
 import type { ArtifactStore, Catalog } from '../storage/index.js';
 import { makeMemorySessionStore, Subject } from '../api/index.js';
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
@@ -60,6 +60,7 @@ const makeSecureApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     registry: new ProviderRegistry(),
     store,
     catalog,
+    reportStore: makeMemoryReportStore(),
     sessionStore: makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60_000 }),
     disposeTurn: async () => undefined,
     oauth: makeFakeOAuthProvider({ subject: Subject('github:1') }),

@@ -60,6 +60,26 @@ ${steps}
 </details>`;
 };
 
+// The report control — the moderation "flag this" affordance, a collapsed panel carrying a reason
+// field. It lives in the player-head (always visible), DELIBERATELY NOT in the generation-gated
+// #actions footer: reporting an existing playground is a read-path concern that must work even when
+// generation is off (an empty registry hides the refine/remix bar, but never the report control).
+// The form carries its own `data-playground-id`, derived from the same view.id the page frames — one
+// authoritative value rendered into two self-contained forms, so the client reads it locally without
+// reaching into the refine form's dataset. The id crosses the single enforcer into the attribute like
+// every outside value on this trusted origin; the submission itself is auth-gated server-side (POST
+// /reports), so this is just the affordance. [LAW:decomposition] [LAW:single-enforcer]
+const reportControl = (id: PlaygroundId): string =>
+  `<details class="report">
+  <summary>⚑ Report</summary>
+  <form id="report" data-playground-id="${escapeHtml(id)}">
+    <label for="report-reason">Why are you reporting this playground?</label>
+    <textarea id="report-reason" required placeholder="Tell us what's wrong — harmful, illegal, spam, or shouldn't be here."></textarea>
+    <button type="submit" id="report-submit">Send report</button>
+    <div class="refine-note" id="report-note" role="status" aria-live="polite"></div>
+  </form>
+</details>`;
+
 // The tag chips — a playground's normalized topic tags as a small pill row, shared by the commons
 // card and the player chrome so tags read identically wherever a playground appears (the same
 // one-source discipline as the byline and step count). An empty tag list is the empty string (a
@@ -283,6 +303,10 @@ const PLAYER_SCRIPT = `
   const remixBar = $('remix-bar');
   const remixBtn = $('remix-submit');
   const remixNote = $('remix-note');
+  const reportForm = $('report');
+  const reportInput = $('report-reason');
+  const reportBtn = $('report-submit');
+  const reportNote = $('report-note');
 
   // The playground and its provider arrive as DATA on the form, escaped at render time and
   // read here as plain strings — never interpolated into this script, so a hostile id can
@@ -290,6 +314,10 @@ const PLAYER_SCRIPT = `
   // [FRAMING:representation] [LAW:one-source-of-truth]
   const playgroundId = form.dataset.playgroundId;
   const providerId = form.dataset.providerId;
+
+  // The report form carries its OWN playground id (see reportControl) so it reads locally, never
+  // reaching into the refine form's dataset — the two forms stay independent. [LAW:one-source-of-truth]
+  const reportPlaygroundId = reportForm.dataset.playgroundId;
 
   // The one client-side HTML escaper for anything that becomes innerHTML in a note region,
   // mirroring the front door's single enforcer. Server strings (a failure message) pass
@@ -310,6 +338,7 @@ const PLAYER_SCRIPT = `
   };
   const setRefineNote = noteWriter(refineNote);
   const setRemixNote = noteWriter(remixNote);
+  const setReportNote = noteWriter(reportNote);
 
   // The shared JSON+ok helper for the symmetric reads (/providers, /availability, /poll).
   // A turn's POST is handled inside runTurn instead, because its 201/422 must be read off the
@@ -425,6 +454,44 @@ const PLAYER_SCRIPT = `
     }
   });
 
+  // Report: raise a moderation signal on THIS playground. Independent of the generation boot gate
+  // below — reporting works whether or not generation is on — so it is wired unconditionally here.
+  // The reporter is resolved SERVER-side from the session (POST /reports is auth-gated), so the body
+  // carries only the id and the reason; a 401 is surfaced as an honest "sign in to report" rather
+  // than a silent no-op. [LAW:no-silent-failure] [LAW:dataflow-not-control-flow]
+  reportForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const reason = reportInput.value.trim();
+    if (reason === '') return;
+    reportBtn.disabled = true;
+    try {
+      const res = await fetch('/reports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ playgroundId: reportPlaygroundId, reason }),
+      });
+      const body = await res.json();
+      if (res.status === 201) {
+        setReportNote('<span class="good">Thanks — report received. We will take a look.</span>', 'good');
+        reportInput.value = '';
+        reportInput.disabled = true;
+        return;
+      }
+      // Reporting is auth-gated: an anonymous browser can read and use the commons, but raising a
+      // signal needs a signed-in identity for accountability. Say so plainly with a way to act — the
+      // login link is authored trusted markup, not interpolated user data. [LAW:no-silent-failure]
+      if (res.status === 401) {
+        setReportNote('Please <a href="/session/login">sign in</a> to report a playground.', 'bad');
+        reportBtn.disabled = false;
+        return;
+      }
+      throw new Error(body.error ?? ('request failed (' + res.status + ')'));
+    } catch (error) {
+      setReportNote('<span class="bad">' + esc(error.message) + '</span>', 'bad');
+      reportBtn.disabled = false;
+    }
+  });
+
   // Boot gate. /providers decides whether the action region exists at all: an empty registry
   // means generation is off, so it stays hidden and browse/use are untouched. When a provider
   // exists, reveal the region, then check THIS playground's provider's live availability ONCE
@@ -497,6 +564,7 @@ export const renderPlayer = (view: PlayerView): string =>
   ${playerForkedFrom(view.forkedFrom)}
   ${tagChips(view.tags)}
   ${recipeBlock(view.recipe)}
+  ${reportControl(view.id)}
 </header>
 <iframe
   title="${escapeHtml(view.prompt)}"
@@ -551,6 +619,22 @@ export const renderPlayer = (view: PlayerView): string =>
   .recipe[open] > summary::before { transform:rotate(90deg); }
   .recipe ol { margin:0.6rem 0 0; padding:0.7rem 1rem 0.7rem 2.4rem; list-style:decimal; background:var(--widget-bg); border:1px solid var(--border); border-radius:var(--radius-md); box-shadow:var(--shadow-widget); }
   .recipe li { padding:0.15rem 0; color:var(--text-2); }
+
+  /* Report — the moderation "flag this" panel, an INTENTIONAL collapse like the recipe: the summary
+     is the same subtle pill, the reason field a proper card. Reads only shared tokens, so it tracks
+     light/dark and echoes the front door's control language. */
+  .report { flex-basis:100%; margin:0; font-size:0.8rem; }
+  .report > summary { cursor:pointer; list-style:none; display:inline-flex; align-items:center; gap:0.4rem; color:var(--muted); font-weight:500; padding:0.25rem 0.7rem; border-radius:100px; background:var(--step-icon-bg); border:1px solid var(--step-icon-border); transition:color 0.15s; }
+  .report > summary:hover { color:var(--text); }
+  .report > summary::-webkit-details-marker { display:none; }
+  #report { margin:0.6rem 0 0; display:flex; flex-direction:column; gap:0.5rem; max-width:520px; }
+  #report label { color:var(--muted); }
+  #report textarea { background:var(--input-bg); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-md); padding:0.5rem 0.7rem; font:inherit; min-height:4.5em; resize:vertical; outline:none; transition:border-color 0.15s, box-shadow 0.15s, background 0.15s; }
+  #report textarea::placeholder { color:var(--muted-2); }
+  #report textarea:focus { border-color:var(--accent-light); box-shadow:var(--focus-ring); background:var(--input-focus-bg); }
+  #report-submit { align-self:flex-start; background:transparent; color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:0.45rem 1rem; font:600 0.85rem inherit; cursor:pointer; transition:background 0.15s, color 0.15s; }
+  #report-submit:hover:not(:disabled) { background:var(--accent); color:#fff; }
+  #report-submit:disabled { opacity:0.45; cursor:not-allowed; }
 
   iframe { flex:1 1 auto; width:100%; border:0; background:#fff; }
 

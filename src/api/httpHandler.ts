@@ -3,6 +3,7 @@ import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { PlaygroundId, PlaygroundNotFoundError } from '../storage/index.js';
 import type { GenerationService } from './generationService.js';
 import { ProviderCannotContinueError, ProviderCannotForkError } from './generationService.js';
+import type { ReportService } from './reportService.js';
 import type { Subject } from '../identity/index.js';
 import type { IdentityResolver } from './identity.js';
 
@@ -64,6 +65,27 @@ const parseForkRequest = (body: unknown): { playgroundId: PlaygroundId } => {
   return { playgroundId: PlaygroundId(requireString(body.playgroundId, 'playgroundId')) };
 };
 
+// The longest reason a report may carry. A cap at the trust boundary so a hostile client cannot post
+// a multi-megabyte "reason" that bloats the reports document every reviewer then loads — the
+// signal-quality equivalent of rejecting an empty field. Generous enough that a real explanation is
+// never truncated. [LAW:no-silent-failure]
+const MAX_REASON_LENGTH = 2000;
+
+// The single place that validates and brands an incoming report request. Symmetric with the parsers
+// above: foreign JSON crosses the trust boundary here and only here, where the playgroundId is
+// re-branded (its runtime brand was erased over the wire) and the reason is checked non-empty and
+// bounded. The reporter is NOT in the body — it is the authenticated Subject the write gate resolves,
+// so a client cannot forge who raised a report. [LAW:single-enforcer] [LAW:types-are-the-program]
+const parseReportRequest = (body: unknown): { playgroundId: PlaygroundId; reason: string } => {
+  if (!isRecord(body)) throw new BadRequest('body must be a JSON object');
+  const reason = requireString(body.reason, 'reason');
+  if (reason.length > MAX_REASON_LENGTH) throw new BadRequest(`reason exceeds ${MAX_REASON_LENGTH} characters`);
+  return {
+    playgroundId: PlaygroundId(requireString(body.playgroundId, 'playgroundId')),
+    reason,
+  };
+};
+
 // The single place that validates and brands an incoming handle (what `poll` receives).
 const parseHandle = (body: unknown): SessionHandle => {
   if (!isRecord(body)) throw new BadRequest('body must be a JSON object');
@@ -101,10 +123,12 @@ const WRITE_ROUTES: ReadonlySet<string> = new Set([
   'POST /generations/continue',
   'POST /generations/fork',
   'POST /poll',
+  'POST /reports',
 ]);
 
 export const makeHttpHandler = (
   service: GenerationService,
+  reports: ReportService,
   resolveIdentity: IdentityResolver,
 ): ((request: Request) => Promise<Response>) => {
   // The credential-free read/use path: providers and the live availability toggle. No identity
@@ -163,6 +187,16 @@ export const makeHttpHandler = (
       // performs the store+catalog write — so it must not be treated as cacheable.
       case 'POST /poll':
         return json(await service.poll(parseHandle(await readJson(request))));
+      // The report path: record a moderation signal against a playground. It rides the SAME single
+      // write gate as generation (WRITE_ROUTES above), so the reporter is the resolved `author`
+      // Subject — the authenticated principal, never a client-supplied field — recorded exactly as a
+      // playground's author is. An unknown playground surfaces the service's PlaygroundNotFoundError,
+      // mapped to 404 by the catch below like continue/fork. 201: the signal is now durably recorded.
+      case 'POST /reports': {
+        const { playgroundId, reason } = parseReportRequest(await readJson(request));
+        const report = await reports.report({ playgroundId, reason, reporter: author });
+        return json({ report }, 201);
+      }
       default:
         return json({ error: `no route: ${route}` }, 404);
     }

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { localIdentityResolver, makeGenerationService, makeHttpHandler } from '../api/index.js';
-import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
+import { localIdentityResolver, makeGenerationService, makeHttpHandler, makeReportService } from '../api/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { serve } from './server.js';
 import type { RunningServer } from './server.js';
@@ -29,6 +29,7 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     catalog,
     disposeTurn: async () => undefined,
   });
+  const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
   const handler = makeSiteHandler({
     page: PAGE,
     catalog,
@@ -37,7 +38,7 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     // sessions — a pass-through session handler models "no session routes here". The dedicated
     // gate is proven in session.integration.test.
     sessionHandler: async () => null,
-    apiHandler: makeHttpHandler(service, localIdentityResolver),
+    apiHandler: makeHttpHandler(service, reports, localIdentityResolver),
   });
   return serve({ handler, port: 0 });
 };

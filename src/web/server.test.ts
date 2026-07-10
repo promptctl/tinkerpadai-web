@@ -36,6 +36,7 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     catalog,
     disposeTurn: async () => undefined,
     quota: makeTestQuota(),
+    maxAttempts: 1,
   });
   // ONE report store behind both intake and review, mirroring production — the review queue reads
   // exactly what the report button writes. [LAW:one-source-of-truth]

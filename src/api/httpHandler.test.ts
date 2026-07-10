@@ -38,6 +38,7 @@ const handlerFor = (
     catalog,
     disposeTurn: async () => undefined,
     quota,
+    maxAttempts: 1,
   });
   const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
   return makeHttpHandler(service, reports, resolveIdentity);

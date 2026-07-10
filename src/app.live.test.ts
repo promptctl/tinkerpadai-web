@@ -28,7 +28,12 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
         oauthCallbackUrl: 'http://127.0.0.1/session/callback',
         cookieSecurity: { secure: false },
         adminSubjects: new Set(),
-        driver: { pollIntervalMs: 1000 },
+        // A tight smoke policy: a 5-minute per-attempt deadline and NO retry (maxAttempts 1). This
+        // test verifies the whole graph composes and drives real generations end to end — not the
+        // production deadline or retry, which are unit-tested. Retry (the 15-min × 2 default) could
+        // push this multi-generation live run past its own 15-minute vitest ceiling; a single fast-
+        // failing attempt keeps the smoke bounded. [LAW:decomposition]
+        generationPolicy: { timeoutMs: 5 * 60 * 1000, maxAttempts: 1 },
       });
 
       const [provider] = service.listProviders();

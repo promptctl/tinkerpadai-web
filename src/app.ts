@@ -73,6 +73,12 @@ export interface AppDeps {
   // stays a pure graph builder and a future durable edge quota swaps here without touching the
   // service that consumes it. [LAW:decomposition] [LAW:effects-at-boundaries]
   readonly quota: GenerationQuota;
+  // Total provider attempts one generation request may make, including the first (1 = no retry) — an
+  // integer >= 1, validated at the composition root's parseGenerationPolicy seam and trusted here.
+  // The GenerationPolicy value, threaded into the service where retry is enforced at the single
+  // turn-lifecycle boundary. Stated as a value here, like the quota, so makeApp stays a pure graph
+  // builder and the edge/Node roots each choose their own policy. [LAW:decomposition]
+  readonly maxAttempts: number;
   // The delegated identity provider behind the login seam (GitHub in production, a loopback in dev,
   // a fake in tests). Required, not optional: there is no "auth off" mode — without a provider there
   // is no working write path, so the app cannot be constructed without one and the gate is always
@@ -118,13 +124,14 @@ export const makeApp = (deps: AppDeps): App => {
     sessionStore,
     disposeTurn,
     quota,
+    maxAttempts,
     oauth,
     oauthCallbackUrl,
     cookieSecurity,
     adminSubjects,
   } = deps;
 
-  const service = makeGenerationService({ registry, store, catalog, disposeTurn, quota });
+  const service = makeGenerationService({ registry, store, catalog, disposeTurn, quota, maxAttempts });
 
   // The moderation report service — reads the catalog to prove a reported playground exists, then
   // records the signal. It shares the catalog with generation (one source of truth for what exists)

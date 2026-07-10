@@ -107,7 +107,7 @@ describe('remix action over the composed front door', () => {
     // handler, composed behind the site handler exactly as production does.
     const registry = new ProviderRegistry();
     registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true }));
-    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => undefined, quota: makeTestQuota() });
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => undefined, quota: makeTestQuota(), maxAttempts: 1 });
     // ONE report store behind both intake and review, mirroring production — the review queue reads
     // exactly what the report button writes. [LAW:one-source-of-truth]
     const reportStore = makeMemoryReportStore();

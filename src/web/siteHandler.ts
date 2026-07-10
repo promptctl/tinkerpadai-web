@@ -1,6 +1,7 @@
 import type { Catalog } from '../storage/index.js';
 import { PlaygroundId } from '../storage/index.js';
 import { filterSummaries, parseCommonsQuery, tagFacets } from './commonsQuery.js';
+import { GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 
 // THE APP-ORIGIN SURFACE — the front door's one composed Web handler. It serves the trusted
@@ -105,6 +106,12 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
     switch (route) {
       case 'GET /':
         return html(page);
+      case 'GET /terms':
+        // The legal surface — authored, self-contained app pages served like any other trusted page,
+        // so the one harden() seal below covers them and the footer can link to them everywhere.
+        return html(renderLegalDoc(GROUND_RULES_DOC));
+      case 'GET /privacy':
+        return html(renderLegalDoc(PRIVACY_DOC));
       case 'GET /commons': {
         // The catalog is read ONCE as the canonical list; discovery is a pure projection over it.
         // The facets come from the WHOLE list (so filtering by one tag never hides the others),

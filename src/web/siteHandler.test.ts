@@ -94,6 +94,31 @@ describe('makeSiteHandler', () => {
     expect(body).toContain('by ada');
   });
 
+  it('serves the ground rules at GET /terms and the privacy policy at GET /privacy, never touching the API', async () => {
+    // The legal surface is authored app pages, not delegated routes — the handler answers them
+    // directly, so the API never sees them. Assertions are over the pages' meaning (the honest
+    // "no formal terms" stance, the as-is disclaimer, the real data-collection disclosure), not
+    // their styling. [LAW:behavior-not-structure]
+    const { handler, delegated } = build(makeMemoryCatalog());
+
+    const terms = await handler(new Request('http://front.local/terms'));
+    expect(terms.status).toBe(200);
+    expect(terms.headers.get('content-type')).toContain('text/html');
+    const termsBody = await terms.text();
+    expect(termsBody).toContain('There are no formal terms');
+    expect(termsBody).toContain('provided as-is');
+    expect(termsBody).toContain('mailto:');
+
+    const privacy = await handler(new Request('http://front.local/privacy'));
+    expect(privacy.status).toBe(200);
+    expect(privacy.headers.get('content-type')).toContain('text/html');
+    const privacyBody = await privacy.text();
+    expect(privacyBody).toContain('What we collect');
+    expect(privacyBody).toContain('GitHub');
+
+    expect(delegated).toHaveLength(0);
+  });
+
   it('renders an empty commons as data, not a thrown special case', async () => {
     const { handler } = build(makeMemoryCatalog());
     const res = await handler(new Request('http://front.local/commons'));
@@ -283,6 +308,8 @@ describe('makeSiteHandler', () => {
     expectHardened(await handler(new Request('http://front.local/commons')));
     expectHardened(await handler(new Request('http://front.local/api/playgrounds')));
     expectHardened(await handler(new Request(`http://front.local/play?id=${encodeURIComponent(id)}`)));
+    expectHardened(await handler(new Request('http://front.local/terms')));
+    expectHardened(await handler(new Request('http://front.local/privacy')));
   });
 
   it('hardens the delegated session and API responses too — the login page is not exempt', async () => {

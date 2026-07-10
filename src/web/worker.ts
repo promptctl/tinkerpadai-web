@@ -2,7 +2,7 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import page from './index.html';
 import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { DEFAULT_GENERATION_POLICY, makeGenerationQuota, makeGitHubOAuthProvider, parseQuotaLimits } from '../api/index.js';
+import { makeGenerationQuota, makeGitHubOAuthProvider, parseGenerationPolicy, parseQuotaLimits } from '../api/index.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
@@ -49,6 +49,13 @@ export interface Env {
   // turn is ever admitted and these are inert until then. Set them in the [vars] table of wrangler.toml.
   readonly TINKERPAD_MAX_CONCURRENT_GENERATIONS?: string;
   readonly TINKERPAD_MAX_DAILY_GENERATIONS?: string;
+  // The generation policy — per-attempt deadline and retry budget, OPTIONAL [vars] entries read
+  // through the SAME parseGenerationPolicy seam both Node entries use. Inert while the registry is
+  // empty (like the quota caps above), but parsed here so an operator's value is validated at the edge
+  // and the policy cannot drift between deploys once public generation turns on (providers-u1h). The
+  // deadline in particular needs the edge driver that arrives with that work to take effect.
+  readonly TINKERPAD_GENERATION_TIMEOUT_MS?: string;
+  readonly TINKERPAD_MAX_GENERATION_ATTEMPTS?: string;
 }
 
 // A real user's session at the edge, durably in D1 so it survives Worker cold starts. 7 days — long
@@ -132,10 +139,14 @@ const handlerFor = (env: Env): Handler => {
       }),
       now: () => Date.now(),
     }),
-    // Inert while the registry is empty (no turn is ever admitted), but the seam states the policy:
-    // the default retry budget applies once public generation turns on (providers-u1h). The edge's
-    // deadline is a driver concern that arrives with that same provider work. [LAW:dataflow-not-control-flow]
-    maxAttempts: DEFAULT_GENERATION_POLICY.maxAttempts,
+    // The retry budget, parsed from env through the same seam the Node roots use — inert while the
+    // registry is empty (no turn is ever admitted), but validated and consistent so it applies the
+    // instant public generation turns on (providers-u1h). The parsed deadline (timeoutMs) waits on the
+    // edge driver that arrives with that same provider work. [LAW:one-source-of-truth]
+    maxAttempts: parseGenerationPolicy({
+      timeoutMs: env.TINKERPAD_GENERATION_TIMEOUT_MS,
+      maxAttempts: env.TINKERPAD_MAX_GENERATION_ATTEMPTS,
+    }).maxAttempts,
     oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
     oauthCallbackUrl,
     // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]

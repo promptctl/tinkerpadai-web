@@ -843,6 +843,10 @@ describe('GenerationService.poll — retry: a failed provider attempt is retried
     expect(status.error).toContain('start #2 exploded');
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
 
+    // The failed first attempt is reclaimed EXACTLY once — the restart-failure path settles the
+    // failure directly rather than re-reclaiming the already-disposed handle. No double-dispose.
+    expect(h.disposed).toHaveLength(1);
+
     // The request settled, so its one concurrent slot is freed — the next submit is admitted.
     await expect(
       h.service.submit({ providerId: h.providerId, brief: { description: 'after' } }, AUTHOR),

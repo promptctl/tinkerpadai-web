@@ -383,20 +383,22 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   // [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling] [LAW:single-enforcer]
   const beginRetry = (record: TurnRecord): void => {
     const launch = (async (): Promise<void> => {
-      // The failed attempt's workdir is reclaimed exactly as a settled failure reclaims it: a
-      // create/fork's dead session is released, an append keeps the still-continuable session its
-      // next attempt re-enters. [LAW:dataflow-not-control-flow]
-      await reclaimOnFailure(record.current, record.target);
       try {
+        // The failed attempt's workdir is reclaimed exactly as a settled failure reclaims it: a
+        // create/fork's dead session is released, an append keeps the still-continuable session its
+        // next attempt re-enters. [LAW:dataflow-not-control-flow]
+        await reclaimOnFailure(record.current, record.target);
         record.current = await record.restart();
         record.attemptsLeft -= 1;
       } catch (error) {
-        // Could not start the next attempt: seal the request failed and free its budget rather than
-        // leaving retryInFlight pointing at a rejection every future poll would rethrow. finalizeFailure
-        // re-reclaims the (already-reclaimed) failed attempt — idempotent, so the one failure path
-        // stays uniform. [LAW:no-silent-failure]
-        settle(record, finalizeFailure(record.current, record.target, retryStartFailureMessage(error)));
+        // Could not reclaim the failed attempt or start the next one: seal the request failed and free
+        // its budget. The failed attempt is ALREADY reclaimed above (or the reclaim itself is what
+        // threw), so this records the terminal failure directly rather than through finalizeFailure —
+        // no second reclaim, hence no double-dispose. [LAW:no-silent-failure]
+        settle(record, Promise.resolve({ state: 'failed', error: retryStartFailureMessage(error) }));
       } finally {
+        // Always clear the single-flight guard, whatever rejected — the whole body is under this
+        // finally so no rejection can leave every future poll wedged on `running`. [LAW:no-silent-failure]
         record.retryInFlight = null;
       }
     })();

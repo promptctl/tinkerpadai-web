@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_PORT, FRONT_DOOR_HOST } from '../src/web/frontDoorDefaults.js';
+import { DEFAULT_GENERATION_POLICY } from '../src/api/index.js';
 
 // THE SEEDING DRIVER CORE: turn a briefs manifest into commons playgrounds by driving
 // the real public write path — loopback login, POST /generations, POST /poll — exactly
@@ -200,16 +201,19 @@ export interface BriefDriver {
 // loop never spins. [LAW:single-enforcer]
 const POLL_INTERVAL_MS = 2000;
 
-// The client's LIVENESS backstop — deliberately NOT a generation deadline. The server is the
-// single enforcer of how long a generation may take, and it always reports a terminal state within
-// its own bound; a client deadline BELOW that would abandon a live turn (wave 1 lost a finished turn
-// to exactly that). The server's worst case is now its RETRY budget times its per-attempt deadline
+// The client's LIVENESS backstop — deliberately NOT a generation deadline. The server is the single
+// enforcer of how long a generation may take, and it always reports a terminal state within its own
+// bound; a client deadline BELOW that would abandon a live turn (wave 1 lost a finished turn to
+// exactly that). The server's worst case is its RETRY budget times its per-attempt deadline
 // (quality-ppu.2 added transparent retry, so a request that uses every attempt keeps reporting
-// `running` for the sum), which at the defaults is 2 × 15 min = 30 min. This ceiling sits FAR above
-// that so it never fires for a working server — it trips only when a buggy server returns `pending`
-// forever, turning a silent infinite loop into a loud failure. The loop-scope sibling of the
-// per-request transport timeout. [LAW:no-silent-failure] [LAW:one-source-of-truth]
-const POLL_CEILING_MS = 45 * 60 * 1000;
+// `running` for the sum). It is DERIVED from DEFAULT_GENERATION_POLICY rather than hardcoded, so the
+// backstop tracks the same defaults the server ships with — change a default and the ceiling follows,
+// never silently drifting to zero margin. The margin covers per-attempt startup/settle overhead and a
+// deploy that widened one env override above the default. It trips only when a buggy server returns
+// `pending` forever, turning a silent infinite loop into a loud failure — the loop-scope sibling of
+// the per-request transport timeout. [LAW:no-silent-failure] [LAW:one-source-of-truth]
+const POLL_CEILING_MARGIN = 1.5;
+const POLL_CEILING_MS = DEFAULT_GENERATION_POLICY.timeoutMs * DEFAULT_GENERATION_POLICY.maxAttempts * POLL_CEILING_MARGIN;
 
 // Submit one brief against a chosen provider and poll it to a terminal Outcome. Pure
 // orchestration over the injected driver: it maps the wire responses onto the Outcome

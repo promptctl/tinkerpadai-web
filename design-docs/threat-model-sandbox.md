@@ -157,10 +157,11 @@ side, which is backwards for the origin that actually holds the asset.
   TINKERPAD_CONTENT_ORIGIN)` on the `required()` path, before the front door is assembled — the app
   hostname is the OAuth callback's hostname (registered on the app origin by construction), so a
   `TINKERPAD_CONTENT_ORIGIN` misconfigured onto it fails the boot loudly instead of collapsing the
-  split at runtime. On Node the content origin is *derived* from the socket the entry binds (a distinct
-  host basis from the app), so distinctness is a distinct-**port** invariant enforced in
-  `resolveServerConfig` (`PORT` ≠ `TINKERPAD_CONTENT_PORT`), turning a cryptic second-bind `EADDRINUSE`
-  into a named error before either socket binds.
+  split at runtime. On Node the content port is resolved from configuration (env or the `port + 1`
+  default) in `resolveServerConfig`, and both the app and content sockets bind the same host — so
+  distinctness there is a distinct-**port** invariant (`PORT` ≠ `TINKERPAD_CONTENT_PORT`) enforced in
+  that same resolver, turning a cryptic second-bind `EADDRINUSE` into a named error before either socket
+  binds.
 - **R3 — Content CSP does not block outbound navigation.** `connect-src 'none'` stops fetch/XHR,
   but a playground can still `location = 'https://evil?…'` (self-frame navigation; sandbox
   permits it, `navigate-to` is unshipped). Low severity: the opaque frame holds nothing
@@ -190,5 +191,5 @@ The invariants a future change must not silently regress (each has a red test):
 7. The content origin and the app origin stay distinct origins — different hostnames at the edge,
    different ports on Node — asserted at composition time, not left to correct configuration. The edge
    rejects a same-hostname `TINKERPAD_CONTENT_ORIGIN` (`assertDistinctOriginHosts`); Node, where both
-   sockets share `localhost`, rejects `PORT` == `TINKERPAD_CONTENT_PORT`. Removing either guard
+   sockets bind the same host, rejects `PORT` == `TINKERPAD_CONTENT_PORT`. Removing either guard
    re-opens R2 (raw playground HTML served where it can reach the app's cookies and session).

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
 import { parseAdminSubjects } from '../app.js';
-import { makeGitHubOAuthProvider, parseQuotaLimits } from '../api/index.js';
+import { makeGitHubOAuthProvider, parseGenerationPolicy, parseQuotaLimits } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
@@ -54,6 +54,13 @@ const main = async (): Promise<void> => {
     quotaLimits: parseQuotaLimits({
       maxConcurrent: process.env.TINKERPAD_MAX_CONCURRENT_GENERATIONS,
       maxDaily: process.env.TINKERPAD_MAX_DAILY_GENERATIONS,
+    }),
+    // The generation deadline and retry budget, from the environment — a set-but-invalid value fails
+    // boot loudly; absent takes the documented defaults (15-minute deadline, one retry). Production
+    // states this deliberately rather than inheriting a driver fallback. [LAW:no-silent-failure]
+    generationPolicy: parseGenerationPolicy({
+      timeoutMs: process.env.TINKERPAD_GENERATION_TIMEOUT_MS,
+      maxAttempts: process.env.TINKERPAD_MAX_GENERATION_ATTEMPTS,
     }),
   });
 

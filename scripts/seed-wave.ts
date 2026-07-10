@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { DEFAULT_PORT, FRONT_DOOR_HOST } from '../src/web/frontDoorDefaults.js';
+import { parseGenerationPolicy } from '../src/api/index.js';
+import type { GenerationPolicy } from '../src/api/index.js';
 
 // THE SEEDING DRIVER CORE: turn a briefs manifest into commons playgrounds by driving
 // the real public write path — loopback login, POST /generations, POST /poll — exactly
@@ -200,15 +202,10 @@ export interface BriefDriver {
 // loop never spins. [LAW:single-enforcer]
 const POLL_INTERVAL_MS = 2000;
 
-// The client's LIVENESS backstop — deliberately NOT a generation deadline. The server is
-// the single enforcer of how long a generation may take, and it always reports a terminal
-// state within its own deadline; a client generation-deadline BELOW it would abandon a
-// live turn (wave 1 lost a finished turn to exactly that). This ceiling sits FAR above any
-// plausible server deadline, so it never fires for a working server — it trips only when a
-// buggy server returns `pending` forever, turning a silent infinite loop into a loud
-// failure. It is the loop-scope sibling of the per-request transport timeout.
-// [LAW:no-silent-failure] [LAW:one-source-of-truth]
-const POLL_CEILING_MS = 30 * 60 * 1000;
+// The margin the client's liveness ceiling holds ABOVE the server's worst-case generation time, to
+// cover per-attempt startup/settle overhead. The ceiling itself is not a constant — resolveConfig
+// derives it per run from the runtime policy (see WaveConfig.pollCeilingMs).
+const POLL_CEILING_MARGIN = 1.5;
 
 // Submit one brief against a chosen provider and poll it to a terminal Outcome. Pure
 // orchestration over the injected driver: it maps the wire responses onto the Outcome
@@ -219,6 +216,10 @@ export const generateOne = async (
   entry: BriefEntry,
   providerId: string,
   driver: BriefDriver,
+  // The liveness ceiling for this generation — the value derived from the runtime policy in
+  // resolveConfig, threaded in rather than read as a module const, so the backstop tracks the server's
+  // actual deadline. [LAW:effects-at-boundaries]
+  pollCeilingMs: number,
 ): Promise<Outcome> => {
   const submitted = await driver.post('/generations', {
     providerId,
@@ -234,10 +235,10 @@ export const generateOne = async (
   // [LAW:no-silent-failure]
   console.log(`  handle: ${JSON.stringify(handle)}`);
 
-  const ceiling = driver.now() + POLL_CEILING_MS;
+  const ceiling = driver.now() + pollCeilingMs;
   for (;;) {
     if (driver.now() > ceiling) {
-      return { state: 'failed', error: `poll: server never reported a terminal state within ${POLL_CEILING_MS}ms` };
+      return { state: 'failed', error: `poll: server never reported a terminal state within ${pollCeilingMs}ms` };
     }
     const polled = await driver.post('/poll', { handle });
     if (polled.status !== 200 || !isRecord(polled.data) || typeof polled.data.state !== 'string') {
@@ -353,6 +354,18 @@ export interface WaveConfig {
   readonly manifestPath: string;
   readonly concurrency: number;
   readonly base: string;
+  // The client's LIVENESS backstop — deliberately NOT a generation deadline. The server is the single
+  // enforcer of how long a generation may take, and it always reports a terminal state within its own
+  // bound; a client deadline BELOW that would abandon a live turn (wave 1 lost a finished turn to
+  // exactly that). The server's worst case is its RETRY budget times its per-attempt deadline
+  // (quality-ppu.2 added transparent retry, so a request that uses every attempt keeps reporting
+  // `running` for the sum). It is DERIVED here from the runtime policy the operator configures — read
+  // through the SAME parseGenerationPolicy seam the server reads — so when the seeder and server share
+  // an environment (the common case) the backstop tracks the server's real deadline exactly, and an
+  // operator who widens the server's deadline widens the seeder's with the same env var. It trips only
+  // when a buggy server returns `pending` forever, turning a silent infinite loop into a loud failure.
+  // [LAW:no-silent-failure] [LAW:one-source-of-truth]
+  readonly pollCeilingMs: number;
 }
 
 // A usage/validation failure of the invocation itself (bad args, bad env). Typed so the
@@ -400,7 +413,25 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   } catch {
     throw new UsageError(`TINKERPAD_URL is not a valid URL: ${rawUrl}`);
   }
-  return { manifestPath, concurrency, base };
+  // The liveness ceiling, derived from the runtime generation policy read through the SAME
+  // parseGenerationPolicy seam the server uses — so a set-but-invalid TINKERPAD_GENERATION_TIMEOUT_MS /
+  // _MAX_GENERATION_ATTEMPTS fails the seeder loudly here, and a shared env yields a ceiling that
+  // matches the server's worst case (attempts × deadline × margin). parseGenerationPolicy throws a
+  // plain Error; resolveConfig's contract is that a config-validation failure is a UsageError (the
+  // entry maps its TYPE to exit 2 — a bad invocation — vs exit 1 for a runtime fault), so its message
+  // is rethrown as one, exactly as the concurrency/URL validations above.
+  // [LAW:one-source-of-truth] [LAW:types-are-the-program] [LAW:no-silent-failure]
+  let policy: GenerationPolicy;
+  try {
+    policy = parseGenerationPolicy({
+      timeoutMs: env.TINKERPAD_GENERATION_TIMEOUT_MS,
+      maxAttempts: env.TINKERPAD_MAX_GENERATION_ATTEMPTS,
+    });
+  } catch (error) {
+    throw new UsageError(error instanceof Error ? error.message : String(error));
+  }
+  const pollCeilingMs = policy.timeoutMs * policy.maxAttempts * POLL_CEILING_MARGIN;
+  return { manifestPath, concurrency, base, pollCeilingMs };
 };
 
 // The server's provider registry is the single source of truth for which providers exist;
@@ -465,7 +496,9 @@ export const runSeed = async (
     delay,
     now: () => Date.now(),
   };
-  const results = await runWave(entries, config.concurrency, (entry) => generateOne(entry, providerId, driver));
+  const results = await runWave(entries, config.concurrency, (entry) =>
+    generateOne(entry, providerId, driver, config.pollCeilingMs),
+  );
   return summarize(results);
 };
 

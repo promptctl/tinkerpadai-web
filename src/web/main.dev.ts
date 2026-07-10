@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
-import { Subject } from '../api/index.js';
+import { DEFAULT_GENERATION_POLICY, Subject } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { generateIndexHtml } from './generateIndexHtml.js';
@@ -37,11 +37,11 @@ const makeDevOAuthProvider = (subject: Subject): OAuthProvider => ({
 // [LAW:no-ambient-temporal-coupling] [LAW:one-source-of-truth]
 const templateUrl = new URL('./index.html.tmpl', import.meta.url);
 
-// The dev generation deadline, stated by the composition root through the driver's
-// existing config seam. Wave-1 seeding (tinkerpadai-seeding-bw1.1) measured real briefs
-// hovering near — and four of them past — the driver's 5-minute default, so dev uses
-// 10 minutes; the deliberate production policy (and retry) is tinkerpadai-quality-ppu.2.
-// [LAW:no-ambient-temporal-coupling] [LAW:locality-or-seam]
+// The dev per-attempt deadline, stated by the composition root through the generation policy.
+// Wave-1 seeding (tinkerpadai-seeding-bw1.1) measured real briefs hovering near — and four of them
+// past — the old 5-minute default, so dev uses 10 minutes; production's deadline and the shared
+// retry budget are the deliberate quality-ppu.2 policy. Dev takes the default retry budget so the
+// local loop behaves like production. [LAW:no-ambient-temporal-coupling] [LAW:locality-or-seam]
 const DEV_GENERATION_TIMEOUT_MS = 10 * 60 * 1000;
 
 // The fixed principal the loopback IdP mints — and, in dev, the sole moderation admin, so the whole
@@ -62,7 +62,7 @@ const main = async (): Promise<void> => {
     cookieSecurity: { secure: false },
     // The dev subject is the local admin — the moderation console works in the loopback loop.
     adminSubjects: new Set([DEV_SUBJECT]),
-    driver: { timeoutMs: DEV_GENERATION_TIMEOUT_MS },
+    generationPolicy: { timeoutMs: DEV_GENERATION_TIMEOUT_MS, maxAttempts: DEFAULT_GENERATION_POLICY.maxAttempts },
   });
 
   const content = await serve({

@@ -2,7 +2,7 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import page from './index.html';
 import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { makeGenerationQuota, makeGitHubOAuthProvider, parseQuotaLimits } from '../api/index.js';
+import { makeGenerationQuota, makeGitHubOAuthProvider, parseMaxGenerationAttempts, parseQuotaLimits } from '../api/index.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
@@ -49,6 +49,14 @@ export interface Env {
   // turn is ever admitted and these are inert until then. Set them in the [vars] table of wrangler.toml.
   readonly TINKERPAD_MAX_CONCURRENT_GENERATIONS?: string;
   readonly TINKERPAD_MAX_DAILY_GENERATIONS?: string;
+  // The retry budget, an OPTIONAL [vars] entry read through the same parseMaxGenerationAttempts seam
+  // the Node roots use. Inert while the registry is empty (like the quota caps above), but parsed here
+  // because it IS wired into makeApp — validated so it cannot drift once public generation turns on
+  // (providers-u1h). The per-attempt DEADLINE (TINKERPAD_GENERATION_TIMEOUT_MS) is deliberately absent:
+  // the edge has no driver to enforce it, so validating a value with no consumer here — and bricking
+  // the whole Worker on an invalid inert deadline — would be disproportionate. It arrives with the edge
+  // driver. [LAW:decomposition]
+  readonly TINKERPAD_MAX_GENERATION_ATTEMPTS?: string;
 }
 
 // A real user's session at the edge, durably in D1 so it survives Worker cold starts. 7 days — long
@@ -132,6 +140,12 @@ const handlerFor = (env: Env): Handler => {
       }),
       now: () => Date.now(),
     }),
+    // The retry budget, parsed from env through the single-value seam the Node roots share — inert
+    // while the registry is empty (no turn is ever admitted), but validated and consistent so it
+    // applies the instant public generation turns on (providers-u1h). ONLY maxAttempts is parsed here:
+    // the edge has no driver, so the per-attempt deadline has no consumer and is not read (validating
+    // it would risk bricking the whole Worker on an invalid inert value). [LAW:decomposition]
+    maxAttempts: parseMaxGenerationAttempts(env.TINKERPAD_MAX_GENERATION_ATTEMPTS),
     oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
     oauthCallbackUrl,
     // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]

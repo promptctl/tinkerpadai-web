@@ -2,10 +2,9 @@ import { join } from 'node:path';
 import { makeApp } from '../app.js';
 import type { App } from '../app.js';
 import { ProviderRegistry, cleanupTurn, makeTmuxDriver, makeTmuxProvider } from '../provider/index.js';
-import type { TmuxDriverConfig } from '../provider/index.js';
 import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore } from '../storage/index.js';
 import { makeGenerationQuota, makeMemorySessionStore, DEFAULT_QUOTA_LIMITS } from '../api/index.js';
-import type { CookieSecurity, OAuthProvider, QuotaLimits, Subject } from '../api/index.js';
+import type { CookieSecurity, GenerationPolicy, OAuthProvider, QuotaLimits, Subject } from '../api/index.js';
 
 // THE NODE COMPOSITION ROOT — the one place that knows the concrete shape of the local steel thread:
 // the provider is the tmux/Claude-Code body, storage is the local file backends, sessions live in an
@@ -41,8 +40,12 @@ export interface NodeAppConfig {
   // default (unlike adminSubjects, whose empty default is a deliberate safety posture the entries
   // always state). [LAW:no-mode-explosion]
   readonly quotaLimits?: QuotaLimits;
-  // The tmux driver config — main.dev.ts widens the generation deadline; main.ts takes the default.
-  readonly driver?: TmuxDriverConfig;
+  // The generation policy — the per-attempt deadline (which the driver enforces) and the retry
+  // budget (which the service enforces). REQUIRED, not defaulted: the deadline especially is a
+  // deliberate deploy choice this composition root must state, not silently inherit — main.ts reads
+  // it from the environment, main.dev.ts widens the deadline for local rich briefs. Both roots route
+  // its two halves to the two seams that enforce them. [LAW:decomposition] [LAW:one-source-of-truth]
+  readonly generationPolicy: GenerationPolicy;
   readonly providerId?: string;
   readonly providerLabel?: string;
 }
@@ -53,7 +56,8 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
     makeTmuxProvider({
       id: config.providerId ?? 'claude-code-tmux',
       label: config.providerLabel ?? 'Claude Code (local tmux)',
-      driver: makeTmuxDriver(config.driver ?? {}),
+      // The deadline half of the policy flows to the driver, the mechanism that enforces it.
+      driver: makeTmuxDriver({ timeoutMs: config.generationPolicy.timeoutMs }),
     }),
   );
 
@@ -76,6 +80,8 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
     // provider-agnostic — the service releases settled turns without knowing it is tmux.
     disposeTurn: cleanupTurn,
     quota,
+    // The retry half of the policy flows to the service, the single owner of turn lifecycle.
+    maxAttempts: config.generationPolicy.maxAttempts,
     oauth: config.oauth,
     oauthCallbackUrl: config.oauthCallbackUrl,
     cookieSecurity: config.cookieSecurity,

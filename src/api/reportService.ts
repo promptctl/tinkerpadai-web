@@ -32,6 +32,15 @@ export const makeReportService = (deps: ReportServiceDeps): ReportService => {
       // Prove existence before recording. getPlayground throws PlaygroundNotFoundError for an unknown
       // id — a loud, typed failure the HTTP layer already maps to 404 — so an orphan report is
       // unrepresentable rather than defended against after the fact. [LAW:no-silent-failure]
+      //
+      // Existence is proven at CHECK time, not atomically with the record write across the two stores.
+      // That window is unreachable under the current model: the Catalog has no delete path
+      // (createPlayground/appendTurn/getPlayground/listPlaygrounds — nothing removes a playground), and
+      // moderation's unlist (5g7.2) is a STATE change, not a deletion, so getPlayground stays truthful
+      // for the report's whole lifetime. Playground existence is monotonic, so the check is sufficient;
+      // a cross-store transaction for a delete that cannot happen would be carrying cost with no payoff.
+      // Should a hard-delete path ever land, the two writes must move behind one transactional boundary.
+      // [LAW:carrying-cost]
       await catalog.getPlayground(playgroundId);
       return reports.record({ playgroundId, reporter, reason });
     },

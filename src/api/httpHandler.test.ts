@@ -270,6 +270,22 @@ describe('POST /reports — recording a moderation signal', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a whitespace-only reason as 400 at the boundary, independent of client trimming', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/reports', { playgroundId, reason: '   \n\t ' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('stores the trimmed reason, not the client-sent surrounding whitespace', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const playgroundId = await submitToReady(handler);
+    const res = await handler(post('/reports', { playgroundId, reason: '  this is spam  ' }));
+    expect(res.status).toBe(201);
+    const { report } = (await res.json()) as { report: { reason: string } };
+    expect(report.reason).toBe('this is spam');
+  });
+
   it('rejects a report with a missing playgroundId as 400', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
     const res = await handler(post('/reports', { reason: 'spam' }));

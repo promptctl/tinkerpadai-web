@@ -78,7 +78,12 @@ const MAX_REASON_LENGTH = 2000;
 // so a client cannot forge who raised a report. [LAW:single-enforcer] [LAW:types-are-the-program]
 const parseReportRequest = (body: unknown): { playgroundId: PlaygroundId; reason: string } => {
   if (!isRecord(body)) throw new BadRequest('body must be a JSON object');
-  const reason = requireString(body.reason, 'reason');
+  // Trim at the boundary and store the trimmed value: the server enforces non-empty INDEPENDENTLY of
+  // the client's own trim(), so a direct POST of "   " is semantically empty signal and rejected here
+  // rather than sailing through because the browser happened to trim first. The cap applies to the
+  // stored (trimmed) reason. [LAW:single-enforcer]
+  const reason = requireString(body.reason, 'reason').trim();
+  if (reason === '') throw new BadRequest('missing or empty field: reason');
   if (reason.length > MAX_REASON_LENGTH) throw new BadRequest(`reason exceeds ${MAX_REASON_LENGTH} characters`);
   return {
     playgroundId: PlaygroundId(requireString(body.playgroundId, 'playgroundId')),

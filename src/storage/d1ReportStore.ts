@@ -14,9 +14,10 @@ import type { ReportsDoc } from './types.js';
 const REPORTS_ROW_ID = 1;
 
 // The D1 backend for the report-store seam: read and write the whole document as one row. The table
-// is created by the deploy-time migration (migrations/0001_init.sql), NOT lazily here — the schema
-// has one owner (the migration with its rollback path), and a missing table means the deploy skipped
-// its migrations, a real failure that must surface loudly rather than be masked as an empty store.
+// is created by its own deploy-time migration (migrations/0002_reports.sql — a separate file so D1's
+// filename-keyed migration tracking actually applies it), NOT lazily here — the schema has one owner
+// (the migration with its rollback path), and a missing table means the deploy skipped its
+// migrations, a real failure that must surface loudly rather than be masked as an empty store.
 // [LAW:single-enforcer] [LAW:no-silent-failure]
 //
 // KNOWN LIMITATION, stated not hidden: read-modify-write of the whole document is atomic only within

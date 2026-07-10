@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
-import { DEFAULT_GENERATION_POLICY, Subject } from '../api/index.js';
+import { DEFAULT_GENERATION_POLICY, Subject, startTurnRetentionSweeper } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
 import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.js';
 import { startWorkdirJanitor } from '../provider/index.js';
@@ -91,6 +91,11 @@ const main = async (): Promise<void> => {
   const { url } = await serve({ handler, port, host: frontDoorHost });
 
   startWorkdirJanitor();
+
+  // The settled-turn retention sweeper — bounds the service's in-memory turn map, the agnostic-service
+  // sibling of the workdir janitor. Started here in the runtime entry for the same reason: a background
+  // timer is a runtime effect makeApp must not own. [LAW:effects-at-boundaries]
+  startTurnRetentionSweeper(app.service);
 
   console.log(`[DEV] TinkerPad front door listening on ${url} (data: ${dataDir})`);
   console.log(`[DEV] TinkerPad playground content origin on ${content.url} (sandboxed, untrusted)`);

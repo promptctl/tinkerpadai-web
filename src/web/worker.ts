@@ -143,6 +143,10 @@ const handlerFor = (env: Env): Handler => {
       }),
       now: () => Date.now(),
     }),
+    // The service's clock, supplied with the quota's. Inert while the registry is empty (no turn ever
+    // settles, so nothing is stamped or swept), but present so the seam is complete when public edge
+    // generation turns on. [LAW:effects-at-boundaries]
+    now: () => Date.now(),
     // The retry budget, parsed from env through the single-value seam the Node roots share — inert
     // while the registry is empty (no turn is ever admitted), but validated and consistent so it
     // applies the instant public generation turns on (providers-u1h). ONLY maxAttempts is parsed here:

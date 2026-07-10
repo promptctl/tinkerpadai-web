@@ -7,6 +7,8 @@ export type { ArtifactStore, BlobStore } from './artifactStore.js';
 export { makeArtifactStore } from './artifactStore.js';
 export { makeMemoryArtifactStore } from './memoryArtifactStore.js';
 export { makeFileArtifactStore } from './fileArtifactStore.js';
+export { SelfContainmentError, findSelfContainmentViolation, MAX_ARTIFACT_BYTES } from './selfContainment.js';
+export type { SelfContainmentViolation, ResourceSink } from './selfContainment.js';
 
 export type { Catalog, CatalogReader, CatalogStore } from './catalog.js';
 export {

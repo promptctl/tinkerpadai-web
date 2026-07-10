@@ -11,7 +11,7 @@ import type {
 } from '../provider/index.js';
 import type { Subject } from '../identity/index.js';
 import type { ArtifactStore, Catalog, Lineage, Playground, PlaygroundId, VersionId } from '../storage/index.js';
-import { currentTurnOf, currentVersionOf } from '../storage/index.js';
+import { currentTurnOf, currentVersionOf, SelfContainmentError } from '../storage/index.js';
 import { deriveTags } from './deriveTags.js';
 import type { GenerationQuota, Reservation } from './generationQuota.js';
 
@@ -269,7 +269,22 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     target: TurnTarget,
     artifact: Artifact,
   ): Promise<GenerationStatus> => {
-    const version = await store.put(artifact);
+    let version: VersionId;
+    try {
+      version = await store.put(artifact);
+    } catch (error) {
+      // A self-containment refusal means the provider SUCCEEDED but produced a file that breaks the
+      // artifact contract (an external <script>, an @import, an absurd size). That is a FAILED
+      // generation, not an infra fault: route it through the SAME failed-turn path as a provider
+      // failure — actionable message, workdir reclaimed per target, retry-able — never a 500. Only the
+      // TYPED violation is a generation failure; any other store error (disk, catalog infra) is a real
+      // fault and MUST propagate loudly, never be relabelled as a quality failure. The type is the
+      // discriminator. [LAW:types-are-the-program] [LAW:no-silent-failure]
+      if (error instanceof SelfContainmentError) {
+        return finalizeFailure(handle, target, error.message);
+      }
+      throw error;
+    }
     const playground = await persist(target, handle, brief.description, version);
     return { state: 'ready', playgroundId: playground.id };
   };

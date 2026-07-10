@@ -2,9 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { ArtifactStore } from './artifactStore.js';
+import type { Artifact } from '../provider/index.js';
+import type { ArtifactStore, BlobStore } from './artifactStore.js';
+import { makeArtifactStore } from './artifactStore.js';
 import { makeFileArtifactStore } from './fileArtifactStore.js';
 import { makeMemoryArtifactStore } from './memoryArtifactStore.js';
+import { MAX_ARTIFACT_BYTES } from './selfContainment.js';
 import { VersionId } from './types.js';
 
 // The provider-agnostic contract every ArtifactStore must satisfy, run against each
@@ -60,5 +63,62 @@ describe.each(ADAPTERS)('ArtifactStore contract: $name', ({ open }) => {
     } finally {
       await close();
     }
+  });
+
+  it('refuses a non-self-contained artifact at the seam, identically across backends', async () => {
+    const { store, close } = await open();
+    try {
+      // The single enforcement point: every backend rejects an external reference identically. That the
+      // refusal happens BEFORE any write is verified separately, where a spy BlobStore can observe it —
+      // this each-block only claims what it can see through the interface. [LAW:behavior-not-structure]
+      await expect(store.put({ html: '<script src="https://cdn.example.com/x.js"></script>' })).rejects.toThrow(
+        /not self-contained.*https:\/\/cdn\.example\.com\/x\.js/,
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  it('refuses an oversize artifact at the seam — the size cap is gated through the same single enforcer', async () => {
+    const { store, close } = await open();
+    try {
+      // The oversize path is the enforcer's OTHER branch; every backend must surface it identically,
+      // exactly as the external-resource path does.
+      await expect(store.put({ html: 'a'.repeat(MAX_ARTIFACT_BYTES + 1) })).rejects.toThrow(
+        /not self-contained.*over the .* limit/,
+      );
+    } finally {
+      await close();
+    }
+  });
+});
+
+// The "refuse BEFORE writing" invariant, verified where it is OBSERVABLE: a spy BlobStore over the real
+// makeArtifactStore records every write, so we can assert a rejected put touched the backend zero times.
+// The each-block above cannot see this through the ArtifactStore interface (no enumeration method), so
+// the claim lives here, proven behaviorally rather than trusted from ordering. [LAW:behavior-not-structure]
+// [LAW:verifiable-goals]
+describe('makeArtifactStore refuses a non-self-contained artifact before it reaches the backend', () => {
+  it('never calls blobs.write when the artifact violates self-containment', async () => {
+    const writes: Artifact[] = [];
+    const spy: BlobStore = {
+      async write(_versionId: VersionId, artifact: Artifact): Promise<void> {
+        writes.push(artifact);
+      },
+      async read(): Promise<Artifact | undefined> {
+        return undefined;
+      },
+    };
+    const store = makeArtifactStore(spy);
+
+    await expect(store.put({ html: '<link rel="stylesheet" href="https://cdn.example.com/x.css">' })).rejects.toThrow(
+      /not self-contained/,
+    );
+    await expect(store.put({ html: 'a'.repeat(MAX_ARTIFACT_BYTES + 1) })).rejects.toThrow(/not self-contained/);
+    expect(writes).toEqual([]);
+
+    // And a self-contained artifact DOES reach the backend — the gate rejects, it does not block writes.
+    await store.put({ html: '<h1>ok</h1>' });
+    expect(writes).toHaveLength(1);
   });
 });

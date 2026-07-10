@@ -4,6 +4,7 @@ import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
 import { Subject } from '../identity/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeContentHandler } from './contentHandler.js';
+import { AppOrigin } from './originGuard.js';
 
 // The content origin's contract: serve a playground's html RAW (it is live code) under a
 // strict, network-denying CSP, and fail loudly on anything it cannot serve. This is the one
@@ -13,8 +14,8 @@ import { makeContentHandler } from './contentHandler.js';
 const RAW_HTML = '<!doctype html><html><body><script>document.title="live"</script></body></html>';
 
 // The app origin scoped into the content CSP's frame-ancestors — the ONE origin allowed to frame a
-// playground. A distinct host from the content origin, exactly as the two-origin split requires.
-const APP_ORIGIN = 'https://app.tinkerpad.test';
+// playground. Minted through the validating AppOrigin brand, a distinct host from the content origin.
+const APP_ORIGIN = AppOrigin('https://app.tinkerpad.test');
 
 const seed = async (
   catalog: Catalog,

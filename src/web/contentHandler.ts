@@ -1,5 +1,6 @@
 import type { ArtifactStore, Catalog } from '../storage/index.js';
 import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../storage/index.js';
+import type { AppOrigin } from './originGuard.js';
 
 // THE SANDBOX ENFORCEMENT BOUNDARY — and the ONLY one. This handler is what runs on the
 // CONTENT ORIGIN: a foreign origin from the app, whose entire job is to hand a playground's
@@ -34,7 +35,7 @@ import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../stor
 // the frame is opaque-origin and holds nothing sensitive (no app cookies, storage, or session), so a
 // self-navigation carries nothing worth exfiltrating — the severity is low. If `navigate-to` ships, add
 // it here. [LAW:no-silent-failure]
-const playgroundCsp = (appOrigin: string): string =>
+const playgroundCsp = (appOrigin: AppOrigin): string =>
   [
     "default-src 'none'",
     "script-src 'unsafe-inline'",
@@ -50,11 +51,12 @@ const playgroundCsp = (appOrigin: string): string =>
 export interface ContentHandlerDeps {
   readonly catalog: Catalog;
   readonly store: ArtifactStore;
-  // The app's origin (scheme://host[:port]) — the ONE origin permitted to frame a served playground,
-  // scoped into the CSP's frame-ancestors. Derived by the composition root from the OAuth callback URL
-  // (appOriginOf), the canonical app-origin source; the handler takes the already-derived origin so it
-  // knows "who may frame me" without knowing anything about OAuth. [LAW:decomposition]
-  readonly appOrigin: string;
+  // The app's origin — the ONE origin permitted to frame a served playground, scoped into the CSP's
+  // frame-ancestors. The branded AppOrigin type carries the guarantee that this is a VALIDATED bare
+  // origin (minted only through appOriginOf/AppOrigin), so an unvalidated string can never reach the
+  // frame-ancestors directive. The handler knows "who may frame me" without knowing anything about OAuth.
+  // [LAW:types-are-the-program] [LAW:decomposition]
+  readonly appOrigin: AppOrigin;
 }
 
 export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request) => Promise<Response>) => {

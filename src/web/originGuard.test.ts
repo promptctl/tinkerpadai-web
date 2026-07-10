@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appOriginOf, assertDistinctOriginHosts } from './originGuard.js';
+import { AppOrigin, appOriginOf, assertDistinctOriginHosts } from './originGuard.js';
 
 // The two-origin distinctness invariant, asserted as behavior: distinct hostnames pass, a shared
 // hostname is rejected loudly with a message that names the collapse and the remedy. Distinctness is
@@ -102,6 +102,27 @@ describe('appOriginOf', () => {
   it('rejects a non-web scheme with no hostname rather than yielding an empty framing source', () => {
     // An empty frame-ancestors source would silently permit no framing — a data: callback must fail loud.
     expect(() => appOriginOf('data:text/html,hello')).toThrow(
+      /must be (a valid absolute URL|an http\(s\) URL with a hostname)/,
+    );
+  });
+});
+
+// The AppOrigin brand's validating mint — the SINGLE producer of the type consumed by the content CSP's
+// frame-ancestors. Every value it yields is a bare, validated http(s) origin, so an unvalidated string is
+// uncompilable at the seam. Asserted as behavior. [LAW:types-are-the-program] [LAW:behavior-not-structure]
+describe('AppOrigin (validating mint)', () => {
+  it('accepts a bare origin unchanged', () => {
+    expect(AppOrigin('https://app.tinkerpad.test')).toBe('https://app.tinkerpad.test');
+  });
+
+  it('normalizes a value carrying a path down to its bare origin', () => {
+    // The brand represents the ORIGIN, so a path is stripped — two values differing only by path are one.
+    expect(AppOrigin('https://app.tinkerpad.test/anything')).toBe('https://app.tinkerpad.test');
+  });
+
+  it('rejects a non-origin string rather than minting an invalid framing source', () => {
+    expect(() => AppOrigin('not a url')).toThrow(/The app origin must be a valid absolute URL/);
+    expect(() => AppOrigin('data:text/html,x')).toThrow(
       /must be (a valid absolute URL|an http\(s\) URL with a hostname)/,
     );
   });

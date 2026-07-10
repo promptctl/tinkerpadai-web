@@ -8,6 +8,7 @@ import { makeMemorySessionStore, passThroughValidator, Subject } from '../api/in
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
 import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
+import { AppOrigin } from './originGuard.js';
 
 // THE ADVERSARIAL ESCAPE-VECTOR MATRIX — the deterministic acceptance for the sandbox threat model
 // (design-docs/threat-model-sandbox.md). Each test IS one vector from that model, seeded with a
@@ -18,7 +19,7 @@ import { makeFrontDoorRouter } from './frontDoorRouter.js';
 // ticket's "a test playground attempting each escape vector demonstrably fails."
 // [LAW:verifiable-goals] [LAW:behavior-not-structure] [LAW:single-enforcer]
 
-const APP_ORIGIN = 'https://app.tinkerpad.test';
+const APP_ORIGIN = AppOrigin('https://app.tinkerpad.test');
 const CONTENT_ORIGIN = 'https://content.tinkerpad.test';
 
 // A prompt/tag an attacker would author to break OUT of the sandbox by getting code to run in the

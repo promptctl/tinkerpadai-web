@@ -37,16 +37,29 @@ const parseWebOrigin = (role: string, origin: string): URL => {
 
 const hostnameOf = (role: string, origin: string): string => parseWebOrigin(role, origin).hostname;
 
-// The app origin (scheme://host[:port]), derived from the OAuth callback URL — the CANONICAL app-origin
-// source, since the callback is registered on the app origin by construction (the login CSRF cookie must
-// be present on it). There is NO standalone app-origin config value; minting one would be a second source
-// of truth that could drift from the callback. The content CSP's `frame-ancestors` consumes this so only
-// the app's player may frame a playground, and the same http(s)+hostname validation applies — a malformed
-// callback URL fails LOUDLY and named here rather than yielding an empty framing source that permits no
-// one. `URL.origin` serializes to a valid `frame-ancestors` source (a non-default port is kept, the
-// default port dropped). [LAW:one-source-of-truth] [LAW:no-silent-failure]
-export const appOriginOf = (oauthCallbackUrl: string): string =>
-  parseWebOrigin('The OAuth callback URL', oauthCallbackUrl).origin;
+// A validated app origin — a bare http(s) origin (scheme://host[:port]) fit to scope the content CSP's
+// `frame-ancestors`. Branded (the codebase's identifier idiom) so an unvalidated string CANNOT reach that
+// security-sensitive directive: the only way to obtain an AppOrigin is the validating mint below, so
+// every value of the type is a real web origin by construction — an empty or non-origin string is
+// uncompilable at the seam, not merely runtime-guarded. [LAW:types-are-the-program]
+type Brand<T, B extends string> = T & { readonly __brand: B };
+export type AppOrigin = Brand<string, 'AppOrigin'>;
+
+// The SINGLE validated mint for AppOrigin. `parseWebOrigin(...).origin` both validates (rejecting a
+// non-http(s) or hostname-less value LOUDLY and named) and normalizes (strips any path, drops a default
+// port), so `AppOrigin('https://app.test/x')` and `AppOrigin('https://app.test')` are the same value and
+// the brand's guarantee holds for every producer. `URL.origin` is itself a valid `frame-ancestors`
+// source. [LAW:one-source-of-truth] [LAW:no-silent-failure]
+export const AppOrigin = (raw: string): AppOrigin => parseWebOrigin('The app origin', raw).origin as AppOrigin;
+
+// The app origin, derived from the OAuth callback URL — the CANONICAL app-origin source, since the
+// callback is registered on the app origin by construction (the login CSRF cookie must be present on it).
+// There is NO standalone app-origin config value; minting one would be a second source of truth that
+// could drift from the callback. Composes the AppOrigin mint over the callback's origin, so a malformed
+// callback URL fails LOUDLY and named ("The OAuth callback URL …") rather than yielding an empty framing
+// source that permits no one. [LAW:one-source-of-truth] [LAW:no-silent-failure]
+export const appOriginOf = (oauthCallbackUrl: string): AppOrigin =>
+  AppOrigin(parseWebOrigin('The OAuth callback URL', oauthCallbackUrl).origin);
 
 export const assertDistinctOriginHosts = (appOrigin: string, contentOrigin: string): void => {
   // hostname, not host: browser cookies — the __Host- session cookie especially — are scoped to the

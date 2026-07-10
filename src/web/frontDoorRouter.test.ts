@@ -9,6 +9,7 @@ import { makeMemorySessionStore, passThroughValidator, Subject } from '../api/in
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
 import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
+import { AppOrigin } from './originGuard.js';
 
 // The two-origin router's contract: a request to the APP host reaches the app pages, the session
 // surface, and the API; a request to the CONTENT host reaches ONLY the sandboxed raw-html handler
@@ -16,7 +17,7 @@ import { makeFrontDoorRouter } from './frontDoorRouter.js';
 // other. This is the sandbox boundary on a single fetch entry, asserted as behavior at the seam with
 // a memory-backed app (no R2/D1/env). [LAW:behavior-not-structure] [LAW:single-enforcer]
 
-const APP_ORIGIN = 'https://app.tinkerpad.test';
+const APP_ORIGIN = AppOrigin('https://app.tinkerpad.test');
 const CONTENT_ORIGIN = 'https://content.tinkerpad.test';
 
 const handle = (session: string, turn: string): SessionHandle => ({

@@ -14,6 +14,7 @@ import { localIdentityResolver } from '../api/identity.js';
 import { makeMemoryReportStore } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
+import { AppOrigin } from './originGuard.js';
 import { serve } from './server.js';
 import type { RunningServer } from './server.js';
 
@@ -25,7 +26,7 @@ import type { RunningServer } from './server.js';
 const RAW_HTML = '<!doctype html><html><body><h1>hello</h1><script>void 0</script></body></html>';
 const PAGE = '<!doctype html><title>front door</title>';
 // The app origin scoped into the content CSP's frame-ancestors — a distinct host from the content origin.
-const APP_ORIGIN = 'https://app.tinkerpad.test';
+const APP_ORIGIN = AppOrigin('https://app.tinkerpad.test');
 
 const seed = async (catalog: Catalog, store: ArtifactStore): Promise<PlaygroundId> => {
   const version = await store.put({ html: RAW_HTML });

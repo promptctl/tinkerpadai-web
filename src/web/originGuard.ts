@@ -14,15 +14,24 @@
 // there is a distinct-PORT invariant enforced where the ports are resolved, not a hostname comparison
 // this function could meaningfully make. [LAW:decomposition]
 
-// Parse an origin to its hostname, failing with a NAMED error when the value is not a valid absolute
-// URL. This guard is the first place the edge parses these config values, so a malformed one must
-// surface as a clear config error naming the culprit, not a bare "Invalid URL". [LAW:no-silent-failure]
+// Parse an origin to its hostname, failing with a NAMED error for anything that is not a real web
+// origin. This guard is the first place the edge parses these config values, so a bad one must surface
+// as a clear config error naming the culprit — not a bare "Invalid URL", and never a SILENT pass. The
+// strongest true shape for a two-origin web deployment is an http(s) URL with a non-empty hostname:
+// schemes like data:/javascript:/file: parse without throwing but yield an empty hostname, which would
+// otherwise slip past the distinctness check (an empty host differs from any real one). Reject them.
+// [LAW:no-silent-failure] [LAW:types-are-the-program]
 const hostnameOf = (role: string, origin: string): string => {
+  let url: URL;
   try {
-    return new URL(origin).hostname;
+    url = new URL(origin);
   } catch {
     throw new Error(`${role} must be a valid absolute URL (e.g. https://host.example), but got "${origin}".`);
   }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.hostname === '') {
+    throw new Error(`${role} must be an http(s) URL with a hostname (e.g. https://host.example), but got "${origin}".`);
+  }
+  return url.hostname;
 };
 
 export const assertDistinctOriginHosts = (appOrigin: string, contentOrigin: string): void => {

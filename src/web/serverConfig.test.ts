@@ -31,6 +31,13 @@ describe('resolveServerConfig — two-origin port split', () => {
     expect(() => resolveServerConfig(import.meta.url)).toThrow(/must be different ports/);
   });
 
+  it('throws when PORT is unset (defaults to 8787) and TINKERPAD_CONTENT_PORT is set to that default', () => {
+    // The default-vs-explicit collision reaches port === contentPort through parsePort's fallback
+    // branch (PORT undefined), a different route than the explicit-vs-explicit case above.
+    process.env.TINKERPAD_CONTENT_PORT = '8787';
+    expect(() => resolveServerConfig(import.meta.url)).toThrow(/must be different ports/);
+  });
+
   it('names both ports and the remedy env var in the collision error', () => {
     process.env.PORT = '5000';
     process.env.TINKERPAD_CONTENT_PORT = '5000';

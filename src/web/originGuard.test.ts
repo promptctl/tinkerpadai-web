@@ -55,4 +55,22 @@ describe('assertDistinctOriginHosts', () => {
       /The playground content origin must be a valid absolute URL/,
     );
   });
+
+  it('rejects a data: app origin — it parses but has no hostname, so it must not pass silently', () => {
+    expect(() =>
+      assertDistinctOriginHosts('data:text/html,hello', 'https://content.tinkerpad.test'),
+    ).toThrow(/The app origin must be an http\(s\) URL with a hostname/);
+  });
+
+  it('rejects a javascript: content origin — no hostname is not a valid web origin', () => {
+    expect(() => assertDistinctOriginHosts('https://app.tinkerpad.test', 'javascript:void(0)')).toThrow(
+      /The playground content origin must be an http\(s\) URL with a hostname/,
+    );
+  });
+
+  it('rejects a non-http(s) scheme even when it carries a host (e.g. ftp)', () => {
+    expect(() => assertDistinctOriginHosts('https://app.tinkerpad.test', 'ftp://content.tinkerpad.test')).toThrow(
+      /must be an http\(s\) URL with a hostname/,
+    );
+  });
 });

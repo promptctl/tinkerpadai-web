@@ -3,6 +3,7 @@
 // service; everything else imports only these contracts. See design-docs/PROJECT.md.
 export { makeGenerationService, startTurnRetentionSweeper } from './generationService.js';
 export type {
+  GenerationProgress,
   GenerationService,
   GenerationServiceDeps,
   GenerationStatus,

@@ -120,6 +120,38 @@ describe('GET /availability — the live generation toggle', () => {
   });
 });
 
+describe('GET /progress — live observability alongside the poll loop', () => {
+  it('returns the progress snapshot for a running turn, branding the handle from the query', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success', runningPolls: 1 });
+    const { handle } = (await (
+      await handler(post('/generations', { providerId: 'fake', brief: { description: 'a wave explorer' } }))
+    ).json()) as { handle: Record<string, string> };
+
+    const query = new URLSearchParams(handle).toString();
+    const res = await handler(new Request(`http://tinkerpad.local/progress?${query}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { phase: string }).toMatchObject({ phase: 'generating' });
+  });
+
+  it('rejects a missing handle param as 400 at the trust boundary', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });
+    const res = await handler(new Request('http://tinkerpad.local/progress?providerId=fake'));
+    expect(res.status).toBe(400);
+  });
+
+  it('is credential-free — it reaches the service without the write gate, unlike POST /poll', async () => {
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, denyIdentity);
+    // A write route rejects the unauthenticated caller at the gate before any service call...
+    expect((await handler(post('/poll', { handle: { providerId: 'fake', sessionId: 's', turnId: 't' } }))).status).toBe(401);
+    // ...but progress is a read: it reaches the service, which fails loudly on the unknown turn — a 500,
+    // never a 401. That it is served without an identity is the proof it stays off the write gate.
+    const query = new URLSearchParams({ providerId: 'fake', sessionId: 's', turnId: 't' }).toString();
+    const res = await handler(new Request(`http://tinkerpad.local/progress?${query}`));
+    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(500);
+  });
+});
+
 describe('POST /generations then POST /poll — the full submit→poll round trip', () => {
   it('submits a brief, returns a handle, and polls it through to ready', async () => {
     const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' });

@@ -457,6 +457,19 @@
       #status .bad  { color: var(--bad); }
       #status .good { color: var(--good); }
       #status a     { color: var(--accent); }
+      /* The live progress detail — the provider's latest line during a long generation. Dimmed and
+         single-line-truncated so a wide pane capture never blows out the layout. */
+      #status .detail {
+        color: var(--muted-2);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.82em;
+        display: inline-block;
+        max-width: 32ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+      }
 
       .spinner {
         display: inline-block;
@@ -854,8 +867,16 @@
         }
       };
 
-      // Drive one generation to a terminal state. The poll on a running turn blocks on the
-      // server (~750ms) by design, so this loop never spins. [LAW:no-ambient-temporal-coupling]
+      // Drive one generation to a terminal state with TWO concurrent read-only loops over the same
+      // handle: [LAW:dataflow-not-control-flow]
+      //   - poll — the AUTHORITY. Its terminal read performs the server's one store+catalog write and
+      //     yields the real ready/failed outcome. Unchanged: a running poll blocks on the server (~750ms)
+      //     by design, so it never spins. [LAW:no-ambient-temporal-coupling]
+      //   - watchProgress — pure observability. Renders the provider's live line so a 5-11 minute (plus
+      //     retry) generation visibly advances, and the distinct VALIDATING phase so the post-success
+      //     functional-gate window does not read as a stall. Best-effort: it never decides the outcome, so
+      //     if it errors the poll loop still carries the turn to terminal. `done` gates it so a late render
+      //     can never overwrite the terminal status poll paints. [LAW:single-enforcer]
       const generate = async (providerId, description) => {
         setStatus('<span class="spinner"></span>Submitting…');
         const { handle } = await api('/generations', {
@@ -863,27 +884,63 @@
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ providerId, brief: { description } }),
         });
+        setStatus('<span class="spinner"></span>Generating…');
 
-        for (;;) {
-          const status = await api('/poll', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ handle }),
-          });
-          if (status.state === 'pending' || status.state === 'running') {
-            setStatus(`<span class="spinner"></span>Generating… (${esc(status.state)})`);
-            continue;
+        let done = false;
+        const progressQuery = new URLSearchParams(handle).toString();
+
+        const watchProgress = async () => {
+          while (!done) {
+            let update;
+            try {
+              update = await api(`/progress?${progressQuery}`);
+            } catch {
+              // Progress is best-effort; poll remains the authority. Pace before retrying so a persistently
+              // failing endpoint cannot spin the loop. [LAW:no-silent-failure]
+              await new Promise((resolve) => setTimeout(resolve, 1500));
+              continue;
+            }
+            if (done) return; // poll reached terminal while this was in flight — do not overwrite it
+            if (update.phase === 'generating') {
+              const detail = update.message ? ` <span class="detail">${esc(update.message)}</span>` : '';
+              setStatus(`<span class="spinner"></span>Generating…${detail}`);
+            } else if (update.phase === 'validating') {
+              setStatus('<span class="spinner"></span>Validating… <span class="detail">checking it runs</span>');
+            } else {
+              return; // done — poll owns the terminal render
+            }
           }
-          if (status.state === 'ready') {
-            const href = `/play?id=${encodeURIComponent(status.playgroundId)}`;
-            setStatus(
-              `<span class="good">Playground ready.</span> ` +
-              `<a href="${href}">Open it →</a> <code>${esc(status.playgroundId)}</code>`,
-            );
+        };
+
+        const progress = watchProgress();
+        try {
+          for (;;) {
+            const status = await api('/poll', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ handle }),
+            });
+            if (status.state === 'pending' || status.state === 'running') continue; // progress renders detail
+            done = true;
+            if (status.state === 'ready') {
+              const href = `/play?id=${encodeURIComponent(status.playgroundId)}`;
+              setStatus(
+                `<span class="good">Playground ready.</span> ` +
+                `<a href="${href}">Open it →</a> <code>${esc(status.playgroundId)}</code>`,
+              );
+              return;
+            }
+            setStatus(`<span class="bad">Generation failed: ${esc(status.error)}</span>`);
             return;
           }
-          setStatus(`<span class="bad">Generation failed: ${esc(status.error)}</span>`);
-          return;
+        } finally {
+          // Signal the watcher to stop on its next loop check — but do NOT await it. A progress fetch has
+          // no timeout, so awaiting a hung one would keep generate() (and the submit button's re-enable)
+          // blocked forever on a server or network stall. Fire-and-forget with a swallowed rejection so
+          // generate() returns the instant poll reaches terminal; the watcher exits on its own `done` check
+          // and can no longer overwrite the terminal status. [LAW:no-ambient-temporal-coupling]
+          done = true;
+          progress.catch(() => {});
         }
       };
 

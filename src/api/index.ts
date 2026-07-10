@@ -7,6 +7,8 @@ export type {
   GenerationServiceDeps,
   GenerationStatus,
 } from './generationService.js';
+export { makeReportService } from './reportService.js';
+export type { ReportService, ReportServiceDeps } from './reportService.js';
 export { makeHttpHandler } from './httpHandler.js';
 export { localIdentityResolver, Subject } from './identity.js';
 export type { Identity, IdentityResolver } from './identity.js';

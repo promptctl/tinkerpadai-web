@@ -6,6 +6,7 @@ import { makeGitHubOAuthProvider } from '../api/index.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
+import { makeD1ReportStore } from '../storage/d1ReportStore.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
 
 // The type of the assembled request handler, memoized per isolate below.
@@ -103,6 +104,9 @@ const handlerFor = (env: Env): Handler => {
     registry: new ProviderRegistry(),
     store: makeR2ArtifactStore(env.ARTIFACTS),
     catalog: makeD1Catalog(env.DB),
+    // Reports persist durably in the same D1 database as the catalog and sessions — the edge can
+    // collect moderation signal against the commons it serves even with generation disabled.
+    reportStore: makeD1ReportStore(env.DB),
     sessionStore: makeD1SessionStore(env.DB, { now: () => Date.now(), ttlMs: EDGE_SESSION_TTL_MS }),
     // No provider means no turns are ever created, so the disposer is unreachable — a no-op is the
     // contract's sanctioned value for "a provider with nothing to release". [LAW:dataflow-not-control-flow]

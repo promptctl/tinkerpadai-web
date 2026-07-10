@@ -49,6 +49,19 @@ export const hydrateReportsDoc = (doc: unknown): ReportsDoc => {
   if (typeof doc !== 'object' || doc === null || !Array.isArray((doc as { reports?: unknown }).reports)) {
     throw new Error('stored reports document is malformed: expected { reports: [...] }');
   }
+  const reports = (doc as { reports: readonly unknown[] }).reports;
+  // Validate each element is a non-null object, the same structural skeleton the catalog's
+  // hydrateStoredDoc enforces per playground. Without this a tampered `{ reports: [42, null] }` would
+  // pass and hand list() entries whose `.id`/`.reason`/`.at` are silently undefined — a corrupt
+  // document read as valid, the exact lie this boundary exists to catch. Deliberately NOT a
+  // field-by-field validator: we are the sole legitimate writer, so the threat is gross corruption,
+  // not malformed leaves, and mirroring the Report type as runtime checks would duplicate it and
+  // drift. [LAW:no-silent-failure] [LAW:types-are-the-program] [LAW:one-type-per-behavior]
+  reports.forEach((entry) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new Error('stored reports document is malformed: each report must be an object');
+    }
+  });
   return doc as ReportsDoc;
 };
 

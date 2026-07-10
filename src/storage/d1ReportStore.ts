@@ -22,8 +22,15 @@ const REPORTS_ROW_ID = 1;
 //
 // KNOWN LIMITATION, stated not hidden: read-modify-write of the whole document is atomic only within
 // a single Worker isolate (makeReportStore's serialize()), so two concurrent report writes from
-// different isolates could lose one — the same trade-off makeD1Catalog documents. Concurrent edge
-// writes are unblocked by the normalized schema noted above. [LAW:no-silent-failure]
+// different isolates could read the same state, each append locally, and have one overwrite the other
+// — losing a report. This is the same accepted trade-off makeD1Catalog documents, with one honest
+// difference: unlike the catalog (which takes NO app writes at the first edge deploy, generation
+// being disabled), reports CAN be written at the edge — a browser reporting an existing playground —
+// so the window is genuinely reachable here, not merely theoretical. It stays accepted because report
+// volume at launch is near zero, making a same-instant cross-isolate collision vanishingly unlikely,
+// and because the fix is a real schema change with no payoff yet: normalizing to per-report rows
+// (individual INSERTs, no read-modify-write) closes the gap BEHIND this same seam when volume makes it
+// worth the carrying cost. [LAW:no-silent-failure] [LAW:carrying-cost]
 export const makeD1ReportStore = (db: D1Database): ReportStore => {
   const backend: ReportStoreBackend = {
     async read(): Promise<ReportsDoc> {

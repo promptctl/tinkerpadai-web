@@ -57,4 +57,10 @@ describe('makeD1ReportStore', () => {
     setRaw('42');
     await expect(makeD1ReportStore(db).list()).rejects.toThrow(/malformed/);
   });
+
+  it('fails LOUDLY on a document whose entries are not objects, not silent undefined-field reports', async () => {
+    const { db, setRaw } = makeFakeD1();
+    setRaw('{"reports":[42,null]}');
+    await expect(makeD1ReportStore(db).list()).rejects.toThrow(/each report must be an object/);
+  });
 });

@@ -199,42 +199,51 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
   const killSession = (world: TurnWorld): Promise<unknown> =>
     tmux(['kill-session', '-t', world.session]).catch(() => undefined);
 
-  // The tail of the pane's output — the last thing the agent did before it died. Only readable
-  // while the session is still alive, so every failure path captures it BEFORE killSession.
-  // [LAW:no-ambient-temporal-coupling]
+  // The tail of the pane's output — the last thing the agent did before the session ends. Only
+  // readable while the session is still alive, so it is always captured BEFORE killSession. A capture
+  // fault returns '' so the record is still written, but is surfaced loudly: an empty pane.tail must be
+  // distinguishable from a crashed capture. This is a single diagnostic moment, not the hot progress
+  // loop (which silences transient misses on purpose). [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling]
   const capturePaneTail = async (world: TurnWorld): Promise<string> => {
-    const pane = (await run('tmux', [
-      'capture-pane',
-      '-p',
-      '-S',
-      `-${PANE_TAIL_LINES}`,
-      '-t',
-      world.session,
-    ]).catch(() => ({ stdout: '' }))) as { stdout: string };
-    return pane.stdout;
+    try {
+      const pane = (await run('tmux', ['capture-pane', '-p', '-S', `-${PANE_TAIL_LINES}`, '-t', world.session])) as {
+        stdout: string;
+      };
+      return pane.stdout;
+    } catch (error) {
+      console.error(`tinkerpad: failed to capture pane for ${world.session}:`, error);
+      return '';
+    }
   };
 
-  // Resolve a turn to a loud failure, preserving its evidence first. The pane tail is captured
-  // (while the session still exists) into the workdir beside the prompt and any partial artifact, so
-  // the whole workdir is a self-contained diagnostic record the failure disposer preserves before it
-  // reaps the workdir (ppu.4). Then the session is torn down. A capture/write fault is surfaced loudly
-  // but never converts a failure into a crash — the diagnostic is auxiliary to the failure it
-  // describes, the same best-effort contract the service's release seam gives its disposer.
-  // [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling]
-  const failWith = async (world: TurnWorld, message: string): Promise<DriverSnapshot> => {
+  // Tear down a session, capturing its pane tail into the workdir first — the ONE place the driver ends
+  // a session, so the pane is preserved on EVERY teardown, not only driver-level failures. This is what
+  // gives a built-but-broken artifact (a driver success the service later rejects — FunctionalDefectError
+  // / SelfContainmentError, the wave-1 class) its pane context in the preserved record (ppu.4), since the
+  // session is already dead by the time the service rejects. Capture is unconditional, not a branch on
+  // outcome; a capture/write fault is surfaced loudly but never converts an outcome into a crash — the
+  // diagnostic is auxiliary. [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+  const captureAndKill = async (world: TurnWorld): Promise<void> => {
     try {
       await writeFile(join(world.dir, PANE_TAIL_FILE), await capturePaneTail(world), 'utf8');
     } catch (error) {
-      console.error(`tinkerpad: failed to capture pane tail for ${world.session}:`, error);
+      console.error(`tinkerpad: failed to write pane tail for ${world.session}:`, error);
     }
     await killSession(world);
+  };
+
+  // Resolve a turn to a loud failure, tearing the session down (which preserves its pane tail into the
+  // workdir) first, so the whole workdir is a self-contained diagnostic record the failure disposer
+  // preserves before it reaps the workdir (ppu.4). [LAW:no-silent-failure]
+  const failWith = async (world: TurnWorld, message: string): Promise<DriverSnapshot> => {
+    await captureAndKill(world);
     return { state: 'failed', message };
   };
 
   // Resolve a terminal turn: the exit sentinel exists, so the pane's process is done.
-  // Map the exit code + artifact presence onto the snapshot. A failure preserves the pane tail and
-  // tears down the session (failWith); only a clean exit WITH a non-empty file is a success, which
-  // just tears the session down. [LAW:no-silent-failure]
+  // Map the exit code + artifact presence onto the snapshot. Every teardown goes through captureAndKill,
+  // so the pane tail is preserved whether the turn failed here or succeeded (and is later rejected
+  // downstream); only a clean exit WITH a non-empty file is a success. [LAW:no-silent-failure]
   const settle = async (world: TurnWorld, exitRaw: string): Promise<DriverSnapshot> => {
     const code = Number.parseInt(exitRaw.trim(), 10);
     if (code !== 0) return failWith(world, `Claude Code exited with status ${code}`);
@@ -246,13 +255,16 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
     try {
       html = await readOrNull(join(world.dir, ARTIFACT_FILE));
     } catch (error) {
-      await killSession(world);
+      await captureAndKill(world);
       throw error;
     }
     if (html === null || html.trim() === '') {
       return failWith(world, 'Claude Code finished but wrote no playground file');
     }
-    await killSession(world);
+    // Success still tears down through captureAndKill: a self-contained file can still be built-but-
+    // broken, and the service's functional/self-containment gate rejects it AFTER the session is gone —
+    // so its preserved record needs the pane captured here, the last moment it exists (ppu.4).
+    await captureAndKill(world);
     return { state: 'succeeded', html };
   };
 

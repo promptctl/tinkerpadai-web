@@ -3,6 +3,8 @@ import type {
   Availability,
   Brief,
   GenerationRequest,
+  ProgressEvent,
+  Provider,
   ProviderDescriptor,
   ProviderId,
   ProviderRegistry,
@@ -36,6 +38,25 @@ export type GenerationStatus =
   | { readonly state: 'running' }
   | { readonly state: 'ready'; readonly playgroundId: PlaygroundId }
   | { readonly state: 'failed'; readonly error: string };
+
+// The READ-ONLY observability of a turn in flight — the companion to poll(), never a replacement.
+// poll() owns the terminal transition and the one store+catalog write; progress() only OBSERVES, so a
+// client watching it can neither cause a write nor advance a turn. It carries the two things poll's
+// point-in-time GenerationStatus cannot, and that a 5-11 minute (plus retry) generation needs:
+//   - `generating` with the live `message` — the provider's latest note, the proof a long turn is
+//     advancing rather than hung;
+//   - `validating` — the post-provider-success window in which poll() is blocked inside finalizeSuccess
+//     running the functional gate (a headless-Chrome load, ~10s). That window would otherwise read as a
+//     stalled 'running'; naming it as a DISTINCT phase is the honesty the ticket calls for. This phase is
+//     a SERVICE fact, not a provider one — the provider's feed has already ended by the time it holds.
+//   - `done` — the provider attempt is terminal with no retry pending; the client's poll carries the real
+//     ready/failed outcome, so progress steps aside rather than inventing a terminal it does not own.
+// Illegal pairings (a validating phase with a detail line, a done phase carrying a provider message) are
+// unrepresentable. [LAW:types-are-the-program] [LAW:effects-at-boundaries] [LAW:no-silent-failure]
+export type GenerationProgress =
+  | { readonly phase: 'generating'; readonly at: number; readonly message: string }
+  | { readonly phase: 'validating'; readonly at: number }
+  | { readonly phase: 'done'; readonly at: number };
 
 // The TYPED "this provider can't iterate" signal. continue() is only meaningful against a
 // provider that implements continueSession; capability IS method presence (registry's
@@ -154,6 +175,14 @@ export interface GenerationService {
   // its target playground) exactly once and thereafter reports `ready`; on failure it
   // surfaces the message, writes nothing, and releases the turn. [LAW:no-silent-failure]
   poll(handle: SessionHandle): Promise<GenerationStatus>;
+
+  // The read-only progress snapshot of a turn — the enrichment poll() cannot give during a long
+  // generation. It reports the LIVE attempt (record.current) read FRESH on every call, so across a retry
+  // attempt-swap it reflects the new attempt with no special handling: re-reading `current` each call IS
+  // the retry honesty the ticket requires. It performs NO write and never drives the terminal transition,
+  // so a client may watch it freely without moving the turn — the single write-gate stays poll's alone. An
+  // unknown or evicted turn fails loudly, exactly as poll does. [LAW:effects-at-boundaries] [LAW:no-silent-failure]
+  progress(handle: SessionHandle): Promise<GenerationProgress>;
 
   // The retention seam that bounds the in-memory turns map — the maintenance half of the map's own
   // lifecycle, not a client surface. A record is reclaimed ONLY once it has settled (terminal outcome
@@ -464,6 +493,28 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     record.retryInFlight = launch;
   };
 
+  // Sample the provider's live progress feed for its freshest note — one point-in-time read, NOT a
+  // continuous subscription. streamProgress is an open-ended feed built for streaming; the long-poll
+  // progress surface wants a single latest value, so this pulls the feed's opening event plus the next
+  // one (the current detail line) and closes the iterator immediately, returning whichever is freshest. A
+  // feed that yields nothing before ending settles to a neutral note rather than a lie. The iterator is
+  // always closed in the finally — this is a sample, so the underlying loop (the tmux driver's pane
+  // capture) must stop the instant we have our value, never linger. [LAW:effects-at-boundaries]
+  // [LAW:no-ambient-temporal-coupling] [LAW:no-silent-failure]
+  const latestProgress = async (provider: Provider, attempt: SessionHandle): Promise<ProgressEvent> => {
+    const iterator = provider.streamProgress(attempt)[Symbol.asyncIterator]();
+    try {
+      let latest: ProgressEvent = { at: now(), message: 'generating…' };
+      const opening = await iterator.next();
+      if (opening.done !== true) latest = opening.value;
+      const next = await iterator.next();
+      if (next.done !== true) latest = next.value;
+      return latest;
+    } finally {
+      await iterator.return?.();
+    }
+  };
+
   return {
     listProviders(): readonly ProviderDescriptor[] {
       return registry.list();
@@ -655,6 +706,60 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
             return { state: 'running' };
           }
           return settle(record, finalizeFailure(attempt, record.target, status.error.message));
+        default: {
+          const unreachable: never = status;
+          return unreachable;
+        }
+      }
+    },
+
+    async progress(handle: SessionHandle): Promise<GenerationProgress> {
+      const record = recordOf(handle);
+      // A retry is mid-launch: the failed attempt reclaimed, the next not yet live. Still generating from
+      // the client's view — report continuity across the swap rather than a gap that reads as a stall. This
+      // is the launch-window twin of poll's own retryInFlight guard. [LAW:no-ambient-temporal-coupling]
+      if (record.retryInFlight !== null) return { phase: 'generating', at: now(), message: 'retrying…' };
+
+      // The LIVE attempt, read fresh — after a retry this is the new attempt, so following the swap is just
+      // reading `current`, never a stored stale handle. [LAW:one-source-of-truth]
+      const attempt = record.current;
+      const provider = registry.get(attempt.providerId);
+      let status: SessionStatus;
+      try {
+        status = await provider.getStatus(attempt);
+      } catch (error) {
+        // The live attempt's workdir may have been reaped by a settled failure between reading the record
+        // and this status read (a failed create releases its workdir, ppu.4). If the request has since
+        // settled, that reap is expected and the turn is terminal — report done; the client's poll carries
+        // the outcome. Otherwise it is a real fault that must surface, never be swallowed as done.
+        // [LAW:no-silent-failure]
+        if (record.settledAtMs !== null) return { phase: 'done', at: now() };
+        throw error;
+      }
+
+      switch (status.state) {
+        case 'pending':
+          return { phase: 'generating', at: now(), message: 'starting…' };
+        case 'running': {
+          // The one place progress samples the provider's live feed: its latest note, the proof the turn is
+          // advancing during a multi-minute generation. [LAW:effects-at-boundaries]
+          const latest = await latestProgress(provider, attempt);
+          return { phase: 'generating', at: latest.at, message: latest.message };
+        }
+        case 'succeeded':
+          // The provider finished; the service is now finalizing — poll() awaits the functional gate inside
+          // finalizeSuccess (~10s) before it can report ready. That window is VALIDATING, not a stalled
+          // 'running'. Progress only REPORTS the phase; it never runs the gate, so the single write stays
+          // poll's. [LAW:single-enforcer]
+          return { phase: 'validating', at: now() };
+        case 'failed':
+          // A failed attempt with retry budget left: a retry will start on the next poll — still generating
+          // from the client's view. Budget spent: the request is settling failed; report done and let poll
+          // surface the message. Retry-vs-terminal is the VALUE attemptsLeft, never a branch on why the
+          // attempt failed. [LAW:dataflow-not-control-flow]
+          return record.attemptsLeft > 0
+            ? { phase: 'generating', at: now(), message: 'retrying…' }
+            : { phase: 'done', at: now() };
         default: {
           const unreachable: never = status;
           return unreachable;

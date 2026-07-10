@@ -79,10 +79,11 @@ describe('siteNav / siteFooter', () => {
     expect(footer).toContain('href="/"');
   });
 
-  it('links the ground rules and privacy pages from the footer of every server page', () => {
+  it('links the ground rules, privacy, and copyright pages from the footer of every server page', () => {
     // The legal surface must be reachable from anywhere, not just typed as a URL. [LAW:no-silent-failure]
     const footer = siteFooter();
     expect(footer).toContain('href="/terms"');
     expect(footer).toContain('href="/privacy"');
+    expect(footer).toContain('href="/copyright"');
   });
 });

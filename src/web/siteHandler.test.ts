@@ -116,6 +116,13 @@ describe('makeSiteHandler', () => {
     expect(privacyBody).toContain('What we collect');
     expect(privacyBody).toContain('GitHub');
 
+    const copyright = await handler(new Request('http://front.local/copyright'));
+    expect(copyright.status).toBe(200);
+    expect(copyright.headers.get('content-type')).toContain('text/html');
+    const copyrightBody = await copyright.text();
+    expect(copyrightBody).toContain('How to report copyright infringement');
+    expect(copyrightBody).toContain('under penalty of perjury');
+
     expect(delegated).toHaveLength(0);
   });
 
@@ -310,6 +317,7 @@ describe('makeSiteHandler', () => {
     expectHardened(await handler(new Request(`http://front.local/play?id=${encodeURIComponent(id)}`)));
     expectHardened(await handler(new Request('http://front.local/terms')));
     expectHardened(await handler(new Request('http://front.local/privacy')));
+    expectHardened(await handler(new Request('http://front.local/copyright')));
   });
 
   it('hardens the delegated session and API responses too — the login page is not exempt', async () => {

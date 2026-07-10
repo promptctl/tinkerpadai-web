@@ -3,7 +3,7 @@ import { makeNodeApp } from './nodeApp.js';
 import { parseAdminSubjects } from '../app.js';
 import { makeGitHubOAuthProvider, parseGenerationPolicy, parseQuotaLimits, startTurnRetentionSweeper } from '../api/index.js';
 import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.js';
-import { startWorkdirJanitor } from '../provider/index.js';
+import { diagnosticsDirOf, startDiagnosticsRetentionSweeper, startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
 import { serve } from './server.js';
@@ -104,6 +104,14 @@ const main = async (): Promise<void> => {
   // must not own. The handle is intentionally unreferenced — it sweeps for the life of the process and
   // stops on exit (its timer is unref'd). [LAW:effects-at-boundaries] [LAW:no-ambient-temporal-coupling]
   startTurnRetentionSweeper(app.service);
+
+  // Start the durable-diagnostics retention sweeper — the durable-storage sibling of the two in-memory
+  // sweepers above. It bounds the diagnostics dir (ppu.4 preserves a record per failed generation, with no
+  // reaper) by reclaiming records past the retention window, and lives HERE for the same reason: a
+  // background timer is a runtime effect makeApp must not own. The dir is derived from dataDir by the same
+  // rule the writer uses, so sweeper and writer target one dir. [LAW:effects-at-boundaries]
+  // [LAW:one-source-of-truth]
+  startDiagnosticsRetentionSweeper(diagnosticsDirOf(dataDir));
 
   // The logs the operator needs: where each origin listens, and the OAuth callback the GitHub app
   // must have registered (a mismatch is the most common login misconfiguration). [LAW:no-silent-failure]

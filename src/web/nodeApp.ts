@@ -4,6 +4,7 @@ import type { App } from '../app.js';
 import {
   ProviderRegistry,
   cleanupTurn,
+  diagnosticsDirOf,
   makeTmuxDriver,
   makeTmuxProvider,
   makeWorkdirDiagnostics,
@@ -82,7 +83,7 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
   // the data dir beside artifacts/catalog — NOT tmpdir, which the idle GC and reboots wipe — so a
   // timeout or failure can be diagnosed after the fact instead of reaped. The failure disposer below
   // copies the workdir here, then cleanupTurn reclaims it. [LAW:decomposition]
-  const preserveDiagnostics = makeWorkdirDiagnostics(join(config.dataDir, 'diagnostics'));
+  const preserveDiagnostics = makeWorkdirDiagnostics(diagnosticsDirOf(config.dataDir));
   const reportStore = makeFileReportStore(join(config.dataDir, 'reports.json'));
   const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: NODE_SESSION_TTL_MS });
 

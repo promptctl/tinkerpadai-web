@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { evictExpiredDirs } from './dirRetention.js';
 import type { CodeGenDriver, DriverSnapshot } from './codeGenDriver.js';
 import type { Artifact, Availability, Brief, ProgressEvent, SessionHandle } from './types.js';
 
@@ -517,6 +518,69 @@ export const makeWorkdirDiagnostics =
     }
   };
 
+// Where a deployment's durable failure diagnostics live: a fixed subdir of its data dir. The single home
+// of that path, so the WRITER (makeWorkdirDiagnostics, above, which the composition root builds over it)
+// and the retention sweeper (below) derive it from one rule and can never target different dirs.
+// [LAW:one-source-of-truth]
+export const diagnosticsDirOf = (dataDir: string): string => join(dataDir, 'diagnostics');
+
+export interface DiagnosticsRetentionSweeperConfig {
+  readonly retentionMs?: number;
+  readonly sweepIntervalMs?: number;
+  // The clock read at the sweep edge to compute the age cutoff. Injected for deterministic tests; the
+  // runtime default is the real wall clock. [LAW:effects-at-boundaries]
+  readonly now?: () => number;
+}
+
+export interface DiagnosticsRetentionSweeper {
+  stop(): void;
+}
+
+// Seven days: long enough to diagnose a week of failures after the fact, bounded so the dir cannot grow
+// for the life of the deployment. A diagnostics record is the ONLY copy of a failure's evidence (unlike
+// the re-seedable workdir cache), so its window is far longer than the caches'.
+const DEFAULT_DIAGNOSTICS_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// Sweep every six hours: records accrue at most one-per-failure and the window is days, so a frequent
+// sweep would cost more than it saves.
+const DEFAULT_DIAGNOSTICS_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+// The retention lifecycle OWNER for the durable diagnostics dir (ppu.4 writes it; nothing reaped it) —
+// the durable-storage sibling of the in-memory turn sweeper and the tmpdir workdir janitor. A background
+// sweeper reclaims records whose on-disk age exceeds retentionMs, and it is the SINGLE explicit owner of
+// that timing: start is this call, stop the returned handle, the clock read only at the sweep edge (now()
+// is the nowMs handed to the shared mechanism), never an ambient timer smeared across the code. The timer
+// is unref'd so it never keeps the process alive on its own. Started by the runtime entry, never by
+// makeApp/makeNodeApp, because a background timer is a runtime effect the graph builder must not own.
+// Like the workdir janitor — and UNLIKE the in-memory turn sweeper — the dir is DURABLE, so an eager first
+// sweep on boot clears records orphaned across a restart. [LAW:no-ambient-temporal-coupling]
+// [LAW:effects-at-boundaries]
+export const startDiagnosticsRetentionSweeper = (
+  diagnosticsDir: string,
+  config: DiagnosticsRetentionSweeperConfig = {},
+): DiagnosticsRetentionSweeper => {
+  const retentionMs = config.retentionMs ?? DEFAULT_DIAGNOSTICS_RETENTION_MS;
+  const sweepIntervalMs = config.sweepIntervalMs ?? DEFAULT_DIAGNOSTICS_SWEEP_INTERVAL_MS;
+  const now = config.now ?? Date.now;
+
+  const sweep = (): void => {
+    void evictExpiredDirs({ root: diagnosticsDir, maxAgeMs: retentionMs, nowMs: now() })
+      .then((evicted) => {
+        if (evicted.length > 0) {
+          console.log(`tinkerpad: reclaimed ${evicted.length} expired diagnostics record(s)`);
+        }
+      })
+      // A sweep fault is surfaced loudly but must not crash the server. [LAW:no-silent-failure]
+      .catch((error: unknown) => {
+        console.error('tinkerpad: diagnostics retention sweep failed:', error);
+      });
+  };
+
+  sweep(); // clear restart-orphans promptly, then keep sweeping on the interval
+  const timer = setInterval(sweep, sweepIntervalMs);
+  timer.unref();
+  return { stop: () => clearInterval(timer) };
+};
+
 // ── Idle workdir eviction ───────────────────────────────────────────────────
 // A successful session's workdir is a CACHE of its durable artifact, kept warm so a
 // follow-up resumes with full conversation context. Nothing disposes it on the happy
@@ -527,50 +591,19 @@ export const makeWorkdirDiagnostics =
 // of truth (a dir's mtime is its last turn's activity), so this survives a restart
 // that the in-memory turn maps do not. [LAW:one-source-of-truth] [LAW:effects-at-boundaries]
 
-// One scanned workdir: its session id (the dir name) and when it was last touched.
-export interface WorkdirEntry {
-  readonly name: string;
-  readonly mtimeMs: number;
-}
-
-// The PURE policy: which workdirs are past the idle deadline. Each turn rewrites its
-// dir as it runs (the exit sentinel is removed and recreated), so a fresh mtime means
-// recent activity and idleness beyond maxIdleMs means no turn has touched it since.
-// maxIdleMs must stay far larger than a single generation's timeout, so an in-flight
-// turn — whose dir was just written — is never a candidate. Pure, so the policy is
-// verified without touching the clock or disk. [LAW:effects-at-boundaries]
-export const expiredWorkdirs = (
-  entries: readonly WorkdirEntry[],
-  nowMs: number,
-  maxIdleMs: number,
-): readonly string[] => entries.filter((entry) => nowMs - entry.mtimeMs > maxIdleMs).map((entry) => entry.name);
-
 export interface EvictWorkdirsOptions {
   readonly maxIdleMs: number;
   readonly nowMs: number;
 }
 
-// The EFFECT: read the workdir root, decide with the pure policy, remove the expired
-// dirs. Returns the session ids it evicted, for logging and verification. A missing
-// root means no session has generated yet — a real empty state, not an error to
-// swallow; any other read failure throws loudly. [LAW:no-silent-failure]
-export const evictIdleWorkdirs = async (opts: EvictWorkdirsOptions): Promise<readonly string[]> => {
-  const names = await readdir(WORKDIR_ROOT).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return [] as string[];
-    throw error;
-  });
-  const entries = await Promise.all(
-    names.map(
-      async (name): Promise<WorkdirEntry> => ({
-        name,
-        mtimeMs: (await stat(join(WORKDIR_ROOT, name))).mtimeMs,
-      }),
-    ),
-  );
-  const expired = expiredWorkdirs(entries, opts.nowMs, opts.maxIdleMs);
-  await Promise.all(expired.map((name) => rm(join(WORKDIR_ROOT, name), { recursive: true, force: true })));
-  return expired;
-};
+// The workdir cache's binding of the shared age mechanism (evictExpiredDirs): it fixes the root to
+// WORKDIR_ROOT — the cache's single home — and reads the age as an IDLE horizon, because each turn
+// rewrites its dir (the exit sentinel is removed and recreated) so a dir's mtime is its last activity.
+// maxIdleMs must stay far larger than a single generation's timeout, so an in-flight turn — whose dir was
+// just written — is never a candidate. The scan/decide/remove mechanism lives once in evictExpiredDirs;
+// this is the workdir OWNER's use of it. [LAW:one-type-per-behavior]
+export const evictIdleWorkdirs = (opts: EvictWorkdirsOptions): Promise<readonly string[]> =>
+  evictExpiredDirs({ root: WORKDIR_ROOT, maxAgeMs: opts.maxIdleMs, nowMs: opts.nowMs });
 
 export interface WorkdirJanitorConfig {
   readonly maxIdleMs?: number;

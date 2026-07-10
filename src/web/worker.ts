@@ -8,6 +8,7 @@ import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
 import { makeD1ReportStore } from '../storage/d1ReportStore.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
+import { assertDistinctOriginHosts } from './originGuard.js';
 
 // The type of the assembled request handler, memoized per isolate below.
 type Handler = (request: Request) => Promise<Response>;
@@ -115,6 +116,16 @@ const handlerFor = (env: Env): Handler => {
   const clientSecret = required(env, 'GITHUB_CLIENT_SECRET');
   const oauthCallbackUrl = required(env, 'TINKERPAD_OAUTH_CALLBACK_URL');
   const contentOrigin = required(env, 'TINKERPAD_CONTENT_ORIGIN');
+
+  // The load-bearing sandbox invariant: the content origin must be a DIFFERENT hostname from the app.
+  // These are two independent env values (TINKERPAD_CONTENT_ORIGIN and the app-origin callback URL),
+  // so a misconfiguration can set them to the same hostname — collapsing the two-origin split enforced
+  // below into a same-origin serve of untrusted HTML. Reject it here, as the config is validated,
+  // before a single request is served rather than as a silent runtime collapse. The app origin is the
+  // OAuth callback's hostname: the callback is registered on the app origin by construction (the login
+  // CSRF cookie must be present on it), so it is the app's public hostname the content origin must not
+  // share. [LAW:no-silent-failure] [LAW:single-enforcer]
+  assertDistinctOriginHosts(oauthCallbackUrl, contentOrigin);
 
   const app = makeApp({
     // Generation is disabled at the first public deploy — an empty registry the front door reads as

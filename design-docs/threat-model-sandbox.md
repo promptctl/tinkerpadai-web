@@ -150,11 +150,17 @@ side, which is backwards for the origin that actually holds the asset.
   `X-Content-Type-Options: nosniff`, and `Referrer-Policy: same-origin`. A full `script-src` is
   deliberately deferred — the app runs inline scripts (index.html, player), so locking it needs
   per-script hashes/nonces and is tracked separately, not landed half-done.
-- **R2 — No guard that content origin ≠ app origin.** If `TINKERPAD_CONTENT_ORIGIN` is
-  misconfigured to the app host, the split collapses (raw playground HTML same-origin with the
-  app). Today a same-host config routes *everything* to the content handler (app dies loudly-ish),
-  but there is no explicit assertion the two hosts differ. A deploy-time invariant makes the
-  misconfiguration unrepresentable. → `tinkerpadai-sandbox-bci.4`
+- **R2 — No guard that content origin ≠ app origin. ✅ CLOSED (`tinkerpadai-sandbox-bci.4`).**
+  A composition-time invariant now rejects a config where the two origins share a **hostname** (the
+  granularity that matters: cookies — the `__Host-` session especially — are hostname-scoped and ignore
+  the port). The edge (`worker.ts`) calls `assertDistinctOriginHosts(oauthCallbackUrl,
+  TINKERPAD_CONTENT_ORIGIN)` on the `required()` path, before the front door is assembled — the app
+  hostname is the OAuth callback's hostname (registered on the app origin by construction), so a
+  `TINKERPAD_CONTENT_ORIGIN` misconfigured onto it fails the boot loudly instead of collapsing the
+  split at runtime. On Node the content origin is *derived* from the socket the entry binds (a distinct
+  host basis from the app), so distinctness is a distinct-**port** invariant enforced in
+  `resolveServerConfig` (`PORT` ≠ `TINKERPAD_CONTENT_PORT`), turning a cryptic second-bind `EADDRINUSE`
+  into a named error before either socket binds.
 - **R3 — Content CSP does not block outbound navigation.** `connect-src 'none'` stops fetch/XHR,
   but a playground can still `location = 'https://evil?…'` (self-frame navigation; sandbox
   permits it, `navigate-to` is unshipped). Low severity: the opaque frame holds nothing
@@ -181,3 +187,7 @@ The invariants a future change must not silently regress (each has a red test):
    `Referrer-Policy` — on *every* branch: the delegated login page and the error 500 included, since
    `siteHandler` is total. Removing the seal, letting a branch bypass it, or making the handler
    throw past it re-opens R1.
+7. The content origin and the app origin stay different hostnames — asserted at composition time, not
+   left to correct configuration. The edge rejects a same-hostname `TINKERPAD_CONTENT_ORIGIN`
+   (`assertDistinctOriginHosts`); Node rejects `PORT` == `TINKERPAD_CONTENT_PORT`. Removing either
+   guard re-opens R2 (raw playground HTML served where it can reach the app's cookies and session).

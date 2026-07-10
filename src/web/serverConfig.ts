@@ -37,6 +37,19 @@ export function resolveServerConfig(importMetaUrl: string): ServerConfig {
     fileURLToPath(new URL('../../.tinkerpad-data', importMetaUrl));
   const port = parsePort(process.env.PORT, 'PORT', DEFAULT_PORT);
   const contentPort = parsePort(process.env.TINKERPAD_CONTENT_PORT, 'TINKERPAD_CONTENT_PORT', port + 1);
+  // The Node-shaped expression of the two-origin sandbox invariant — the sibling of the edge's
+  // hostname-distinctness guard. Here the app and playground-content origins are two sockets on the
+  // SAME host, told apart only by port, so distinctness IS distinct ports: a genuinely different check
+  // from the edge's, because Node represents the two origins differently. A shared port otherwise fails
+  // late and cryptically at the second bind (EADDRINUSE); reject it here, loud and named, before either
+  // socket is bound. [LAW:no-silent-failure] [LAW:decomposition]
+  if (port === contentPort) {
+    throw new Error(
+      `PORT and TINKERPAD_CONTENT_PORT must be different ports, but both are ${port}. The app and ` +
+        'playground-content origins are separate sockets on the same host; sharing a port collapses the ' +
+        'two-origin sandbox split. Set TINKERPAD_CONTENT_PORT to a port distinct from PORT.',
+    );
+  }
   // The callback origin is FRONT_DOOR_HOST — the same host the dev entry binds and logs — so
   // the CSRF state cookie set at login is present on the callback request. [LAW:one-source-of-truth]
   const oauthCallbackUrl =

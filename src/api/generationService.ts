@@ -78,10 +78,14 @@ export interface GenerationServiceDeps {
   // both — it only reserves and releases. [LAW:decomposition] [LAW:single-enforcer]
   readonly quota: GenerationQuota;
   // Total provider attempts one request may make, INCLUDING the first (1 = no retry). A failed
-  // provider attempt is retried from the same brief until this budget is spent, then the failure
-  // is surfaced. Injected as a value from the composition root's GenerationPolicy — retry lives
-  // at THIS one boundary (the owner of turn lifecycle), never sprinkled per caller, so a single
-  // policy governs submit, continue, and fork alike. [LAW:single-enforcer] [LAW:decomposition]
+  // provider attempt is retried from the same brief until this budget is spent, then the failure is
+  // surfaced. Retry lives at THIS one boundary (the owner of turn lifecycle), never sprinkled per
+  // caller, so a single policy governs submit, continue, and fork alike. [LAW:single-enforcer]
+  //
+  // Domain: an integer >= 1. Validated ONCE, at the composition root's parseGenerationPolicy /
+  // parseMaxGenerationAttempts seam (the single enforcer, mirroring how QuotaLimits is validated by
+  // parseQuotaLimits) — not re-guarded here, so this service trusts a value already proven valid,
+  // exactly as makeGenerationQuota trusts its limits. [LAW:single-enforcer] [LAW:one-type-per-behavior]
   readonly maxAttempts: number;
 }
 
@@ -189,13 +193,6 @@ interface TurnRecord {
 
 export const makeGenerationService = (deps: GenerationServiceDeps): GenerationService => {
   const { registry, store, catalog, disposeTurn, quota, maxAttempts } = deps;
-
-  // A general part defends its own contract: fewer than one attempt would admit a request that
-  // can never run, silent data loss dressed as configuration. Fail loudly at construction.
-  // [LAW:no-silent-failure]
-  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
-    throw new Error(`maxAttempts must be an integer >= 1, got ${maxAttempts}`);
-  }
 
   // The single owner of in-flight turn state. In-memory and not evicted: a local
   // steel-thread limitation — turns in flight do not survive a process restart, while

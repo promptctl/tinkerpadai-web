@@ -706,23 +706,6 @@ const seedPlayground = async (h: FlakyHarness, prompt: string): Promise<Playgrou
   return playground.id;
 };
 
-describe('makeGenerationService — construction defends its attempt budget', () => {
-  it('throws loudly when maxAttempts is below one, never admitting a request that can never run', () => {
-    const registry = new ProviderRegistry();
-    registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
-    expect(() =>
-      makeGenerationService({
-        registry,
-        store: makeMemoryArtifactStore(),
-        catalog: makeMemoryCatalog(),
-        disposeTurn: async () => undefined,
-        quota: makeTestQuota(),
-        maxAttempts: 0,
-      }),
-    ).toThrow('maxAttempts must be an integer >= 1');
-  });
-});
-
 describe('GenerationService.poll — retry: a failed provider attempt is retried from the same brief', () => {
   it('retries a create that fails once, then reports ready and catalogs the retried artifact', async () => {
     const h = flakyHarness({ id: 'flaky', failFirst: 1 }, 2);

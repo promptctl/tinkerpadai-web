@@ -202,8 +202,8 @@ export interface BriefDriver {
 const POLL_INTERVAL_MS = 2000;
 
 // The margin the client's liveness ceiling holds ABOVE the server's worst-case generation time, to
-// cover per-attempt startup/settle overhead. The ceiling itself (POLL_CEILING_MS below, in
-// resolveConfig) is DERIVED, not a constant — see that comment.
+// cover per-attempt startup/settle overhead. The ceiling itself is not a constant — resolveConfig
+// derives it per run from the runtime policy (see WaveConfig.pollCeilingMs).
 const POLL_CEILING_MARGIN = 1.5;
 
 // Submit one brief against a chosen provider and poll it to a terminal Outcome. Pure

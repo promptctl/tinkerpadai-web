@@ -41,13 +41,21 @@ const parsePositiveInt = (value: string | undefined, name: string, min: number, 
   return n;
 };
 
-// The one parser both composition roots read the generation policy through, so "how the env
-// becomes the policy" is defined once and cannot drift between the Node and edge deploys —
-// exactly as parseQuotaLimits does for the rate-limit caps. [LAW:one-source-of-truth]
+// The single-value parser for the retry budget, split out so a root that consumes ONLY the retry
+// budget — the edge Worker, which has no driver and so no deadline to enforce — can validate it
+// without also validating a deadline it never uses (an invalid inert deadline should not brick the
+// whole edge). It is the ONE source of how TINKERPAD_MAX_GENERATION_ATTEMPTS becomes a number, reused
+// by parseGenerationPolicy below so the two cannot drift. [LAW:one-source-of-truth] [LAW:decomposition]
+export const parseMaxGenerationAttempts = (value: string | undefined): number =>
+  parsePositiveInt(value, 'TINKERPAD_MAX_GENERATION_ATTEMPTS', 1, DEFAULT_GENERATION_POLICY.maxAttempts);
+
+// The parser the roots WITH a driver (both Node entries) read the full policy through, so "how the
+// env becomes the policy" is defined once and cannot drift between deploys — exactly as
+// parseQuotaLimits does for the rate-limit caps. [LAW:one-source-of-truth]
 export const parseGenerationPolicy = (env: {
   readonly timeoutMs: string | undefined;
   readonly maxAttempts: string | undefined;
 }): GenerationPolicy => ({
   timeoutMs: parsePositiveInt(env.timeoutMs, 'TINKERPAD_GENERATION_TIMEOUT_MS', 1, DEFAULT_GENERATION_POLICY.timeoutMs),
-  maxAttempts: parsePositiveInt(env.maxAttempts, 'TINKERPAD_MAX_GENERATION_ATTEMPTS', 1, DEFAULT_GENERATION_POLICY.maxAttempts),
+  maxAttempts: parseMaxGenerationAttempts(env.maxAttempts),
 });

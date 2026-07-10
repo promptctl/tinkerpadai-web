@@ -29,7 +29,10 @@ interface TurnState {
   runningLeft: number;
 }
 
-export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
+// A fixture-only knob (NOT part of the shared provider contract): pin the exact html a succeeded turn
+// yields, so a test can drive the store's self-containment refusal through the real service with an
+// artifact the brief-derived default would never produce. When unset, html is derived from the brief.
+export const makeFakeProvider = (opts: ContractProviderOptions & { readonly html?: string }): Provider => {
   const providerId = ProviderId(opts.id);
   const availability: Availability = opts.availability ?? { state: 'available' };
   const turns = new Map<string, TurnState>();
@@ -41,7 +44,7 @@ export const makeFakeProvider = (opts: ContractProviderOptions): Provider => {
     return { providerId, sessionId, turnId };
   };
 
-  const htmlFor = (brief: Brief): string => `<!-- ${brief.description} -->`;
+  const htmlFor = (brief: Brief): string => opts.html ?? `<!-- ${brief.description} -->`;
 
   const turnOf = (handle: SessionHandle): TurnState => {
     const turn = turns.get(handle.turnId);

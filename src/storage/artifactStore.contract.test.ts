@@ -61,4 +61,17 @@ describe.each(ADAPTERS)('ArtifactStore contract: $name', ({ open }) => {
       await close();
     }
   });
+
+  it('refuses a non-self-contained artifact at the seam, before minting or writing anything', async () => {
+    const { store, close } = await open();
+    try {
+      // The single enforcement point: every backend rejects an external reference identically, and
+      // does so BEFORE writing — a refused artifact leaves no version behind to be mistaken for real.
+      await expect(store.put({ html: '<script src="https://cdn.example.com/x.js"></script>' })).rejects.toThrow(
+        /not self-contained.*https:\/\/cdn\.example\.com\/x\.js/,
+      );
+    } finally {
+      await close();
+    }
+  });
 });

@@ -38,7 +38,7 @@ interface Harness {
 }
 
 const harnessFor = (
-  opts: ContractProviderOptions,
+  opts: ContractProviderOptions & { readonly html?: string },
   disposeTurn?: (handle: SessionHandle) => Promise<void>,
   quota: GenerationQuota = makeTestQuota(),
 ): Harness => {
@@ -191,6 +191,32 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     expect(status).toEqual({ state: 'failed', error: 'skill crashed' });
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     // The turn is still released even though nothing was stored.
+    expect(h.disposed).toEqual([handle]);
+  });
+});
+
+describe('GenerationService.poll — a provider that succeeds but yields a non-self-contained file', () => {
+  it('routes the storage refusal to the failed-turn path — actionable message, nothing catalogued, turn released', async () => {
+    // The provider SUCCEEDS but emits an external <script>. The store refuses it at the seam; the
+    // service must translate that typed refusal into a FAILED generation (retry-able), never a 500 and
+    // never a half-written playground. This is the observable proof of the single-enforcer + translation
+    // seam working end to end. [LAW:no-silent-failure]
+    const h = harnessFor({
+      id: 'fake',
+      label: 'Fake',
+      outcome: 'success',
+      html: '<script src="https://cdn.example.com/x.js"></script>',
+    });
+    const handle = await submit(h, 'a playground that cheats');
+
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('not self-contained');
+    expect(status.error).toContain('https://cdn.example.com/x.js');
+
+    // Nothing entered the commons, and the create turn was released like any other failed first turn.
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     expect(h.disposed).toEqual([handle]);
   });
 });

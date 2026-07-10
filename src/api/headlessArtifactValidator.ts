@@ -59,6 +59,10 @@ export const makeHeadlessArtifactValidator = (config: HeadlessValidatorConfig): 
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
+    // The one document URL: what we navigate to, AND the sole origin the interceptor lets through — so
+    // "the artifact's page" is defined once and the two uses cannot drift. [LAW:one-source-of-truth]
+    const origin = `http://127.0.0.1:${port}`;
+    const documentUrl = `${origin}/`;
 
     // The server is now listening, so its close is owed on EVERY exit — including a puppeteer.launch that
     // throws (a bad executable path, Chrome missing a shared lib, a denied sandbox). The launch lives
@@ -87,10 +91,15 @@ export const makeHeadlessArtifactValidator = (config: HeadlessValidatorConfig): 
 
         await page.setRequestInterception(true);
         page.on('request', (request) => {
-          // Allow ONLY the main-frame navigation to our throwaway origin; abort everything else. A self-
-          // contained playground needs no subresources, so any other request is an external load (which the
-          // runtime CSP also blocks) or an exfiltration attempt — refused here. [LAW:single-enforcer]
-          if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+          // Allow ONLY a main-frame navigation whose URL is OUR throwaway origin — the initial document
+          // load (or a same-origin reload). Abort everything else: a subresource, an iframe src, AND — the
+          // load-bearing case — a main-frame navigation AWAY from our origin, which untrusted code triggers
+          // with `window.location = 'https://evil…'` or `<meta http-equiv="refresh">`. That navigation is
+          // itself a main-frame navigation request, so without the origin check it would reach the network
+          // and exfiltrate. A self-contained playground needs no external request; any is refused here.
+          // [LAW:single-enforcer] [LAW:no-silent-failure]
+          const toOurOrigin = request.url().startsWith(`${origin}/`) || request.url() === origin;
+          if (request.isNavigationRequest() && request.frame() === page.mainFrame() && toOurOrigin) {
             void request.continue();
           } else {
             void request.abort();
@@ -99,7 +108,7 @@ export const makeHeadlessArtifactValidator = (config: HeadlessValidatorConfig): 
 
         let timedOut = false;
         try {
-          await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load', timeout: loadTimeoutMs });
+          await page.goto(documentUrl, { waitUntil: 'load', timeout: loadTimeoutMs });
           // Normal load completed: a short settle to observe an error scheduled just after the load event.
           await new Promise((resolve) => setTimeout(resolve, settleMs));
         } catch (error) {

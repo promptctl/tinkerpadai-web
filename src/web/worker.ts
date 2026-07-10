@@ -1,6 +1,6 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import page from './index.html';
-import { makeApp } from '../app.js';
+import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
 import { makeGitHubOAuthProvider } from '../api/index.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
@@ -38,6 +38,11 @@ export interface Env {
   // The SEPARATE content origin's public base URL (a distinct host from the app). Load-bearing: the
   // router serves raw playground html only on this host, and the player frames it from here.
   readonly TINKERPAD_CONTENT_ORIGIN?: string;
+  // The moderation admin allowlist (moderation-5g7.2): a comma-separated list of subjects (github:<id>)
+  // authorized for the review console. OPTIONAL, unlike the credentials above — its absence is a safe
+  // default (no admins → console reachable by no one), not a boot failure, so it is read directly
+  // rather than through `required`. Set it in the [vars] table of wrangler.toml. [LAW:no-silent-failure]
+  readonly TINKERPAD_ADMIN_SUBJECTS?: string;
 }
 
 // A real user's session at the edge, durably in D1 so it survives Worker cold starts. 7 days — long
@@ -115,6 +120,9 @@ const handlerFor = (env: Env): Handler => {
     oauthCallbackUrl,
     // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]
     cookieSecurity: { secure: true },
+    // The moderation admin allowlist, from the optional [vars] entry — no admins configured means the
+    // review console is reachable by no one, the safe default. [LAW:no-silent-failure]
+    adminSubjects: parseAdminSubjects(env.TINKERPAD_ADMIN_SUBJECTS),
   });
 
   const handler = makeFrontDoorRouter({ app, page, contentOrigin });

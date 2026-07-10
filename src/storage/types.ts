@@ -132,12 +132,27 @@ export interface SessionRecord {
   readonly turns: readonly [TurnRecord, ...TurnRecord[]];
 }
 
+// The moderation VISIBILITY of a playground in the commons — the one first-class state moderation
+// (moderation-5g7.2) toggles. 'listed' is the default (the commons is public by default;
+// design-docs/PROJECT.md); 'unlisted' is a takedown that HIDES the playground from the commons,
+// search, and the JSON projection, and STOPS its raw html being served — WITHOUT deleting its data.
+// A named union, not a boolean, so the state reads truthfully at every callsite and no third value is
+// representable. Unlisting is a STATE change, never a removal: getPlayground keeps resolving an
+// unlisted playground, so existence stays monotonic (the report service's check-then-record relies on
+// that; src/api/reportService.ts), its lineage children keep their fork fact, a direct link can show
+// an honest notice, and relist — the counter-notice put-back the /copyright procedure promises — is
+// just a flip back. [LAW:types-are-the-program] [LAW:one-source-of-truth]
+export type Listing = 'listed' | 'unlisted';
+
 // A playground: the browsable unit of the commons, backed by the session that
 // generates its versions. Its "current version" is NOT stored — it is derived from
 // the session's turns (see currentVersionOf), so a second copy can never drift.
-// [LAW:one-source-of-truth]
+// `listing` is the moderation visibility (above): a property of the PLAYGROUND (its presence in the
+// commons), parallel to `id`, not of the generation session — a follow-up turn or a fork never
+// changes it. [LAW:one-source-of-truth]
 export interface Playground {
   readonly id: PlaygroundId;
+  readonly listing: Listing;
   readonly session: SessionRecord;
 }
 

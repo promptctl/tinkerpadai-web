@@ -1,5 +1,7 @@
-import type { Catalog } from '../storage/index.js';
-import { PlaygroundId } from '../storage/index.js';
+import type { Catalog, Listing } from '../storage/index.js';
+import { PlaygroundId, PlaygroundNotFoundError } from '../storage/index.js';
+import type { ReviewService } from '../api/index.js';
+import { renderReviewQueue } from './adminPages.js';
 import { filterSummaries, parseCommonsQuery, tagFacets } from './commonsQuery.js';
 import { COPYRIGHT_DOC, GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
@@ -34,6 +36,14 @@ export interface SiteHandlerDeps {
   // The generation API handler (makeHttpHandler) — everything that is not an app page or a
   // session route.
   readonly apiHandler: (request: Request) => Promise<Response>;
+  // The moderation review+enforcement service backing the admin console (moderation-5g7.2): the
+  // review queue read and the unlist/relist action. The admin pages are app-origin HTML like the
+  // commons and player, so they live on this surface, gated by isAdminRequest below. [LAW:decomposition]
+  readonly reviewService: ReviewService;
+  // Whether a request is a configured admin — the ONE gate the moderation console sits behind. A
+  // non-admin (signed out or signed in) resolves to false and sees the same not-found any unknown
+  // route does, so the console never advertises its existence. [LAW:single-enforcer]
+  readonly isAdminRequest: (request: Request) => Promise<boolean>;
 }
 
 const html = (body: string, status = 200): Response =>
@@ -71,19 +81,45 @@ const harden = (response: Response): Response => {
 };
 
 export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => Promise<Response>) => {
-  const { page, catalog, contentOrigin, sessionHandler, apiHandler } = deps;
+  const { page, catalog, contentOrigin, sessionHandler, apiHandler, reviewService, isAdminRequest } = deps;
+
+  // The two honest dead ends when a /play id is not a LISTED playground, told apart by the catalog:
+  // getPlayground resolves an unlisted playground (existence is monotonic) but throws for a truly
+  // unknown id. So a takedown reads as an honest "removed" (410 Gone) that points at the /copyright
+  // counter-notice put-back, never masquerading as "never existed" (404); an unknown id stays a plain
+  // 404. This second read runs ONLY on the absent path, so the common (listed) render below stays a
+  // single read — and a concurrent unlist between the two reads still resolves here to the correct
+  // "removed" notice, never a contradiction. [LAW:no-silent-failure] [FRAMING:representation]
+  const absentNotice = async (target: PlaygroundId, id: string): Promise<Response> => {
+    try {
+      await catalog.getPlayground(target);
+      return html(
+        renderNotice(
+          'Playground removed',
+          'This playground was removed from the commons. If you think that was a mistake, see copyright & takedowns to ask us to put it back.',
+        ),
+        410,
+      );
+    } catch (error) {
+      if (error instanceof PlaygroundNotFoundError) {
+        return html(renderNotice('Playground not found', `No playground in the commons has the id "${id}".`), 404);
+      }
+      throw error;
+    }
+  };
 
   const playPage = async (id: string): Promise<Response> => {
     // The player renders the SAME projected summary the commons does — including resolved fork
     // attribution, which can only be derived against the whole catalog. So the player reads
-    // through the one projection (listPlaygrounds), then selects its target. An unknown id is
-    // simply absent from the list — a value (undefined), rendered as a 404, not a thrown special
-    // case. A genuine read/invariant failure throws out of listPlaygrounds and propagates to
-    // serve()'s loud 500, never relabeled as "not found". [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+    // through the one projection (listPlaygrounds), then selects its target. An id that is not a
+    // LISTED playground (unknown OR unlisted) is simply absent from the list — a value (undefined),
+    // classified into the honest notice above, not a thrown special case. A genuine read/invariant
+    // failure throws out of listPlaygrounds and propagates to serve()'s loud 500, never relabeled as
+    // "not found". [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
     const target = PlaygroundId(id);
     const summary = (await catalog.listPlaygrounds()).find((s) => s.id === target);
     if (summary === undefined) {
-      return html(renderNotice('Playground not found', `No playground in the commons has the id "${id}".`), 404);
+      return absentNotice(target, id);
     }
     const contentSrc = `${contentOrigin}/?id=${encodeURIComponent(summary.id)}`;
     return html(
@@ -98,6 +134,42 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         tags: summary.tags,
       }),
     );
+  };
+
+  // The invisible admin surface's denial — a non-admin (signed out OR signed in) sees exactly the
+  // not-found any unknown route yields, so the console never reveals that /admin exists. Not a silent
+  // failure: it is a clear, honest 404 page; the design choice is to not ADVERTISE the surface, which
+  // is a legitimate authorization posture, not a swallowed error. [LAW:no-silent-failure]
+  const adminNotFound = (): Response => html(renderNotice('Not found', 'This page does not exist.'), 404);
+
+  // The one moderation action, driven by a same-origin form POST (SameSite=Strict session cookie +
+  // form-action 'self' are its CSRF defense, both already in place). Parse the target and the desired
+  // listing at THIS trust boundary — unlist and relist are the one action parameterized by the
+  // `listing` value, never two routes — set it, then 303 back to the console (post-redirect-get, so a
+  // refresh never re-submits). An unknown id fails loudly with the same honest notice the read path
+  // uses; a malformed field is a 400. The actor is NOT trusted from the body — the isAdminRequest gate
+  // at the callsite already proved the caller is an admin. [LAW:single-enforcer] [LAW:no-silent-failure]
+  // [LAW:dataflow-not-control-flow]
+  const adminAction = async (request: Request): Promise<Response> => {
+    const form = await request.formData();
+    const rawId = form.get('playgroundId');
+    const rawListing = form.get('listing');
+    if (typeof rawId !== 'string' || rawId === '') {
+      return html(renderNotice('Bad request', 'A playground id is required.'), 400);
+    }
+    if (rawListing !== 'listed' && rawListing !== 'unlisted') {
+      return html(renderNotice('Bad request', 'The listing state must be listed or unlisted.'), 400);
+    }
+    const listing: Listing = rawListing;
+    try {
+      await reviewService.setListing(PlaygroundId(rawId), listing);
+    } catch (error) {
+      if (error instanceof PlaygroundNotFoundError) {
+        return html(renderNotice('Playground not found', `No playground has the id "${rawId}".`), 404);
+      }
+      throw error;
+    }
+    return new Response(null, { status: 303, headers: { location: '/admin' } });
   };
 
   const dispatch = async (request: Request): Promise<Response> => {
@@ -141,6 +213,18 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         if (id === null || id === '')
           return html(renderNotice('Which playground?', 'Open a playground from the commons — no id was given.'), 400);
         return playPage(id);
+      }
+      // The moderation console (moderation-5g7.2), gated by the ONE isAdminRequest seam. A non-admin
+      // is denied with the invisible not-found above, so /admin does not advertise itself. The queue
+      // read and the unlist/relist action are the app-origin HTML/form counterparts of the commons —
+      // trusted pages served through the same harden() seal below. [LAW:single-enforcer]
+      case 'GET /admin': {
+        if (!(await isAdminRequest(request))) return adminNotFound();
+        return html(renderReviewQueue(await reviewService.queue()));
+      }
+      case 'POST /admin/listing': {
+        if (!(await isAdminRequest(request))) return adminNotFound();
+        return adminAction(request);
       }
       default: {
         // Session routes first, then the generation API. The session handler answers its own

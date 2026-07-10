@@ -40,6 +40,7 @@ const makeMemoryApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     oauth: makeFakeOAuthProvider({ subject: Subject('github:1') }),
     oauthCallbackUrl: `${APP_ORIGIN}/session/callback`,
     cookieSecurity: { secure: true },
+    adminSubjects: new Set(),
   });
   const router = makeFrontDoorRouter({ app, page: '<!doctype html><title>front door</title>', contentOrigin: CONTENT_ORIGIN });
   return { catalog, store, router };

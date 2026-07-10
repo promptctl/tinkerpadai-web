@@ -262,6 +262,101 @@ describe.each(ADAPTERS)('Catalog contract: $name', ({ open }) => {
     }
   });
 
+  it('is born listed; setListing unlists it — hidden from the commons, still resolved by getPlayground', async () => {
+    const { catalog, close } = await open();
+    try {
+      const created = await catalog.createPlayground({
+        handle: handle('tmux', 'session-1', 'turn-1'),
+        prompt: 'a bouncing ball',
+        version: VersionId('version-1'),
+        lineage: null,
+        author: AUTHOR,
+        tags: TAGS,
+      });
+      // Born public.
+      expect(created.listing).toBe('listed');
+      expect((await catalog.listPlaygrounds()).map((s) => s.id)).toEqual([created.id]);
+
+      const unlisted = await catalog.setListing(created.id, 'unlisted');
+      expect(unlisted.listing).toBe('unlisted');
+      // Vanished from the commons projection...
+      expect(await catalog.listPlaygrounds()).toEqual([]);
+      // ...but the data is NOT deleted — getPlayground still resolves it (existence is monotonic, so
+      // a report's check-then-record stays truthful and relist can find it).
+      const got = await catalog.getPlayground(created.id);
+      expect(got.listing).toBe('unlisted');
+      expect(got.session.turns[0].prompt).toBe('a bouncing ball');
+    } finally {
+      await close();
+    }
+  });
+
+  it('relists an unlisted playground — the counter-notice put-back returns it to the commons', async () => {
+    const { catalog, close } = await open();
+    try {
+      const created = await catalog.createPlayground({
+        handle: handle('tmux', 'session-1', 'turn-1'),
+        prompt: 'a counter',
+        version: VersionId('version-1'),
+        lineage: null,
+        author: AUTHOR,
+        tags: TAGS,
+      });
+      await catalog.setListing(created.id, 'unlisted');
+      expect(await catalog.listPlaygrounds()).toEqual([]);
+
+      const relisted = await catalog.setListing(created.id, 'listed');
+      expect(relisted.listing).toBe('listed');
+      expect((await catalog.listPlaygrounds()).map((s) => s.id)).toEqual([created.id]);
+    } finally {
+      await close();
+    }
+  });
+
+  it('unlisting a parent hides IT while its lineage child stays listed, fork fact intact, parent link dropped', async () => {
+    const { catalog, close } = await open();
+    try {
+      const parent = await catalog.createPlayground({
+        handle: handle('tmux', 'parent-session', 'parent-turn'),
+        prompt: 'the original',
+        version: VersionId('parent-version'),
+        lineage: null,
+        author: AUTHOR,
+        tags: TAGS,
+      });
+      const child = await catalog.createPlayground({
+        handle: handle('tmux', 'child-session', 'child-turn'),
+        prompt: 'a remix',
+        version: VersionId('child-version'),
+        lineage: { parentSession: SessionId('parent-session'), forkedFromVersion: VersionId('parent-version') },
+        author: AUTHOR,
+        tags: TAGS,
+      });
+
+      await catalog.setListing(parent.id, 'unlisted');
+
+      const list = await catalog.listPlaygrounds();
+      // The parent has vanished; the child remains — "unlisted playgrounds vanish from the commons
+      // but their lineage children remain intact" (the ticket's acceptance).
+      expect(list.map((s) => s.id)).toEqual([child.id]);
+      // The child is durably a fork, but its parent is no longer in the commons, so the link degrades
+      // to the same "parent has left" value a departed parent yields — the fork fact survives, the
+      // link to a hidden playground does not.
+      expect(list.find((s) => s.id === child.id)?.forkedFrom).toEqual({ parent: null });
+    } finally {
+      await close();
+    }
+  });
+
+  it('setListing on an unknown playground fails loudly', async () => {
+    const { catalog, close } = await open();
+    try {
+      await expect(catalog.setListing(PlaygroundId('does-not-exist'), 'unlisted')).rejects.toThrow(/unknown playground/);
+    } finally {
+      await close();
+    }
+  });
+
   it('keeps fork lineage a separate axis from version history', async () => {
     const { catalog, close } = await open();
     try {
@@ -324,6 +419,44 @@ describe('file catalog reads a pre-tagging document', () => {
       // getPlayground must tolerate it too — the whole read path sees the upgraded shape.
       const got = await catalog.getPlayground(PlaygroundId('legacy-1'));
       expect(got.session.tags).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Unlisting arrived after playgrounds were already on disk, so a document written before the
+// `listing` field existed must read as 'listed' — public, exactly as it was implicitly served before
+// takedowns existed — never crash and never hide it on a missing field. The forward-compat trust
+// boundary, file-specific (the memory backend never holds a legacy shape). [LAW:no-silent-failure]
+describe('file catalog reads a pre-moderation document', () => {
+  it('projects a listing-less stored playground as listed, surfacing it in the commons', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tp-catalog-premod-'));
+    const path = join(dir, 'catalog.json');
+    try {
+      // A document as a pre-moderation build wrote it: a full playground with tags but NO `listing`.
+      const legacy = {
+        playgrounds: [
+          {
+            id: 'premod-1',
+            session: {
+              sessionId: 'session-1',
+              providerId: 'tmux',
+              lineage: null,
+              author: 'ada',
+              tags: ['math'],
+              turns: [{ turnId: 'turn-1', prompt: 'a bouncing ball', version: 'version-1' }],
+            },
+          },
+        ],
+      };
+      await writeFile(path, JSON.stringify(legacy), 'utf8');
+
+      const catalog = makeFileCatalog(path);
+      // Defaulted to listed → present in the commons, not hidden on a missing field.
+      expect((await catalog.listPlaygrounds()).map((s) => s.id)).toEqual([PlaygroundId('premod-1')]);
+      const got = await catalog.getPlayground(PlaygroundId('premod-1'));
+      expect(got.listing).toBe('listed');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

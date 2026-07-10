@@ -37,6 +37,8 @@ export const makeFrontDoorRouter = (
     contentOrigin,
     sessionHandler: app.sessionHandler,
     apiHandler: app.handler,
+    reviewService: app.reviewService,
+    isAdminRequest: app.isAdminRequest,
   });
   const content = makeContentHandler({ catalog: app.catalog, store: app.store });
   return (request: Request): Promise<Response> => {

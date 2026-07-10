@@ -5,7 +5,7 @@ import { ProviderRegistry, cleanupTurn, makeTmuxDriver, makeTmuxProvider } from 
 import type { TmuxDriverConfig } from '../provider/index.js';
 import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore } from '../storage/index.js';
 import { makeMemorySessionStore } from '../api/index.js';
-import type { CookieSecurity, OAuthProvider } from '../api/index.js';
+import type { CookieSecurity, OAuthProvider, Subject } from '../api/index.js';
 
 // THE NODE COMPOSITION ROOT — the one place that knows the concrete shape of the local steel thread:
 // the provider is the tmux/Claude-Code body, storage is the local file backends, sessions live in an
@@ -32,6 +32,10 @@ export interface NodeAppConfig {
   // The cookie hardening policy. The Node entries bind a plain http socket, so they pass
   // { secure: false }; the HTTPS Worker entry is the production target that passes { secure: true }.
   readonly cookieSecurity: CookieSecurity;
+  // The moderation admin allowlist (moderation-5g7.2). main.ts parses it from TINKERPAD_ADMIN_SUBJECTS;
+  // main.dev.ts passes the dev subject so the loop can be driven with a real admin locally. Empty is a
+  // valid default (no admins → console reachable by no one). [LAW:no-silent-failure]
+  readonly adminSubjects: ReadonlySet<Subject>;
   // The tmux driver config — main.dev.ts widens the generation deadline; main.ts takes the default.
   readonly driver?: TmuxDriverConfig;
   readonly providerId?: string;
@@ -65,5 +69,6 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
     oauth: config.oauth,
     oauthCallbackUrl: config.oauthCallbackUrl,
     cookieSecurity: config.cookieSecurity,
+    adminSubjects: config.adminSubjects,
   });
 };

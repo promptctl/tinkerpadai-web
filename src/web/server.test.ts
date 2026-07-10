@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { localIdentityResolver, makeGenerationService, makeHttpHandler, makeReportService } from '../api/index.js';
+import {
+  localIdentityResolver,
+  makeGenerationService,
+  makeHttpHandler,
+  makeReportService,
+  makeReviewService,
+} from '../api/index.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { serve } from './server.js';
@@ -29,7 +35,10 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     catalog,
     disposeTurn: async () => undefined,
   });
-  const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
+  // ONE report store behind both intake and review, mirroring production — the review queue reads
+  // exactly what the report button writes. [LAW:one-source-of-truth]
+  const reportStore = makeMemoryReportStore();
+  const reports = makeReportService({ catalog, reports: reportStore });
   const handler = makeSiteHandler({
     page: PAGE,
     catalog,
@@ -39,6 +48,8 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     // gate is proven in session.integration.test.
     sessionHandler: async () => null,
     apiHandler: makeHttpHandler(service, reports, localIdentityResolver),
+    reviewService: makeReviewService({ reports: reportStore, catalog }),
+    isAdminRequest: async () => false,
   });
   return serve({ handler, port: 0 });
 };

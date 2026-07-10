@@ -1,14 +1,16 @@
 import { ProviderRegistry } from './provider/index.js';
 import type { SessionHandle } from './provider/index.js';
+import { Subject } from './identity/index.js';
 import type { ArtifactStore, Catalog, ReportStore } from './storage/index.js';
 import {
   makeGenerationService,
   makeHttpHandler,
   makeReportService,
+  makeReviewService,
   makeSessionHandler,
   makeSessionResolver,
 } from './api/index.js';
-import type { CookieSecurity, GenerationService, OAuthProvider, SessionStore } from './api/index.js';
+import type { CookieSecurity, GenerationService, OAuthProvider, ReviewService, SessionStore } from './api/index.js';
 
 // THE COMPOSITION ROOT'S GRAPH BUILDER. It composes the four agnostic seams — provider registry,
 // artifact store, catalog, session store — into the running app, and knows NOTHING about which
@@ -32,6 +34,13 @@ export interface App {
   // generation API. It owns its own routes and returns null for everything else, so the front
   // door composes it without enumerating auth routes. [LAW:decomposition]
   readonly sessionHandler: (request: Request) => Promise<Response | null>;
+  // The moderation review+enforcement surface (moderation-5g7.2): the review queue read and the
+  // unlist/relist action. The app-origin admin console consumes it behind the isAdminRequest gate.
+  readonly reviewService: ReviewService;
+  // Whether a request is made by a configured admin — it resolves identity through the SAME resolver
+  // the write gate uses, then checks the admin allowlist. The ONE seam "who may moderate" is decided
+  // through, consumed by the app-origin admin console to gate the moderation pages. [LAW:single-enforcer]
+  readonly isAdminRequest: (request: Request) => Promise<boolean>;
 }
 
 // The environment-varying parts, all supplied by the entry as already-built values. makeApp is a
@@ -71,11 +80,43 @@ export interface AppDeps {
   // loopback dev passes { secure: false }. A value the entry decides by its transport, threaded into
   // both the resolver and the session handler so they share one cookie name. [LAW:one-source-of-truth]
   readonly cookieSecurity: CookieSecurity;
+  // The subjects authorized to use the moderation console (moderation-5g7.2). There is no admin ROLE
+  // in the identity model yet, so an admin is simply a KNOWN subject; the entry supplies the allowlist
+  // (from env at the edge, the dev subject in loopback) so makeApp stays a pure graph builder. Empty
+  // is a valid, safe default: with no admins configured the console is reachable by no one, never an
+  // accidental open grant. [LAW:decomposition] [LAW:no-silent-failure]
+  readonly adminSubjects: ReadonlySet<Subject>;
 }
 
+// The one parser for the admin allowlist config — a comma-separated list of subjects (e.g.
+// `github:12345,github:67890` at the edge). Both composition roots (Node and edge) read the same env
+// var through this, so "how the allowlist string becomes subjects" is defined once and cannot drift
+// between deployments. Absent or empty config yields the empty set — no admins, the safe default that
+// leaves the console reachable by no one rather than open to all. Whitespace is trimmed and empty
+// entries dropped, so a trailing comma or spaced list is not a phantom admin. [LAW:one-source-of-truth]
+// [LAW:no-silent-failure]
+export const parseAdminSubjects = (raw: string | undefined): ReadonlySet<Subject> =>
+  new Set(
+    (raw ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '')
+      .map((entry) => Subject(entry)),
+  );
+
 export const makeApp = (deps: AppDeps): App => {
-  const { registry, store, catalog, reportStore, sessionStore, disposeTurn, oauth, oauthCallbackUrl, cookieSecurity } =
-    deps;
+  const {
+    registry,
+    store,
+    catalog,
+    reportStore,
+    sessionStore,
+    disposeTurn,
+    oauth,
+    oauthCallbackUrl,
+    cookieSecurity,
+    adminSubjects,
+  } = deps;
 
   const service = makeGenerationService({ registry, store, catalog, disposeTurn });
 
@@ -84,6 +125,12 @@ export const makeApp = (deps: AppDeps): App => {
   // but persists to its own store. [LAW:decomposition] [LAW:one-source-of-truth]
   const reports = makeReportService({ catalog, reports: reportStore });
 
+  // The moderation review+enforcement service — the sibling half of report intake: it READS the same
+  // report store as a review queue and WRITES the catalog's listing to enact takedowns. Scoped to a
+  // read-only view of the reports (it cannot forge signal) and the full catalog (moderation owns
+  // visibility). [LAW:decomposition] [LAW:single-enforcer]
+  const reviewService = makeReviewService({ reports: reportStore, catalog });
+
   // THE IDENTITY MECHANISM, wired behind the seam. One store owns live sessions; the resolver reads a
   // request's cookie THROUGH that store to a principal (or null), and the same resolver both gates
   // the write path (in the handler) and answers whoami (in the session handler) — one source of truth
@@ -91,6 +138,16 @@ export const makeApp = (deps: AppDeps): App => {
   // edge sessions or HTTPS cookie hardening is a change at the entry; the enforcer (makeHttpHandler)
   // is untouched. [LAW:locality-or-seam] [LAW:one-source-of-truth]
   const resolveIdentity = makeSessionResolver(sessionStore, cookieSecurity);
+
+  // "Who may moderate" decided in ONE place: resolve the request's identity through the same resolver
+  // the write gate uses (so the admin surface can never see an identity the gate would reject), then
+  // test the configured allowlist. The admin console consumes only this boolean — a signed-out or
+  // non-admin request is indistinguishable to it, which is what lets the console stay invisible.
+  // [LAW:single-enforcer] [LAW:dataflow-not-control-flow]
+  const isAdminRequest = async (request: Request): Promise<boolean> => {
+    const identity = await resolveIdentity(request);
+    return identity !== null && adminSubjects.has(identity.subject);
+  };
 
   return {
     registry,
@@ -105,5 +162,7 @@ export const makeApp = (deps: AppDeps): App => {
       callbackUrl: oauthCallbackUrl,
       security: cookieSecurity,
     }),
+    reviewService,
+    isAdminRequest,
   };
 };

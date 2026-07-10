@@ -22,7 +22,7 @@ export {
 export { makeMemoryCatalog } from './memoryCatalog.js';
 export { makeFileCatalog } from './fileCatalog.js';
 
-export type { ReportStore, ReportStoreBackend } from './reportStore.js';
+export type { ReportReader, ReportStore, ReportStoreBackend } from './reportStore.js';
 export { makeReportStore, hydrateReportsDoc, EMPTY_REPORTS } from './reportStore.js';
 export { makeMemoryReportStore } from './memoryReportStore.js';
 export { makeFileReportStore } from './fileReportStore.js';
@@ -33,6 +33,7 @@ export type {
   CatalogDoc,
   ForkAttribution,
   Lineage,
+  Listing,
   NewPlayground,
   NewReport,
   ParentRef,

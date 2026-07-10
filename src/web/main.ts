@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
+import { parseAdminSubjects } from '../app.js';
 import { makeGitHubOAuthProvider } from '../api/index.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
@@ -45,6 +46,9 @@ const main = async (): Promise<void> => {
     oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
     oauthCallbackUrl,
     cookieSecurity: { secure: false },
+    // The moderation admin allowlist, from the environment — a comma-separated list of subjects
+    // (github:<id>). Absent means no admins, so the console is reachable by no one until configured.
+    adminSubjects: parseAdminSubjects(process.env.TINKERPAD_ADMIN_SUBJECTS),
   });
 
   // Bind the content origin FIRST: the player's iframe src needs its concrete URL, so that
@@ -62,6 +66,8 @@ const main = async (): Promise<void> => {
     contentOrigin: content.url,
     sessionHandler: app.sessionHandler,
     apiHandler: app.handler,
+    reviewService: app.reviewService,
+    isAdminRequest: app.isAdminRequest,
   });
   const { url } = await serve({ handler, port });
 

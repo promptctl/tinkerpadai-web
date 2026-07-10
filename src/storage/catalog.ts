@@ -3,6 +3,7 @@ import type { SessionId } from '../provider/index.js';
 import type {
   CatalogDoc,
   ForkAttribution,
+  Listing,
   NewPlayground,
   NewTurn,
   ParentRef,
@@ -57,6 +58,17 @@ export interface Catalog extends CatalogReader {
   // a turn whose handle names a different session is rejected, not silently stitched on.
   // [LAW:one-source-of-truth] [LAW:no-silent-failure]
   appendTurn(id: PlaygroundId, turn: NewTurn): Promise<Playground>;
+
+  // The moderation visibility write (moderation-5g7.2) — the ONE mechanism a report, a /copyright
+  // takedown, or a /terms abuse takedown all resolve to: set a playground 'unlisted' (a takedown) or
+  // 'listed' (the counter-notice put-back). Unlist and relist are ONE behavior parameterized by the
+  // target state, never two methods — variability lives in the value, not in which method runs.
+  // Deliberately a STATE change, not a removal: the record and its lineage survive, listPlaygrounds
+  // stops surfacing it, and getPlayground keeps resolving it. It is on Catalog, NOT CatalogReader, so
+  // the type still forbids the report path from touching visibility while permitting the moderation
+  // path that legitimately owns it. An unknown id fails loudly with PlaygroundNotFoundError.
+  // [LAW:dataflow-not-control-flow] [LAW:single-enforcer] [LAW:no-silent-failure]
+  setListing(id: PlaygroundId, listing: Listing): Promise<Playground>;
 
   // The commons listing (p0v.6), in insertion order. An empty catalog yields an empty
   // list — data flow, not a special case. [LAW:dataflow-not-control-flow]
@@ -126,9 +138,15 @@ export const hydrateStoredDoc = (doc: unknown): CatalogDoc => {
         );
       }
       const p = entry as Playground;
-      // Legacy bytes genuinely lack the `tags` field the type now promises — the known forward
-      // migration, applied here once at the read boundary.
-      return Array.isArray(p.session.tags) ? p : { ...p, session: { ...p.session, tags: [] } };
+      // Legacy bytes genuinely lack fields the type now promises — the known forward migrations,
+      // applied here once at the read boundary. `tags` arrived with discovery; `listing` arrived with
+      // moderation (5g7.2), so a playground written before then has no visibility state and defaults
+      // to 'listed' — public, exactly as it was implicitly served before unlisting existed. Anything
+      // OTHER than the sentinel 'unlisted' (a legacy absence, or a tampered value) reads as 'listed',
+      // the safe default that never hides a playground on a malformed byte. [LAW:no-silent-failure]
+      const tags = Array.isArray(p.session.tags) ? p.session.tags : [];
+      const listing: Listing = p.listing === 'unlisted' ? 'unlisted' : 'listed';
+      return { ...p, listing, session: { ...p.session, tags } };
     }),
   };
 };
@@ -229,6 +247,9 @@ export const makeCatalog = (store: CatalogStore): Catalog => {
       return serialize(async () => {
         const playground: Playground = {
           id: mkPlaygroundId(randomUUID()),
+          // Born public — the commons is public by default (design-docs/PROJECT.md). Moderation
+          // (setListing) is the only thing that ever moves a playground off 'listed'.
+          listing: 'listed',
           session: {
             sessionId: input.handle.sessionId,
             providerId: input.handle.providerId,
@@ -273,22 +294,46 @@ export const makeCatalog = (store: CatalogStore): Catalog => {
       });
     },
 
+    setListing(id: PlaygroundId, listing: Listing): Promise<Playground> {
+      return serialize(async () => {
+        const doc = await store.read();
+        const existing = find(doc, id);
+        // Idempotent by data flow: writing the same state is a no-op write, not a special-cased
+        // early return — unlist-an-unlisted and relist-a-listed both just persist the value.
+        // [LAW:dataflow-not-control-flow]
+        const updated: Playground = { ...existing, listing };
+        await store.write({
+          playgrounds: doc.playgrounds.map((p) => (p.id === id ? updated : p)),
+        });
+        return updated;
+      });
+    },
+
     async getPlayground(id: PlaygroundId): Promise<Playground> {
+      // Resolves REGARDLESS of listing — an unlisted playground still resolves here, so a report's
+      // check-then-record stays truthful, its lineage children keep their fork fact, the player can
+      // show an honest 'removed' notice, and relist works. Only listPlaygrounds filters visibility.
+      // [LAW:one-source-of-truth]
       return find(await store.read(), id);
     },
 
     async listPlaygrounds(): Promise<readonly PlaygroundSummary[]> {
       const doc = await store.read();
-      // The parent-link index, built once over the whole catalog: a session resolves to its
-      // playground's browsable reference. A derivation over the SoT, discarded after this read
-      // — never a stored map that could drift from the playgrounds it indexes. Sessions are
-      // 1:1 with playgrounds (a fork mints a new session), so the key is unambiguous.
-      // [LAW:one-source-of-truth]
+      // THE ONE PLACE the commons' visibility is decided: only 'listed' playgrounds are surfaced, so
+      // every consumer of the commons list — /commons, /api/playgrounds, the homepage preview, the
+      // player's target lookup — excludes unlisted playgrounds without each re-deciding it.
+      // [LAW:single-enforcer] [LAW:dataflow-not-control-flow]
+      const listed = doc.playgrounds.filter((p) => p.listing === 'listed');
+      // The parent-link index is built over the LISTED playgrounds only — the same set being
+      // surfaced — so an unlisted parent resolves to null exactly as a departed one does: a child of
+      // an unlisted parent stays listed and intact, but its fork line degrades to "no longer in the
+      // commons" rather than linking to a hidden playground. Sessions are 1:1 with playgrounds (a
+      // fork mints a new session), so the key is unambiguous. [LAW:one-source-of-truth]
       const parents = new Map<SessionId, ParentRef>(
-        doc.playgrounds.map((p) => [p.session.sessionId, { id: p.id, prompt: p.session.turns[0].prompt }]),
+        listed.map((p) => [p.session.sessionId, { id: p.id, prompt: p.session.turns[0].prompt }]),
       );
       const resolveParent = (parent: SessionId): ParentRef | null => parents.get(parent) ?? null;
-      return doc.playgrounds.map((p) => summarize(p, resolveParent));
+      return listed.map((p) => summarize(p, resolveParent));
     },
   };
 };

@@ -934,8 +934,13 @@
             return;
           }
         } finally {
+          // Signal the watcher to stop on its next loop check — but do NOT await it. A progress fetch has
+          // no timeout, so awaiting a hung one would keep generate() (and the submit button's re-enable)
+          // blocked forever on a server or network stall. Fire-and-forget with a swallowed rejection so
+          // generate() returns the instant poll reaches terminal; the watcher exits on its own `done` check
+          // and can no longer overwrite the terminal status. [LAW:no-ambient-temporal-coupling]
           done = true;
-          await progress.catch(() => {});
+          progress.catch(() => {});
         }
       };
 

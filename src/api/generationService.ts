@@ -728,13 +728,25 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       try {
         status = await provider.getStatus(attempt);
       } catch (error) {
-        // The live attempt's workdir may have been reaped by a settled failure between reading the record
-        // and this status read (a failed create releases its workdir, ppu.4). If the request has since
-        // settled, that reap is expected and the turn is terminal — report done; the client's poll carries
-        // the outcome. Otherwise it is a real fault that must surface, never be swallowed as done.
-        // [LAW:no-silent-failure]
+        // The attempt we read may have been reaped out from under us during the await — either by a retry
+        // that reclaimed this failed attempt and swapped in a live successor (the request is still going), or
+        // by a settled failure that released its workdir (the request is terminal). A retry swap keeps the
+        // turn alive, so report generating; only a genuinely settled turn with no successor is done; anything
+        // else is a real fault that must surface. [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling]
+        if (record.retryInFlight !== null || record.current !== attempt) {
+          return { phase: 'generating', at: now(), message: 'retrying…' };
+        }
         if (record.settledAtMs !== null) return { phase: 'done', at: now() };
         throw error;
+      }
+
+      // Re-decide after the await, exactly as poll() re-guards its own post-await window: a concurrent poll
+      // may have launched a retry or swapped the live attempt while getStatus was in flight. Without these
+      // the failed→done branch below could read a freshly-decremented attemptsLeft and report `done` for a
+      // turn that is alive on a new attempt — a stale terminal the client's watcher would stop on. The status
+      // we hold describes an attempt that is no longer current, so we do not act on it. [LAW:no-ambient-temporal-coupling]
+      if (record.retryInFlight !== null || record.current !== attempt) {
+        return { phase: 'generating', at: now(), message: 'retrying…' };
       }
 
       switch (status.state) {

@@ -1240,6 +1240,75 @@ describe('GenerationService.progress — read-only observability of a turn in fl
     expect((await h.service.progress(handle)).phase).toBe('validating');
   });
 
+  it('does not report done for a turn a concurrent retry revived during the status await', async () => {
+    // The TOCTOU guard: progress reads current=attempt1, then awaits getStatus. While it is in flight a
+    // concurrent poll observes attempt1's failure and launches a retry — swapping current to attempt2 and
+    // decrementing attemptsLeft to 0. Without the post-await re-guard, progress would read the fresh
+    // attemptsLeft (0) in the failed branch and report DONE for a turn that is alive on attempt2, and the
+    // client's watcher would stop rendering. The guard reports generating instead — the same post-await
+    // re-decide poll() makes for its own window. [LAW:no-ambient-temporal-coupling]
+    const providerId = ProviderId('racy');
+    let minted = 0;
+    let getStatusCalls = 0;
+    let releaseFirstStatus: (status: SessionStatus) => void = () => {};
+    const firstStatus = new Promise<SessionStatus>((resolve) => {
+      releaseFirstStatus = resolve;
+    });
+    const mint = (): SessionHandle => {
+      minted += 1;
+      return { providerId, sessionId: SessionId(`racy-s-${minted}`), turnId: TurnId(`racy-t-${minted}`) };
+    };
+    const provider: Provider = {
+      id: providerId,
+      label: 'racy',
+      startSession: async () => mint(),
+      // The FIRST getStatus call — progress's read of attempt1 — is held open on the gate; every later call
+      // (poll's read of attempt1, any read of attempt2) resolves at once. attempt1 fails, attempt2 runs.
+      getStatus: async (handle) => {
+        getStatusCalls += 1;
+        if (getStatusCalls === 1) return firstStatus;
+        return handle.turnId === TurnId('racy-t-1')
+          ? { state: 'failed', error: { message: 'attempt 1 failed' } }
+          : { state: 'running' };
+      },
+      streamProgress: async function* () {
+        yield { at: 0, message: 'working' };
+      },
+      getResult: async () => {
+        throw new Error('not used by this test');
+      },
+      getAvailability: async () => ({ state: 'available' }),
+    };
+    const registry = new ProviderRegistry();
+    registry.register(provider);
+    const service = makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog: makeMemoryCatalog(),
+      disposeTurn: async () => {},
+      quota: makeTestQuota(),
+      maxAttempts: 2,
+      validateArtifact: passThroughValidator,
+      now: () => Date.now(),
+    });
+    const handle = await service.submit({ providerId, brief: { description: 'race' } }, AUTHOR);
+
+    // progress reads current=attempt1 and suspends on the gated getStatus.
+    const inflight = service.progress(handle);
+
+    // A concurrent poll observes attempt1's failure and launches the retry; drain the launch so current is
+    // attempt2 and attemptsLeft is 0 before the gated status resolves — the exact state that would mislead
+    // an un-guarded failed branch.
+    expect((await service.poll(handle)).state).toBe('running');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Release attempt1's (now stale) failed status, the observation progress is holding across the await.
+    releaseFirstStatus({ state: 'failed', error: { message: 'attempt 1 failed' } });
+
+    // The guard sees current has advanced and reports generating, never a stale done.
+    expect(await inflight).toEqual({ phase: 'generating', at: expect.any(Number), message: 'retrying…' });
+  });
+
   it('fails loudly for a turn this service never started', async () => {
     const service = serviceForProvider(pinnedProvider({ id: 'pin', status: { state: 'running' } }));
     const foreign: SessionHandle = {

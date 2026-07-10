@@ -219,6 +219,7 @@ export const siteFooter = (): string => `<footer class="site-footer">
         <li><a href="/">Build</a></li>
         <li><a href="/terms">Ground rules</a></li>
         <li><a href="/privacy">Privacy</a></li>
+        <li><a href="/copyright">Copyright</a></li>
       </ul>
     </div>
     <div class="footer-bottom">© 2026 TinkerPad. All playgrounds are public by default.</div>

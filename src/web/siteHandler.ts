@@ -1,7 +1,7 @@
 import type { Catalog } from '../storage/index.js';
 import { PlaygroundId } from '../storage/index.js';
 import { filterSummaries, parseCommonsQuery, tagFacets } from './commonsQuery.js';
-import { GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
+import { COPYRIGHT_DOC, GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 
 // THE APP-ORIGIN SURFACE — the front door's one composed Web handler. It serves the trusted
@@ -112,6 +112,8 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         return html(renderLegalDoc(GROUND_RULES_DOC));
       case 'GET /privacy':
         return html(renderLegalDoc(PRIVACY_DOC));
+      case 'GET /copyright':
+        return html(renderLegalDoc(COPYRIGHT_DOC));
       case 'GET /commons': {
         // The catalog is read ONCE as the canonical list; discovery is a pure projection over it.
         // The facets come from the WHOLE list (so filtering by one tag never hides the others),

@@ -149,8 +149,9 @@ side, which is backwards for the origin that actually holds the asset.
   `X-Frame-Options: SAMEORIGIN` (the legacy twin closing clickjacking of login/player),
   `X-Content-Type-Options: nosniff`, and `Referrer-Policy: same-origin`. The `script-src` backstop —
   deferred at `bci.3` because the app runs inline scripts — landed in `tinkerpadai-sandbox-bci.6`: a
-  hash-based `script-src` (SHA-256 of each of the app's four static inline scripts, no host source and
-  no `'unsafe-inline'`), derived once from the served front-door page in `appCsp.ts` and applied by the
+  hash-based `script-src` (SHA-256 of each of the app's static inline scripts — the derived inventory
+  in `appCsp.ts`, no host source and no `'unsafe-inline'`), derived once from the served front-door
+  page and applied by the
   same `harden()` seal. Hashes, not a nonce, because every app inline script is static — a hash is a
   pure function of the script's bytes, so the policy and the markup share one source of truth with no
   per-response state to thread. So even if a V6 escaping callsite regressed and injected markup, an

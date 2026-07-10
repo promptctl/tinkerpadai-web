@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { buildAppCsp } from './appCsp.js';
+import { THEME_RESOLVER } from './frontDoorChrome.js';
 import { THEME_TOGGLE_SCRIPT } from './pageShell.js';
 import { PLAYER_SCRIPT } from './playgroundPages.js';
+
+// THEME_RESOLVER is authored as markup carrying its own <script> tag (unlike the two module
+// constants, which are raw bodies), so the browser hashes only the text between the tags. Strip them
+// to recover that body — the same bytes appCsp derives via extractScriptBodies(THEME_RESOLVER).
+const themeResolverBody = THEME_RESOLVER.replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
 
 // The CSP source expression a browser computes for an inline script with this body. Computed here
 // independently of the module under test (raw node:crypto, not appCsp's own helper) so the assertion
@@ -18,9 +24,12 @@ describe('buildAppCsp', () => {
     const frontDoor = "console.log('front door boot')";
     const csp = buildAppCsp(`<!doctype html><script>${frontDoor}</script>`);
 
-    // Every script the app actually serves is admitted: the page's own inline script, plus the two
-    // module scripts the shell and player emit (imported as the real constants they render).
+    // Every script the app actually serves is admitted: the page's own inline script, the shell's
+    // pre-paint theme resolver (extracted from its markup — guarding the extraction path against a
+    // regex/constant change that would silently block the FOUC resolver), and the two module scripts
+    // the shell and player emit (imported as the real constants they render).
     expect(csp).toContain(hashOf(frontDoor));
+    expect(csp).toContain(hashOf(themeResolverBody));
     expect(csp).toContain(hashOf(THEME_TOGGLE_SCRIPT));
     expect(csp).toContain(hashOf(PLAYER_SCRIPT));
 

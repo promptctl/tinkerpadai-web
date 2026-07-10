@@ -1095,6 +1095,231 @@ describe('GenerationService.evictSettledTurns — retention bounds the turns map
   });
 });
 
+// The progress surface (ppu.6): the READ-ONLY companion to poll(). It reports the LIVE attempt's phase —
+// the provider's latest note while generating, the distinct VALIDATING window while poll finalizes, done
+// once the attempt is terminal with no retry — and it drives no write and no terminal transition. The
+// assertions are over the observable snapshot, and prove the retry attempt-swap honesty the ticket
+// requires: progress reads `current` fresh, so it follows the swap. [LAW:behavior-not-structure]
+describe('GenerationService.progress — read-only observability of a turn in flight', () => {
+  // A provider whose status and progress feed the test pins directly, so one snapshot's phase and detail
+  // can be asserted precisely — the shared fake mutates a running counter on getStatus and its feed is
+  // fixed, neither of which suits pinning a single observation. [LAW:behavior-not-structure]
+  const pinnedProvider = (opts: {
+    readonly id: string;
+    readonly status: SessionStatus;
+    readonly lines?: readonly string[];
+  }): Provider => {
+    const providerId = ProviderId(opts.id);
+    const handle: SessionHandle = {
+      providerId,
+      sessionId: SessionId(`${opts.id}-session`),
+      turnId: TurnId(`${opts.id}-turn`),
+    };
+    return {
+      id: providerId,
+      label: opts.id,
+      startSession: async () => handle,
+      getStatus: async () => opts.status,
+      streamProgress: async function* () {
+        for (const message of opts.lines ?? []) yield { at: 0, message };
+      },
+      getResult: async () => {
+        throw new Error('not used by the progress surface');
+      },
+      getAvailability: async () => ({ state: 'available' }),
+    };
+  };
+
+  const serviceForProvider = (provider: Provider, maxAttempts = 1): GenerationService => {
+    const registry = new ProviderRegistry();
+    registry.register(provider);
+    return makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog: makeMemoryCatalog(),
+      disposeTurn: async () => {},
+      quota: makeTestQuota(),
+      maxAttempts,
+      validateArtifact: passThroughValidator,
+      now: () => Date.now(),
+    });
+  };
+
+  it('reports generating with the provider’s latest streamed note while the attempt runs', async () => {
+    const service = serviceForProvider(
+      pinnedProvider({ id: 'pin', status: { state: 'running' }, lines: ['drafting', 'rendering the wave field'] }),
+    );
+    const handle = await service.submit({ providerId: ProviderId('pin'), brief: { description: 'x' } }, AUTHOR);
+    // The freshest of the feed's notes is surfaced — the proof a long generation is advancing.
+    expect(await service.progress(handle)).toEqual({ phase: 'generating', at: 0, message: 'rendering the wave field' });
+  });
+
+  it('reports generating with a neutral note when the running attempt has emitted nothing yet', async () => {
+    const service = serviceForProvider(pinnedProvider({ id: 'pin', status: { state: 'running' }, lines: [] }));
+    const handle = await service.submit({ providerId: ProviderId('pin'), brief: { description: 'x' } }, AUTHOR);
+    const update = await service.progress(handle);
+    expect(update.phase).toBe('generating');
+    if (update.phase !== 'generating') throw new Error('unreachable');
+    // A feed that has yielded nothing settles to a non-empty note, never an empty lie. [LAW:no-silent-failure]
+    expect(update.message.length).toBeGreaterThan(0);
+  });
+
+  it('reports validating once the provider has succeeded — the post-success finalize window, not a stall', async () => {
+    // The provider is done but the service has not yet reported ready: poll() is (or will be) blocked in
+    // finalizeSuccess running the functional gate. That window is VALIDATING, a phase distinct from
+    // generating so it never reads as a hung 'running'.
+    const service = serviceForProvider(
+      pinnedProvider({ id: 'pin', status: { state: 'succeeded', result: { artifact: { html: '<p>ok</p>' } } } }),
+    );
+    const handle = await service.submit({ providerId: ProviderId('pin'), brief: { description: 'x' } }, AUTHOR);
+    expect(await service.progress(handle)).toEqual({ phase: 'validating', at: expect.any(Number) });
+  });
+
+  it('reports done when the attempt failed with no retry budget — poll carries the real failure', async () => {
+    const service = serviceForProvider(
+      pinnedProvider({ id: 'pin', status: { state: 'failed', error: { message: 'boom' } } }),
+      1,
+    );
+    const handle = await service.submit({ providerId: ProviderId('pin'), brief: { description: 'x' } }, AUTHOR);
+    // Progress does not invent a terminal it does not own; it steps aside and lets poll surface 'boom'.
+    expect(await service.progress(handle)).toEqual({ phase: 'done', at: expect.any(Number) });
+  });
+
+  it('reports generating (retrying) when the attempt failed but retry budget remains', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 1 }, 2);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'x' } }, AUTHOR);
+    // The current (first) attempt has failed, but a retry is still owed — from the client's view the turn
+    // is still generating, not done. Retry-vs-terminal is the value attemptsLeft, not a branch on the error.
+    expect(await h.service.progress(handle)).toEqual({ phase: 'generating', at: expect.any(Number), message: 'retrying…' });
+  });
+
+  it('reports generating (retrying) while a retry is mid-launch', async () => {
+    const registry = new ProviderRegistry();
+    const { provider } = makeFlakyProvider({ id: 'flaky', failFirst: 1 });
+    registry.register(provider);
+    let releaseDispose = (): void => {};
+    const disposeGate = new Promise<void>((resolve) => {
+      releaseDispose = resolve;
+    });
+    const service = makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog: makeMemoryCatalog(),
+      // Block the failed attempt's reclaim so the retry stays mid-launch (retryInFlight set) while observed.
+      disposeTurn: async () => {
+        await disposeGate;
+      },
+      quota: makeTestQuota(),
+      maxAttempts: 2,
+      validateArtifact: passThroughValidator,
+      now: () => Date.now(),
+    });
+    const handle = await service.submit({ providerId: ProviderId('flaky'), brief: { description: 'x' } }, AUTHOR);
+
+    // The first poll observes the failure and launches the retry; beginRetry awaits the blocked reclaim, so
+    // retryInFlight stays set — the launch window between the failed attempt and the live next one.
+    expect((await service.poll(handle)).state).toBe('running');
+    expect(await service.progress(handle)).toEqual({ phase: 'generating', at: expect.any(Number), message: 'retrying…' });
+
+    // Release the reclaim and let the retry land, so the test leaves no pending work.
+    releaseDispose();
+    expect((await pollToTerminal(service, handle)).state).toBe('ready');
+  });
+
+  it('follows the retry attempt-swap — progress reflects the new attempt, never the failed first', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 1 }, 2);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'swap' } }, AUTHOR);
+    // Before the swap: progress reads the current (first) attempt — failed, budget left → retrying.
+    expect(await h.service.progress(handle)).toEqual({ phase: 'generating', at: expect.any(Number), message: 'retrying…' });
+
+    // Drive the retry to land, swapping `current` to the second (succeeding) attempt.
+    expect((await pollToTerminal(h.service, handle)).state).toBe('ready');
+
+    // Progress now reflects the NEW attempt (succeeded → validating), NOT the first attempt's failure —
+    // reading `current` fresh each call is the whole of the retry honesty. [LAW:one-source-of-truth]
+    expect((await h.service.progress(handle)).phase).toBe('validating');
+  });
+
+  it('does not report done for a turn a concurrent retry revived during the status await', async () => {
+    // The TOCTOU guard: progress reads current=attempt1, then awaits getStatus. While it is in flight a
+    // concurrent poll observes attempt1's failure and launches a retry — swapping current to attempt2 and
+    // decrementing attemptsLeft to 0. Without the post-await re-guard, progress would read the fresh
+    // attemptsLeft (0) in the failed branch and report DONE for a turn that is alive on attempt2, and the
+    // client's watcher would stop rendering. The guard reports generating instead — the same post-await
+    // re-decide poll() makes for its own window. [LAW:no-ambient-temporal-coupling]
+    const providerId = ProviderId('racy');
+    let minted = 0;
+    let getStatusCalls = 0;
+    let releaseFirstStatus: (status: SessionStatus) => void = () => {};
+    const firstStatus = new Promise<SessionStatus>((resolve) => {
+      releaseFirstStatus = resolve;
+    });
+    const mint = (): SessionHandle => {
+      minted += 1;
+      return { providerId, sessionId: SessionId(`racy-s-${minted}`), turnId: TurnId(`racy-t-${minted}`) };
+    };
+    const provider: Provider = {
+      id: providerId,
+      label: 'racy',
+      startSession: async () => mint(),
+      // The FIRST getStatus call — progress's read of attempt1 — is held open on the gate; every later call
+      // (poll's read of attempt1, any read of attempt2) resolves at once. attempt1 fails, attempt2 runs.
+      getStatus: async (handle) => {
+        getStatusCalls += 1;
+        if (getStatusCalls === 1) return firstStatus;
+        return handle.turnId === TurnId('racy-t-1')
+          ? { state: 'failed', error: { message: 'attempt 1 failed' } }
+          : { state: 'running' };
+      },
+      streamProgress: async function* () {
+        yield { at: 0, message: 'working' };
+      },
+      getResult: async () => {
+        throw new Error('not used by this test');
+      },
+      getAvailability: async () => ({ state: 'available' }),
+    };
+    const registry = new ProviderRegistry();
+    registry.register(provider);
+    const service = makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog: makeMemoryCatalog(),
+      disposeTurn: async () => {},
+      quota: makeTestQuota(),
+      maxAttempts: 2,
+      validateArtifact: passThroughValidator,
+      now: () => Date.now(),
+    });
+    const handle = await service.submit({ providerId, brief: { description: 'race' } }, AUTHOR);
+
+    // progress reads current=attempt1 and suspends on the gated getStatus.
+    const inflight = service.progress(handle);
+
+    // A concurrent poll observes attempt1's failure and launches the retry; drain the launch so current is
+    // attempt2 and attemptsLeft is 0 before the gated status resolves — the exact state that would mislead
+    // an un-guarded failed branch.
+    expect((await service.poll(handle)).state).toBe('running');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Release attempt1's (now stale) failed status, the observation progress is holding across the await.
+    releaseFirstStatus({ state: 'failed', error: { message: 'attempt 1 failed' } });
+
+    // The guard sees current has advanced and reports generating, never a stale done.
+    expect(await inflight).toEqual({ phase: 'generating', at: expect.any(Number), message: 'retrying…' });
+  });
+
+  it('fails loudly for a turn this service never started', async () => {
+    const service = serviceForProvider(pinnedProvider({ id: 'pin', status: { state: 'running' } }));
+    const foreign: SessionHandle = {
+      providerId: ProviderId('pin'),
+      sessionId: SessionId('session-foreign'),
+      turnId: TurnId('turn-foreign'),
+    };
+    await expect(service.progress(foreign)).rejects.toThrow('unknown turn: turn-foreign');
+  });
+});
+
 // The retention lifecycle owner (ppu.8): a background sweeper that hands the service a
 // now()-minus-retention cutoff on each interval — the single explicit owner of eviction timing, the
 // agnostic-service sibling of startWorkdirJanitor. [LAW:no-ambient-temporal-coupling]

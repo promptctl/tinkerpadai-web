@@ -104,6 +104,15 @@ const parseHandle = (body: unknown): SessionHandle => {
   };
 };
 
+// The read companion to parseHandle: the same three branded ids, but carried as query params — a GET
+// long-poll for progress has no body, exactly as GET /availability carries its providerId in the query.
+// The one place a progress request's handle is re-branded at the trust boundary. [LAW:single-enforcer]
+const parseHandleFromQuery = (params: URLSearchParams): SessionHandle => ({
+  providerId: ProviderId(requireString(params.get('providerId'), 'providerId')),
+  sessionId: SessionId(requireString(params.get('sessionId'), 'sessionId')),
+  turnId: TurnId(requireString(params.get('turnId'), 'turnId')),
+});
+
 const readJson = async (request: Request): Promise<unknown> => {
   try {
     return await request.json();
@@ -153,6 +162,15 @@ export const makeHttpHandler = (
         const providerId = ProviderId(requireString(new URL(request.url).searchParams.get('providerId'), 'providerId'));
         return json(await service.availabilityOf(providerId));
       }
+      // The live progress snapshot for a generation in flight. On the READ path, not WRITE_ROUTES: it
+      // performs no store/catalog write and drives no terminal transition — it only OBSERVES — so it stays
+      // credential-free like the rest of the read/use surface, gated by possession of the turn's handle (a
+      // random-minted capability returned only to the submitter). GET with the handle in the query, the same
+      // shape as /availability, so it never touches the write gate. The client long-polls it ALONGSIDE POST
+      // /poll: poll stays the authority for the terminal outcome, progress adds the live detail and the
+      // validating phase. [LAW:effects-at-boundaries] [LAW:single-enforcer]
+      case 'GET /progress':
+        return json(await service.progress(parseHandleFromQuery(new URL(request.url).searchParams)));
       default:
         return json({ error: `no route: ${route}` }, 404);
     }

@@ -882,6 +882,10 @@ describe('GenerationService.poll — retry: a failed provider attempt is retried
 
     // The failed FIRST attempt's workdir was reclaimed — it is the client's original handle.
     expect(h.disposed).toEqual([handle]);
+    // ...and its failure reason was threaded to the disposer, so the failed first attempt's evidence is
+    // preserved even when the request ultimately SUCCEEDS on retry — not only when the budget is spent
+    // (ppu.2/ppu.4 note). [LAW:one-source-of-truth]
+    expect(h.disposedReasons).toEqual(['attempt 1 failed']);
   });
 
   it('surfaces failure only after the whole attempt budget is spent, reclaiming each failed attempt', async () => {

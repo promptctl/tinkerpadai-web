@@ -440,8 +440,12 @@ export const makeWorkdirDiagnostics =
       if (!(await dirExists(src))) return;
       const dest = join(diagnosticsDir, diagnosticName(handle));
       await mkdir(dest, { recursive: true });
-      await cp(src, dest, { recursive: true });
+      // Write the reason FIRST, then copy the workdir: failure.txt is the smallest and only
+      // non-reconstructable piece (a timeout leaves no other marker of why it failed), so it is the one
+      // most worth surviving a mid-write disk-full — the bulky cp comes last. cp merges into dest
+      // without disturbing failure.txt (it is not in src). [LAW:no-silent-failure]
       await writeFile(join(dest, FAILURE_FILE), reason, 'utf8');
+      await cp(src, dest, { recursive: true });
     } catch (error) {
       console.error(`tinkerpad: failed to preserve diagnostics for turn ${handle.turnId}:`, error);
     }

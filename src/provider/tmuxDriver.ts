@@ -336,9 +336,12 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
       const paneCommand =
         `claude -p "$(cat ${PROMPT_FILE})" --dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
-      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
-
+      // Persist the turn's world BEFORE spawning the session: the tmux session is the un-cleanable
+      // resource, so every fallible step precedes it. A write failure here leaves no orphaned pane —
+      // only a workdir the idle GC reaps — never a live agent with no cleanup path.
+      // [LAW:no-ambient-temporal-coupling]
       await writeTurnState(dir, { deadline: Date.now() + timeoutMs, reseeded: false });
+      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
     },
 
     // Resume the prior turn and refine its artifact. The follow-up runs in the SAME
@@ -387,11 +390,11 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
       const paneCommand =
         `claude -p "$(cat ${PROMPT_FILE})" ${continueFlag}--dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
-      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
-
       // Written to `dir` = dirOf(priorHandle); since a continue is pinned to the SAME session, that is
-      // dirOf(handle) too, so poll(handle) reconstructs this exact state. [LAW:one-source-of-truth]
+      // dirOf(handle) too, so poll(handle) reconstructs this exact state. Written BEFORE the session spawns,
+      // so a state-write failure never orphans a live pane. [LAW:one-source-of-truth] [LAW:no-ambient-temporal-coupling]
       await writeTurnState(dir, { deadline: Date.now() + timeoutMs, reseeded: !warm });
+      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
     },
 
     // Branch a NEW independent session from a seed artifact. `handle` already carries a
@@ -414,9 +417,10 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
       const paneCommand =
         `claude -p "$(cat ${PROMPT_FILE})" --dangerously-skip-permissions; ` +
         `echo $? > ${EXIT_FILE}`;
-      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
-
+      // Persist the turn's world before spawning, so a state-write failure never orphans a live pane —
+      // the session is the last, un-cleanable effect. [LAW:no-ambient-temporal-coupling]
       await writeTurnState(dir, { deadline: Date.now() + timeoutMs, reseeded: false });
+      await tmux(['new-session', '-d', '-s', session, '-c', dir, paneCommand]);
     },
 
     async poll(handle: SessionHandle): Promise<DriverSnapshot> {

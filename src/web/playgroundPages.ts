@@ -542,6 +542,11 @@ const PLAYER_SCRIPT = `
 // foreign content origin and its CSP (contentHandler), is the whole sandbox. The src is a URL
 // value, not html, so nothing untrusted is interpolated into this trusted page. [LAW:single-enforcer]
 //
+// `allow=""` is an explicit DENY-ALL permissions policy: no powerful feature (camera, mic, geolocation,
+// etc.) is delegated to the frame. The opaque-origin sandbox already denies these, so this states the
+// intent machine-enforced rather than implied and survives a future sandbox-attribute change — belt-and-
+// suspenders, not the primary defense. [LAW:single-enforcer]
+//
 // DESIGN STANCE (the player is an IMMERSIVE ARTIFACT VIEWER): the sandboxed playground is the star
 // and fills the viewport, so the chrome around it is deliberately asymmetric with the content
 // pages. It ADOPTS the shared siteNav — the one slim top bar that fits a full-height layout and,
@@ -570,6 +575,7 @@ export const renderPlayer = (view: PlayerView): string =>
   title="${escapeHtml(view.prompt)}"
   src="${escapeHtml(view.contentSrc)}"
   sandbox="allow-scripts"
+  allow=""
   referrerpolicy="no-referrer"
 ></iframe>
 <footer id="actions" hidden>

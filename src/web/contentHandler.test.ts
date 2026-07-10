@@ -4,6 +4,7 @@ import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
 import { Subject } from '../identity/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeContentHandler } from './contentHandler.js';
+import { AppOrigin } from './originGuard.js';
 
 // The content origin's contract: serve a playground's html RAW (it is live code) under a
 // strict, network-denying CSP, and fail loudly on anything it cannot serve. This is the one
@@ -11,6 +12,10 @@ import { makeContentHandler } from './contentHandler.js';
 // criteria, not incidental detail. [LAW:verifiable-goals] [LAW:single-enforcer]
 
 const RAW_HTML = '<!doctype html><html><body><script>document.title="live"</script></body></html>';
+
+// The app origin scoped into the content CSP's frame-ancestors — the ONE origin allowed to frame a
+// playground. Minted through the validating AppOrigin brand, a distinct host from the content origin.
+const APP_ORIGIN = AppOrigin('https://app.tinkerpad.test');
 
 const seed = async (
   catalog: Catalog,
@@ -32,7 +37,7 @@ const seed = async (
 const setup = (): { handler: (request: Request) => Promise<Response>; catalog: Catalog; store: ArtifactStore } => {
   const catalog = makeMemoryCatalog();
   const store = makeMemoryArtifactStore();
-  return { handler: makeContentHandler({ catalog, store }), catalog, store };
+  return { handler: makeContentHandler({ catalog, store, appOrigin: APP_ORIGIN }), catalog, store };
 };
 
 describe('makeContentHandler — the sandbox content origin', () => {
@@ -77,10 +82,24 @@ describe('makeContentHandler — the sandbox content origin', () => {
     // ...but the self-contained playground's OWN inline code is allowed to run.
     expect(csp).toContain("script-src 'unsafe-inline'");
     expect(csp).toContain("style-src 'unsafe-inline'");
-    // It may never load an external script/style/host of any kind.
-    expect(csp).not.toContain("'self'");
-    expect(csp).not.toContain('http');
+    // No RESOURCE-load directive re-permits a host — the app origin appears ONLY in frame-ancestors
+    // (a framing-control directive, not a subresource one), so strip it before asserting no host leaks
+    // into a fetch/subresource directive. [LAW:behavior-not-structure]
+    const withoutFrameAncestors = csp.replace(`frame-ancestors ${APP_ORIGIN}`, '');
+    expect(withoutFrameAncestors).not.toContain("'self'");
+    expect(withoutFrameAncestors).not.toContain('http');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('scopes frame-ancestors to exactly the app origin — only the app may frame a playground', async () => {
+    const { handler, catalog, store } = setup();
+    const id = await seed(catalog, store, RAW_HTML);
+    const res = await handler(new Request(`http://content.local/?id=${encodeURIComponent(id)}`));
+    const csp = res.headers.get('content-security-policy') ?? '';
+    // The app's player may frame content; a third party cannot hotlink/embed it as their own.
+    expect(csp).toContain(`frame-ancestors ${APP_ORIGIN}`);
+    // Not left open (formerly unset) and not a wildcard — the scope is the anti-embedding defense.
+    expect(csp).not.toContain('frame-ancestors *');
   });
 
   it('fails loudly with 404 for an unknown id rather than a blank frame', async () => {
@@ -111,7 +130,7 @@ describe('makeContentHandler — the sandbox content origin', () => {
         throw new Error('disk on fire');
       },
     };
-    const handler = makeContentHandler({ catalog, store: failingStore });
+    const handler = makeContentHandler({ catalog, store: failingStore, appOrigin: APP_ORIGIN });
     const res = await handler(new Request(`http://content.local/?id=${encodeURIComponent(playground.id)}`));
     expect(res.status).toBe(500);
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
@@ -136,7 +155,7 @@ describe('makeContentHandler — the sandbox content origin', () => {
       },
       listPlaygrounds: async () => [],
     };
-    const handler = makeContentHandler({ catalog: brokenCatalog, store: makeMemoryArtifactStore() });
+    const handler = makeContentHandler({ catalog: brokenCatalog, store: makeMemoryArtifactStore(), appOrigin: APP_ORIGIN });
     const res = await handler(new Request('http://content.local/?id=anything'));
     expect(res.status).toBe(500);
   });

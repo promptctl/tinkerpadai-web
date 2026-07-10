@@ -6,6 +6,7 @@ import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.j
 import { diagnosticsDirOf, startDiagnosticsRetentionSweeper, startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
+import { appOriginOf } from './originGuard.js';
 import { serve } from './server.js';
 import { resolveServerConfig } from './serverConfig.js';
 
@@ -74,7 +75,10 @@ const main = async (): Promise<void> => {
   // URL must exist before the site handler is built. The dependency is a value passed in,
   // not an ambient assumption about boot order. [LAW:no-ambient-temporal-coupling]
   const content = await serve({
-    handler: makeContentHandler({ catalog: app.catalog, store: app.store }),
+    // The app origin scoped into the content CSP's frame-ancestors — derived from the OAuth callback
+    // URL, the canonical app-origin source. On Node the app origin is the front-door host and port.
+    // [LAW:one-source-of-truth]
+    handler: makeContentHandler({ catalog: app.catalog, store: app.store, appOrigin: appOriginOf(oauthCallbackUrl) }),
     port: contentPort,
   });
 

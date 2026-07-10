@@ -7,6 +7,7 @@ import { diagnosticsDirOf, startDiagnosticsRetentionSweeper, startWorkdirJanitor
 import { generateIndexHtml } from './generateIndexHtml.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
+import { appOriginOf } from './originGuard.js';
 import { serve } from './server.js';
 import { resolveServerConfig } from './serverConfig.js';
 
@@ -70,7 +71,9 @@ const main = async (): Promise<void> => {
   });
 
   const content = await serve({
-    handler: makeContentHandler({ catalog: app.catalog, store: app.store }),
+    // The app origin scoped into the content CSP's frame-ancestors — derived from the OAuth callback
+    // URL, the canonical app-origin source, exactly as production does. [LAW:one-source-of-truth]
+    handler: makeContentHandler({ catalog: app.catalog, store: app.store, appOrigin: appOriginOf(oauthCallbackUrl) }),
     port: contentPort,
   });
 

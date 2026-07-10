@@ -128,7 +128,10 @@ const handlerFor = (env: Env): Handler => {
     reportStore: makeD1ReportStore(env.DB),
     sessionStore: makeD1SessionStore(env.DB, { now: () => Date.now(), ttlMs: EDGE_SESSION_TTL_MS }),
     // No provider means no turns are ever created, so the disposer is unreachable — a no-op is the
-    // contract's sanctioned value for "a provider with nothing to release". [LAW:dataflow-not-control-flow]
+    // contract's sanctioned value for "a provider with nothing to release". The failure reason it now
+    // receives is intentionally discarded: there is no diagnostics record at the edge (generation, and
+    // thus any failure to preserve, is disabled here). When public edge generation turns on
+    // (providers-u1h) a real disposer swaps in behind this seam. [LAW:dataflow-not-control-flow]
     disposeTurn: async () => undefined,
     // The generation budget. In-memory per isolate, inert while the registry is empty (no turn is
     // admitted). When public generation turns on across the isolate fleet (providers-u1h) a durable

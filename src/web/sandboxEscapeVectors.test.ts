@@ -8,6 +8,7 @@ import { makeMemorySessionStore, passThroughValidator, Subject } from '../api/in
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
 import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
+import { AppOrigin } from './originGuard.js';
 
 // THE ADVERSARIAL ESCAPE-VECTOR MATRIX — the deterministic acceptance for the sandbox threat model
 // (design-docs/threat-model-sandbox.md). Each test IS one vector from that model, seeded with a
@@ -18,7 +19,7 @@ import { makeFrontDoorRouter } from './frontDoorRouter.js';
 // ticket's "a test playground attempting each escape vector demonstrably fails."
 // [LAW:verifiable-goals] [LAW:behavior-not-structure] [LAW:single-enforcer]
 
-const APP_ORIGIN = 'https://app.tinkerpad.test';
+const APP_ORIGIN = AppOrigin('https://app.tinkerpad.test');
 const CONTENT_ORIGIN = 'https://content.tinkerpad.test';
 
 // A prompt/tag an attacker would author to break OUT of the sandbox by getting code to run in the
@@ -77,6 +78,7 @@ const makeSecureApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     app,
     page: '<!doctype html><title>front door</title>front door',
     contentOrigin: CONTENT_ORIGIN,
+    appOrigin: APP_ORIGIN,
   });
   return { catalog, store, router };
 };
@@ -107,8 +109,13 @@ const expectSealedCsp = (res: Response): void => {
   expect(csp).toContain("connect-src 'none'"); // no fetch/XHR/WebSocket/beacon exfil
   expect(csp).toContain("form-action 'none'"); // no form post-out
   expect(csp).toContain("base-uri 'none'"); // no <base> hijack
-  expect(csp).not.toContain("'self'"); // no host may be re-permitted
-  expect(csp).not.toContain('http'); // no external origin, ever
+  // Only the app's player may frame a playground (R4) — a third party cannot hotlink/embed it. The app
+  // origin appears ONLY here, so strip this framing-control directive before asserting no host leaks
+  // into a RESOURCE-load directive (the original network-denying guarantee, now stated precisely).
+  expect(csp).toContain(`frame-ancestors ${APP_ORIGIN}`);
+  const withoutFrameAncestors = csp.replace(`frame-ancestors ${APP_ORIGIN}`, '');
+  expect(withoutFrameAncestors).not.toContain("'self'"); // no host may be re-permitted for a load
+  expect(withoutFrameAncestors).not.toContain('http'); // no external origin for any subresource, ever
   expect(res.headers.get('x-content-type-options')).toBe('nosniff');
 };
 
@@ -126,6 +133,9 @@ describe('sandbox escape vectors — a hostile playground demonstrably fails eac
 
     const iframe = /<iframe[\s\S]*?<\/iframe>/.exec(body)?.[0] ?? '';
     expect(iframe).toContain('sandbox="allow-scripts"');
+    // R4: an explicit deny-all permissions policy — no powerful feature is delegated to the frame.
+    // Belt-and-suspenders over the opaque sandbox, so it survives a future sandbox-attribute change.
+    expect(iframe).toContain('allow=""');
     // The load-bearing ABSENCES — each token would reopen a vector.
     expect(iframe).not.toContain('allow-same-origin'); // V1: opaque origin, no reach to app/parent
     expect(iframe).not.toContain('allow-top-navigation'); // V3: no phishing redirect of the top frame

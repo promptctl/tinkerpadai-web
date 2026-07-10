@@ -42,9 +42,21 @@ export const evictExpiredDirs = async (opts: EvictExpiredDirsOptions): Promise<r
     throw error;
   });
   const entries = await Promise.all(
-    names.map(async (name): Promise<AgedEntry> => ({ name, mtimeMs: (await stat(join(opts.root, name))).mtimeMs })),
+    names.map(async (name): Promise<AgedEntry | null> => {
+      // A child removed between the readdir above and this stat — a concurrent reclaim, e.g. cleanupTurn
+      // reaping a workdir while the janitor sweeps — is a REAL absence: the entry is already gone, so there
+      // is nothing to evict. Lift that into a null the filter drops, so one vanished child never rejects the
+      // whole sweep. Any other stat error is a genuine fault and throws loudly.
+      // [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+      const stats = await stat(join(opts.root, name)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      return stats === null ? null : { name, mtimeMs: stats.mtimeMs };
+    }),
   );
-  const expired = expiredByAge(entries, opts.nowMs, opts.maxAgeMs);
+  const present = entries.filter((entry): entry is AgedEntry => entry !== null);
+  const expired = expiredByAge(present, opts.nowMs, opts.maxAgeMs);
   await Promise.all(expired.map((name) => rm(join(opts.root, name), { recursive: true, force: true })));
   return expired;
 };

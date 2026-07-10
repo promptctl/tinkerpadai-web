@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -63,6 +63,20 @@ describe('evictExpiredDirs — removes aged children, keeps fresh ones', () => {
     expect(evicted).toEqual([cold]);
     await expect(stat(join(root, cold))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await stat(join(root, warm))).isDirectory()).toBe(true);
+  });
+
+  it('skips a child that vanished before stat (ENOENT) and still evicts the aged ones', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dir-retention-'));
+    const now = Date.now();
+    const cold = await makeChild(now - 60_000);
+    // A broken symlink is listed by readdir but stat (which follows it) throws ENOENT — exactly the shape
+    // of a child reaped between readdir and stat (cleanupTurn racing the janitor). The sweep must skip it
+    // and still evict the genuinely-expired dir, never reject the whole cycle.
+    await symlink(join(root, 'reaped-mid-sweep'), join(root, 'vanished'));
+
+    const evicted = await evictExpiredDirs({ root, maxAgeMs: 10_000, nowMs: now });
+
+    expect(evicted).toEqual([cold]);
   });
 
   it('treats a missing root as an empty set, never an error', async () => {

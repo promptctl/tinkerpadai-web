@@ -2,7 +2,7 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import page from './index.html';
 import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { makeGitHubOAuthProvider } from '../api/index.js';
+import { makeGenerationQuota, makeGitHubOAuthProvider, parseQuotaLimits } from '../api/index.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
@@ -43,6 +43,12 @@ export interface Env {
   // default (no admins → console reachable by no one), not a boot failure, so it is read directly
   // rather than through `required`. Set it in the [vars] table of wrangler.toml. [LAW:no-silent-failure]
   readonly TINKERPAD_ADMIN_SUBJECTS?: string;
+  // The per-identity generation caps, OPTIONAL [vars] entries. Absent falls back to the documented
+  // defaults; a set-but-invalid value fails the isolate's first request loudly. They enforce once
+  // public generation turns on (providers-u1h) — the first edge deploy registers no provider, so no
+  // turn is ever admitted and these are inert until then. Set them in the [vars] table of wrangler.toml.
+  readonly TINKERPAD_MAX_CONCURRENT_GENERATIONS?: string;
+  readonly TINKERPAD_MAX_DAILY_GENERATIONS?: string;
 }
 
 // A real user's session at the edge, durably in D1 so it survives Worker cold starts. 7 days — long
@@ -116,6 +122,16 @@ const handlerFor = (env: Env): Handler => {
     // No provider means no turns are ever created, so the disposer is unreachable — a no-op is the
     // contract's sanctioned value for "a provider with nothing to release". [LAW:dataflow-not-control-flow]
     disposeTurn: async () => undefined,
+    // The generation budget. In-memory per isolate, inert while the registry is empty (no turn is
+    // admitted). When public generation turns on across the isolate fleet (providers-u1h) a durable
+    // implementation swaps in behind this same seam so caps hold across isolates. [LAW:decomposition]
+    quota: makeGenerationQuota({
+      limits: parseQuotaLimits({
+        maxConcurrent: env.TINKERPAD_MAX_CONCURRENT_GENERATIONS,
+        maxDaily: env.TINKERPAD_MAX_DAILY_GENERATIONS,
+      }),
+      now: () => Date.now(),
+    }),
     oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
     oauthCallbackUrl,
     // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]

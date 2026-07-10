@@ -7,6 +7,7 @@ import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore, Play
 import type { ArtifactStore, Catalog } from '../storage/index.js';
 import { makeMemorySessionStore, Subject } from '../api/index.js';
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
+import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
 
 // The two-origin router's contract: a request to the APP host reaches the app pages, the session
@@ -37,6 +38,7 @@ const makeMemoryApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     reportStore: makeMemoryReportStore(),
     sessionStore: makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60_000 }),
     disposeTurn: async () => undefined,
+    quota: makeTestQuota(),
     oauth: makeFakeOAuthProvider({ subject: Subject('github:1') }),
     oauthCallbackUrl: `${APP_ORIGIN}/session/callback`,
     cookieSecurity: { secure: true },

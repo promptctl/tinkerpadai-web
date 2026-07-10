@@ -65,9 +65,11 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       // playground's session — no provider is restated. The playground count stays 1 (an
       // appended version, not a new playground) and currentVersion advances to the refined
       // file, which is what currentVersionOf serves on reload. [LAW:verifiable-goals]
-      const refined = await service.continue(status.playgroundId, {
-        description: 'add a reset button that sets the count back to zero',
-      });
+      const refined = await service.continue(
+        status.playgroundId,
+        { description: 'add a reset button that sets the count back to zero' },
+        Subject('live-tester'),
+      );
       let refinedStatus: GenerationStatus = await service.poll(refined);
       while (refinedStatus.state === 'pending' || refinedStatus.state === 'running') {
         refinedStatus = await service.poll(refined);
@@ -117,9 +119,11 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
       // CONTINUABLE: the fork is a first-class playground that can itself be refined — a
       // follow-up onto the fork advances ITS version while leaving the parent untouched (the
       // catalog stays at 2). This is what makes a remix "your own copy you can iterate".
-      const forkRefined = await service.continue(forkedStatus.playgroundId, {
-        description: 'add a label above the counter',
-      });
+      const forkRefined = await service.continue(
+        forkedStatus.playgroundId,
+        { description: 'add a label above the counter' },
+        Subject('live-tester'),
+      );
       let forkRefinedStatus: GenerationStatus = await service.poll(forkRefined);
       while (forkRefinedStatus.state === 'pending' || forkRefinedStatus.state === 'running') {
         forkRefinedStatus = await service.poll(forkRefined);

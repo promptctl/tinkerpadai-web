@@ -12,6 +12,7 @@ import {
   makeSessionResolver,
 } from '../api/index.js';
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
+import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { serve } from './server.js';
@@ -40,6 +41,7 @@ const startFrontDoor = async (adminSubjects: ReadonlySet<Subject> = new Set()): 
     store: makeMemoryArtifactStore(),
     catalog,
     disposeTurn: async () => undefined,
+    quota: makeTestQuota(),
   });
   // ONE report store behind both the intake (apiHandler → reportService) and the review queue
   // (reviewService), so the moderation console reads exactly what the report button writes — the real

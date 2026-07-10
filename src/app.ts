@@ -10,7 +10,7 @@ import {
   makeSessionHandler,
   makeSessionResolver,
 } from './api/index.js';
-import type { CookieSecurity, GenerationService, OAuthProvider, ReviewService, SessionStore } from './api/index.js';
+import type { CookieSecurity, GenerationQuota, GenerationService, OAuthProvider, ReviewService, SessionStore } from './api/index.js';
 
 // THE COMPOSITION ROOT'S GRAPH BUILDER. It composes the four agnostic seams — provider registry,
 // artifact store, catalog, session store — into the running app, and knows NOTHING about which
@@ -68,6 +68,11 @@ export interface AppDeps {
   // (cleanupTurn); the edge, with no provider, supplies a no-op — the service disposes
   // unconditionally, so this is a value varying, not a branch. [LAW:dataflow-not-control-flow]
   readonly disposeTurn: (handle: SessionHandle) => Promise<void>;
+  // The per-identity generation budget. Built by each entry (its caps from the environment, its
+  // clock the real one) and passed in as a value, exactly like the session store — so makeApp
+  // stays a pure graph builder and a future durable edge quota swaps here without touching the
+  // service that consumes it. [LAW:decomposition] [LAW:effects-at-boundaries]
+  readonly quota: GenerationQuota;
   // The delegated identity provider behind the login seam (GitHub in production, a loopback in dev,
   // a fake in tests). Required, not optional: there is no "auth off" mode — without a provider there
   // is no working write path, so the app cannot be constructed without one and the gate is always
@@ -112,13 +117,14 @@ export const makeApp = (deps: AppDeps): App => {
     reportStore,
     sessionStore,
     disposeTurn,
+    quota,
     oauth,
     oauthCallbackUrl,
     cookieSecurity,
     adminSubjects,
   } = deps;
 
-  const service = makeGenerationService({ registry, store, catalog, disposeTurn });
+  const service = makeGenerationService({ registry, store, catalog, disposeTurn, quota });
 
   // The moderation report service — reads the catalog to prove a reported playground exists, then
   // records the signal. It shares the catalog with generation (one source of truth for what exists)

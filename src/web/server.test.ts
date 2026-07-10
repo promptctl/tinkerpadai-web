@@ -8,6 +8,7 @@ import {
   makeReportService,
   makeReviewService,
 } from '../api/index.js';
+import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { serve } from './server.js';
@@ -34,6 +35,7 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     store: makeMemoryArtifactStore(),
     catalog,
     disposeTurn: async () => undefined,
+    quota: makeTestQuota(),
   });
   // ONE report store behind both intake and review, mirroring production — the review queue reads
   // exactly what the report button writes. [LAW:one-source-of-truth]

@@ -7,6 +7,8 @@ export type {
   GenerationServiceDeps,
   GenerationStatus,
 } from './generationService.js';
+export { makeGenerationQuota, QuotaExceededError, DEFAULT_QUOTA_LIMITS, parseQuotaLimits } from './generationQuota.js';
+export type { GenerationQuota, QuotaLimits, QuotaDenial, Reservation } from './generationQuota.js';
 export { makeReportService } from './reportService.js';
 export type { ReportService, ReportServiceDeps } from './reportService.js';
 export { makeReviewService } from './reviewService.js';

@@ -17,6 +17,7 @@ import {
   makeGenerationService,
   ProviderCannotContinueError,
   ProviderCannotForkError,
+  startTurnRetentionSweeper,
 } from './generationService.js';
 import type { GenerationService, GenerationStatus } from './generationService.js';
 import { makeTestQuota } from './__fixtures__/testQuota.js';
@@ -72,6 +73,7 @@ const harnessFor = (
     quota,
     maxAttempts,
     validateArtifact,
+    now: () => Date.now(),
   });
   return { service, store, catalog, disposed, disposedReasons, providerId: ProviderId(opts.id) };
 };
@@ -220,7 +222,7 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
     const store: ArtifactStore = { ...makeMemoryArtifactStore(), put: () => Promise.reject(new Error('disk full')) };
     const catalog = makeMemoryCatalog();
-    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota(), maxAttempts: 1, validateArtifact: passThroughValidator });
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota(), maxAttempts: 1, validateArtifact: passThroughValidator, now: () => Date.now() });
 
     const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
     await expect(service.poll(handle)).rejects.toThrow('disk full');
@@ -311,6 +313,7 @@ describe('GenerationService.poll — a provider that succeeds but yields a built
       quota: makeTestQuota(),
       maxAttempts: 1,
       validateArtifact: brokenValidator,
+      now: () => Date.now(),
     });
 
     const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
@@ -336,6 +339,7 @@ describe('GenerationService.poll — a provider that succeeds but yields a built
       validateArtifact: async () => {
         throw new Error('chrome failed to launch');
       },
+      now: () => Date.now(),
     });
 
     const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
@@ -719,6 +723,7 @@ describe('GenerationService — per-identity generation quota', () => {
       quota,
       maxAttempts: 1,
       validateArtifact: passThroughValidator,
+      now: () => Date.now(),
     });
     const request = { providerId: ProviderId('boom'), brief: { description: 'x' } };
     await expect(service.submit(request, AUTHOR)).rejects.toThrow('cannot start');
@@ -832,6 +837,7 @@ const flakyHarness = (
     quota,
     maxAttempts,
     validateArtifact: passThroughValidator,
+    now: () => Date.now(),
   });
   return { service, store, catalog, disposed, disposedReasons, providerId: ProviderId(opts.id), starts };
 };
@@ -998,5 +1004,128 @@ describe('GenerationService.poll — retry: a failed provider attempt is retried
     await expect(
       h.service.submit({ providerId: h.providerId, brief: { description: 'after' } }, AUTHOR),
     ).resolves.toBeDefined();
+  });
+});
+
+// The retention seam (ppu.8): the in-memory turns map is bounded by evicting SETTLED records once their
+// outcome has been observable long enough, while a still-in-flight record is never touched. The clock is
+// injected so both settle-time stamping and the eviction cutoff are deterministic — no wall clock, no
+// timer, in the mechanism tests. [LAW:no-shared-mutable-globals] [LAW:no-ambient-temporal-coupling]
+describe('GenerationService.evictSettledTurns — retention bounds the turns map', () => {
+  // These tests vary only two things — the clock and (once) the provider's running-poll count — and use
+  // ONLY the service, so they build it directly through makeGenerationService's named-object deps rather
+  // than threading defaults through harnessFor's positional parameters. Callers override exactly what
+  // they need, nothing more. [LAW:composability]
+  const retentionService = (
+    now: () => number,
+    opts: ContractProviderOptions = { id: 'fake', label: 'Fake', outcome: 'success' },
+  ): { service: GenerationService; providerId: ProviderId } => {
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider(opts));
+    const service = makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog: makeMemoryCatalog(),
+      disposeTurn: async () => {},
+      quota: makeTestQuota(),
+      maxAttempts: 1,
+      validateArtifact: passThroughValidator,
+      now,
+    });
+    return { service, providerId: ProviderId(opts.id) };
+  };
+
+  const submitTo = (h: { service: GenerationService; providerId: ProviderId }, description: string): Promise<SessionHandle> =>
+    h.service.submit({ providerId: h.providerId, brief: { description } }, AUTHOR);
+
+  it('evicts a settled request once the cutoff reaches its settle time; a later poll then fails loudly', async () => {
+    const clock = { t: 1_000 };
+    const h = retentionService(() => clock.t);
+    const handle = await submitTo(h, 'a wave explorer');
+
+    // Settle at t=5000 — the stamp the sweeper's cutoff is compared against.
+    clock.t = 5_000;
+    expect((await h.service.poll(handle)).state).toBe('ready');
+
+    // A cutoff BEFORE the settle time retains the record — its outcome may still be being read.
+    expect(h.service.evictSettledTurns(4_999)).toBe(0);
+    // ...and the memoized terminal is still served WITHOUT re-hitting the provider.
+    expect((await h.service.poll(handle)).state).toBe('ready');
+
+    // A cutoff AT the settle time reclaims it (settledAtMs <= cutoff), returning the evicted count.
+    expect(h.service.evictSettledTurns(5_000)).toBe(1);
+
+    // The record is gone: a very late poll is a LOUD unknown-turn, never a silent misreport. This is the
+    // deliberate opposite of the ppu.5 re-poll-after-reap defect — retention is sized so this only happens
+    // long after the client stopped polling. [LAW:no-silent-failure]
+    await expect(h.service.poll(handle)).rejects.toThrow('unknown turn');
+  });
+
+  it('never evicts an in-flight request, however far the cutoff advances', async () => {
+    const clock = { t: 1_000 };
+    // runningPolls: 1 — the first poll observes `running`, so the request is genuinely in flight
+    // (settledAtMs still null) across an eviction attempt at the maximum possible cutoff.
+    const h = retentionService(() => clock.t, { id: 'fake', label: 'Fake', outcome: 'success', runningPolls: 1 });
+    const handle = await submitTo(h, 'a slow one');
+    expect((await h.service.poll(handle)).state).toBe('running');
+
+    // Even a cutoff at the end of time cannot reclaim a record that has not settled — its memoized
+    // transition MUST stay reachable for the poll that will observe it. [LAW:no-silent-failure]
+    expect(h.service.evictSettledTurns(Number.MAX_SAFE_INTEGER)).toBe(0);
+
+    // Proof the record survived intact: the next poll still drives it to its terminal outcome.
+    expect((await h.service.poll(handle)).state).toBe('ready');
+  });
+
+  it('evicts only the records settled at or before the cutoff, leaving newer ones', async () => {
+    const clock = { t: 100 };
+    const h = retentionService(() => clock.t);
+
+    const older = await submitTo(h, 'older');
+    expect((await h.service.poll(older)).state).toBe('ready'); // settled at t=100
+
+    clock.t = 200;
+    const newer = await submitTo(h, 'newer');
+    expect((await h.service.poll(newer)).state).toBe('ready'); // settled at t=200
+
+    // Cutoff between the two settle times: the older is reclaimed, the newer retained.
+    expect(h.service.evictSettledTurns(150)).toBe(1);
+    await expect(h.service.poll(older)).rejects.toThrow('unknown turn');
+    expect((await h.service.poll(newer)).state).toBe('ready');
+  });
+});
+
+// The retention lifecycle owner (ppu.8): a background sweeper that hands the service a
+// now()-minus-retention cutoff on each interval — the single explicit owner of eviction timing, the
+// agnostic-service sibling of startWorkdirJanitor. [LAW:no-ambient-temporal-coupling]
+describe('startTurnRetentionSweeper — drives eviction on an interval', () => {
+  it('calls evictSettledTurns with the now-minus-retention cutoff each interval, and stops on stop()', () => {
+    vi.useFakeTimers();
+    try {
+      const clock = { t: 1_000_000 };
+      const cutoffs: number[] = [];
+      const sweeper = startTurnRetentionSweeper(
+        { evictSettledTurns: (before) => (cutoffs.push(before), 0) },
+        { retentionMs: 1_000, sweepIntervalMs: 500, now: () => clock.t },
+      );
+
+      // No eager first sweep — unlike the workdir janitor, the map starts empty every boot.
+      expect(cutoffs).toEqual([]);
+
+      clock.t = 2_000_000;
+      vi.advanceTimersByTime(500);
+      expect(cutoffs).toEqual([2_000_000 - 1_000]); // cutoff = now - retention
+
+      clock.t = 3_000_000;
+      vi.advanceTimersByTime(500);
+      expect(cutoffs).toEqual([2_000_000 - 1_000, 3_000_000 - 1_000]);
+
+      // After stop, no further sweeps fire however far time advances.
+      sweeper.stop();
+      vi.advanceTimersByTime(10_000);
+      expect(cutoffs).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

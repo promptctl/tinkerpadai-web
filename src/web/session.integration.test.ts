@@ -45,6 +45,7 @@ const startFrontDoor = async (adminSubjects: ReadonlySet<Subject> = new Set()): 
     quota: makeTestQuota(),
     maxAttempts: 1,
     validateArtifact: passThroughValidator,
+    now: () => Date.now(),
   });
   // ONE report store behind both the intake (apiHandler → reportService) and the review queue
   // (reviewService), so the moderation console reads exactly what the report button writes — the real

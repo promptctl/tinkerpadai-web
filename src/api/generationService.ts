@@ -98,6 +98,12 @@ export interface GenerationServiceDeps {
   // the artifact is stored. A functional defect is a TYPED rejection routed to the failed-turn path; any
   // other rejection is an infra fault that propagates loudly. [LAW:effects-at-boundaries] [LAW:decomposition]
   readonly validateArtifact: ArtifactValidator;
+  // The world's clock, injected so the service stays pure with respect to time — the same boundary the
+  // quota reads its clock at. Read once per settle, to stamp when a request became terminal, so the
+  // retention sweeper can later reclaim a record whose outcome has been observable long enough. Injected,
+  // never Date.now inline, so eviction is deterministic in tests. [LAW:effects-at-boundaries]
+  // [LAW:no-ambient-temporal-coupling]
+  readonly now: () => number;
 }
 
 export interface GenerationService {
@@ -148,6 +154,16 @@ export interface GenerationService {
   // its target playground) exactly once and thereafter reports `ready`; on failure it
   // surfaces the message, writes nothing, and releases the turn. [LAW:no-silent-failure]
   poll(handle: SessionHandle): Promise<GenerationStatus>;
+
+  // The retention seam that bounds the in-memory turns map — the maintenance half of the map's own
+  // lifecycle, not a client surface. A record is reclaimed ONLY once it has settled (terminal outcome
+  // sealed) AND that outcome has been observable through the retention window; an in-flight request
+  // (settledAtMs still null) is never touched, so a live turn's memoized transition always stays
+  // reachable. `settledBeforeMs` is the cutoff: every request that settled at or before it is removed,
+  // and the count is returned. The service owns the map, so this is the ONE seam its records are
+  // reclaimed through; a composition-root sweeper drives it on an interval with the clock read at its
+  // own edge, never an ambient timer here. [LAW:no-shared-mutable-globals] [LAW:no-ambient-temporal-coupling]
+  evictSettledTurns(settledBeforeMs: number): number;
 }
 
 // Where a turn's successful artifact lands in the catalog, carried as a VALUE on the
@@ -200,14 +216,22 @@ interface TurnRecord {
   // left); then it holds the single settled transition. Memoizing it (not a boolean) is what makes
   // the store+catalog write fire exactly once under concurrent polls. [LAW:no-ambient-temporal-coupling]
   terminal: Promise<GenerationStatus> | null;
+  // The instant this request settled (the clock reading taken in settle), or null while still in flight.
+  // It is the eviction-eligibility value the retention sweeper reads: null is never reclaimable (the
+  // request is live and its memoized terminal must stay reachable); a timestamp marks a sealed outcome
+  // that becomes reclaimable once the retention window past it elapses. Set in the SAME place terminal is
+  // memoized, so "settled" and "when it settled" cannot drift. [LAW:one-source-of-truth]
+  settledAtMs: number | null;
 }
 
 export const makeGenerationService = (deps: GenerationServiceDeps): GenerationService => {
-  const { registry, store, catalog, disposeTurn, quota, maxAttempts, validateArtifact } = deps;
+  const { registry, store, catalog, disposeTurn, quota, maxAttempts, validateArtifact, now } = deps;
 
-  // The single owner of in-flight turn state. In-memory and not evicted: a local
-  // steel-thread limitation — turns in flight do not survive a process restart, while
-  // completed playgrounds do (the catalog is durable). [LAW:no-shared-mutable-globals]
+  // The single owner of in-flight turn state. In-memory, so turns in flight do not survive a process
+  // restart while completed playgrounds do (the catalog is durable) — a local steel-thread limitation.
+  // Bounded by retention: a settled record is retained only long enough for its outcome to be observed,
+  // then reclaimed through evictSettledTurns, so the map does not grow without limit on a long-running
+  // server. [LAW:no-shared-mutable-globals]
   const turns = new Map<SessionHandle['turnId'], TurnRecord>();
 
   const recordOf = (handle: SessionHandle): TurnRecord => {
@@ -391,6 +415,11 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   // generation that ran counts against the day. [LAW:no-ambient-temporal-coupling] [LAW:single-enforcer]
   const settle = (record: TurnRecord, outcome: Promise<GenerationStatus>): Promise<GenerationStatus> => {
     record.terminal = outcome;
+    // Stamp the settle instant in the SAME place the terminal is memoized, so a record can never be
+    // terminal without a settle time or vice versa. This is the value the retention sweeper reads to
+    // reclaim the record once its outcome has been observable for the full retention window.
+    // [LAW:one-source-of-truth]
+    record.settledAtMs = now();
     record.reservation.release();
     return outcome;
   };
@@ -471,6 +500,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
         attemptsLeft: maxAttempts - 1,
         retryInFlight: null,
         terminal: null,
+        settledAtMs: null,
       });
       return handle;
     },
@@ -523,6 +553,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
         attemptsLeft: maxAttempts - 1,
         retryInFlight: null,
         terminal: null,
+        settledAtMs: null,
       });
       return handle;
     },
@@ -580,6 +611,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
         attemptsLeft: maxAttempts - 1,
         retryInFlight: null,
         terminal: null,
+        settledAtMs: null,
       });
       return handle;
     },
@@ -629,5 +661,68 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
         }
       }
     },
+
+    evictSettledTurns(settledBeforeMs: number): number {
+      let evicted = 0;
+      // Deleting the current entry mid-iteration is well-defined for a Map, so the sweep is a single
+      // pass. Never evict a request still in flight (settledAtMs === null): its memoized terminal must
+      // stay reachable for the poll that will observe it. Only a request settled at or before the cutoff
+      // is reclaimed — its outcome has had the full retention window to be read. [LAW:no-silent-failure]
+      for (const [turnId, record] of turns) {
+        if (record.settledAtMs !== null && record.settledAtMs <= settledBeforeMs) {
+          turns.delete(turnId);
+          evicted += 1;
+        }
+      }
+      return evicted;
+    },
   };
+};
+
+export interface TurnRetentionSweeperConfig {
+  readonly retentionMs?: number;
+  readonly sweepIntervalMs?: number;
+  // The clock read at the sweep edge to compute the cutoff. Injected for deterministic sweeper tests;
+  // the runtime default is the real wall clock. [LAW:effects-at-boundaries]
+  readonly now?: () => number;
+}
+
+export interface TurnRetentionSweeper {
+  stop(): void;
+}
+
+// One hour past settle — vastly beyond any client's poll-until-terminal loop, so a client always reads
+// its own outcome before the record is reclaimed, while the map stays bounded.
+const DEFAULT_TURN_RETENTION_MS = 60 * 60 * 1000;
+// Sweep every ten minutes: frequent enough to keep the map bounded on a busy server, rare enough to cost
+// nothing.
+const DEFAULT_TURN_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+
+// The retention lifecycle OWNER for the service's in-flight turn map — the agnostic-service sibling of
+// the provider's startWorkdirJanitor. A background sweeper evicts settled records once their outcome has
+// been observable for retentionMs, and it is the SINGLE explicit owner of that timing: start is this
+// call, stop the returned handle, the clock read only at the sweep edge (now() - retentionMs is the
+// cutoff handed to the service), never an ambient timer smeared across the code. The timer is unref'd so
+// it never keeps the process alive on its own. Started by the runtime entry, never by makeApp, because a
+// background timer is a runtime effect and makeApp must stay a pure graph builder. Unlike the workdir
+// janitor there is no eager first sweep: the map lives in memory and starts empty on every boot, so there
+// are no restart-orphans to clear. [LAW:no-ambient-temporal-coupling] [LAW:effects-at-boundaries]
+export const startTurnRetentionSweeper = (
+  service: Pick<GenerationService, 'evictSettledTurns'>,
+  config: TurnRetentionSweeperConfig = {},
+): TurnRetentionSweeper => {
+  const retentionMs = config.retentionMs ?? DEFAULT_TURN_RETENTION_MS;
+  const sweepIntervalMs = config.sweepIntervalMs ?? DEFAULT_TURN_SWEEP_INTERVAL_MS;
+  const now = config.now ?? Date.now;
+
+  const sweep = (): void => {
+    const evicted = service.evictSettledTurns(now() - retentionMs);
+    if (evicted > 0) {
+      console.log(`tinkerpad: evicted ${evicted} settled generation turn(s)`);
+    }
+  };
+
+  const timer = setInterval(sweep, sweepIntervalMs);
+  timer.unref();
+  return { stop: () => clearInterval(timer) };
 };

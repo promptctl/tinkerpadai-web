@@ -87,6 +87,11 @@ export interface AppDeps {
   // isolated edge render sandbox swaps in here without touching the service. [LAW:decomposition]
   // [LAW:effects-at-boundaries]
   readonly validateArtifact: ArtifactValidator;
+  // The world's clock, supplied by the entry as an already-built value exactly like the quota's clock —
+  // so makeApp stays clock-free (it forwards this to the service, never reads it). The service stamps a
+  // request's settle time from it, which the retention sweeper reads to bound the in-flight turn map.
+  // [LAW:effects-at-boundaries] [LAW:decomposition]
+  readonly now: () => number;
   // The delegated identity provider behind the login seam (GitHub in production, a loopback in dev,
   // a fake in tests). Required, not optional: there is no "auth off" mode — without a provider there
   // is no working write path, so the app cannot be constructed without one and the gate is always
@@ -134,13 +139,14 @@ export const makeApp = (deps: AppDeps): App => {
     quota,
     maxAttempts,
     validateArtifact,
+    now,
     oauth,
     oauthCallbackUrl,
     cookieSecurity,
     adminSubjects,
   } = deps;
 
-  const service = makeGenerationService({ registry, store, catalog, disposeTurn, quota, maxAttempts, validateArtifact });
+  const service = makeGenerationService({ registry, store, catalog, disposeTurn, quota, maxAttempts, validateArtifact, now });
 
   // The moderation report service — reads the catalog to prove a reported playground exists, then
   // records the signal. It shares the catalog with generation (one source of truth for what exists)

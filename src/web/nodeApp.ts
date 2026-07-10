@@ -107,6 +107,9 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
       await cleanupTurn(handle);
     },
     quota,
+    // The real clock, supplied HERE with the quota's — the boundary the app's clocks are built at, so the
+    // service stamps settle times deterministically and makeApp stays clock-free. [LAW:effects-at-boundaries]
+    now: () => Date.now(),
     // The retry half of the policy flows to the service, the single owner of turn lifecycle.
     maxAttempts: config.generationPolicy.maxAttempts,
     // The local functional-validation gate: a real headless Chrome on this machine, wired here because

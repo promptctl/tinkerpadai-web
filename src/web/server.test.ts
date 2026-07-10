@@ -39,6 +39,7 @@ const startServer = async (availability?: { state: 'unavailable'; reason: string
     quota: makeTestQuota(),
     maxAttempts: 1,
     validateArtifact: passThroughValidator,
+    now: () => Date.now(),
   });
   // ONE report store behind both intake and review, mirroring production — the review queue reads
   // exactly what the report button writes. [LAW:one-source-of-truth]

@@ -67,6 +67,7 @@ const makeSecureApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     quota: makeTestQuota(),
     maxAttempts: 1,
     validateArtifact: passThroughValidator,
+    now: () => Date.now(),
     oauth: makeFakeOAuthProvider({ subject: Subject('github:1') }),
     oauthCallbackUrl: `${APP_ORIGIN}/session/callback`,
     cookieSecurity: { secure: true },

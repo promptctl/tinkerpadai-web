@@ -43,6 +43,7 @@ const handlerFor = (
     quota,
     maxAttempts: 1,
     validateArtifact,
+    now: () => Date.now(),
   });
   const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
   return makeHttpHandler(service, reports, resolveIdentity);

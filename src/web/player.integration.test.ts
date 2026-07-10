@@ -6,6 +6,7 @@ import { ProviderId, ProviderRegistry, SessionId, TurnId } from '../provider/ind
 import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { makeGenerationService } from '../api/generationService.js';
 import { makeReportService } from '../api/reportService.js';
+import { makeReviewService } from '../api/reviewService.js';
 import { makeHttpHandler } from '../api/httpHandler.js';
 import { localIdentityResolver } from '../api/identity.js';
 import { makeMemoryReportStore } from '../storage/index.js';
@@ -57,6 +58,8 @@ describe('commons + sandboxed player over two real origins', () => {
         contentOrigin: content.url,
         sessionHandler: async () => null,
         apiHandler,
+        reviewService: makeReviewService({ reports: makeMemoryReportStore(), catalog }),
+        isAdminRequest: async () => false,
       }),
       port: 0,
     });
@@ -112,6 +115,8 @@ describe('remix action over the composed front door', () => {
         contentOrigin: 'http://content.local',
         sessionHandler: async () => null,
         apiHandler: makeHttpHandler(service, reports, localIdentityResolver),
+        reviewService: makeReviewService({ reports: makeMemoryReportStore(), catalog }),
+        isAdminRequest: async () => false,
       }),
       port: 0,
     });

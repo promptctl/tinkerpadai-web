@@ -9,6 +9,8 @@ export type {
 } from './generationService.js';
 export { makeReportService } from './reportService.js';
 export type { ReportService, ReportServiceDeps } from './reportService.js';
+export { makeReviewService } from './reviewService.js';
+export type { ReviewItem, ReviewService, ReviewServiceDeps } from './reviewService.js';
 export { makeHttpHandler } from './httpHandler.js';
 export { localIdentityResolver, Subject } from './identity.js';
 export type { Identity, IdentityResolver } from './identity.js';

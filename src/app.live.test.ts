@@ -27,6 +27,7 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
         oauth: makeFakeOAuthProvider({ subject: Subject('live-tester') }),
         oauthCallbackUrl: 'http://127.0.0.1/session/callback',
         cookieSecurity: { secure: false },
+        adminSubjects: new Set(),
         driver: { pollIntervalMs: 1000 },
       });
 

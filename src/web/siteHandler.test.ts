@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { makeMemoryCatalog, Tag, VersionId } from '../storage/index.js';
+import { makeMemoryCatalog, makeMemoryReportStore, Tag, VersionId } from '../storage/index.js';
 import type { Catalog, PlaygroundId, Tags } from '../storage/index.js';
 import { Subject } from '../identity/index.js';
+import { makeReviewService } from '../api/index.js';
+import type { ReviewService } from '../api/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
 
@@ -25,9 +27,15 @@ const seed = async (catalog: Catalog, prompt: string, tags: Tags = []): Promise<
   return playground.id;
 };
 
+interface AdminOverrides {
+  readonly reviewService?: ReviewService;
+  readonly isAdminRequest?: (request: Request) => Promise<boolean>;
+}
+
 const build = (
   catalog: Catalog,
   sessionHandler: (request: Request) => Promise<Response | null> = async () => null,
+  admin: AdminOverrides = {},
 ): { handler: (request: Request) => Promise<Response>; delegated: Request[] } => {
   const delegated: Request[] = [];
   const apiHandler = async (request: Request): Promise<Response> => {
@@ -37,8 +45,21 @@ const build = (
       headers: { 'content-type': 'application/json' },
     });
   };
+  // The moderation console defaults to a real service over the same catalog + an empty report store,
+  // and to "no admins" — so every existing routing test runs with the console dark, and the admin
+  // tests below opt in by overriding isAdminRequest and/or the review service.
+  const reviewService = admin.reviewService ?? makeReviewService({ reports: makeMemoryReportStore(), catalog });
+  const isAdminRequest = admin.isAdminRequest ?? (async () => false);
   return {
-    handler: makeSiteHandler({ page: PAGE, catalog, contentOrigin: CONTENT_ORIGIN, sessionHandler, apiHandler }),
+    handler: makeSiteHandler({
+      page: PAGE,
+      catalog,
+      contentOrigin: CONTENT_ORIGIN,
+      sessionHandler,
+      apiHandler,
+      reviewService,
+      isAdminRequest,
+    }),
     delegated,
   };
 };
@@ -275,6 +296,9 @@ describe('makeSiteHandler', () => {
       appendTurn: async () => {
         throw new Error('not used');
       },
+      setListing: async () => {
+        throw new Error('not used');
+      },
       getPlayground: async () => {
         throw new Error('not used');
       },
@@ -385,5 +409,121 @@ describe('makeSiteHandler', () => {
     // The parent itself is not a fork — no attribution on its player.
     const parentPlayer = await (await handler(new Request(`http://front.local/play?id=${encodeURIComponent(parent.id)}`))).text();
     expect(parentPlayer).not.toContain('Forked from');
+  });
+});
+
+// The moderation surface (moderation-5g7.2): the console is gated to admins and invisible to everyone
+// else, unlisting hides a playground from every public read path while a direct link shows an honest
+// "removed" notice, and relisting brings it back. These are the ticket's admin acceptance criteria.
+// [LAW:verifiable-goals]
+describe('moderation console and unlist visibility', () => {
+  // Build a front door whose admin console is a REAL review service over a catalog + report store the
+  // test controls, gated to admins by the passed predicate — so these tests drive the real flow, not
+  // a stub.
+  const buildAdmin = async (isAdmin: boolean) => {
+    const catalog = makeMemoryCatalog();
+    const reportStore = makeMemoryReportStore();
+    const review = makeReviewService({ reports: reportStore, catalog });
+    const { handler } = build(catalog, async () => null, {
+      reviewService: review,
+      isAdminRequest: async () => isAdmin,
+    });
+    return { handler, catalog, reportStore };
+  };
+
+  it('hides the console from a non-admin with the same not-found any unknown route yields', async () => {
+    const { handler } = await buildAdmin(false);
+    const res = await handler(new Request('http://front.local/admin'));
+    expect(res.status).toBe(404);
+    // It does not reveal the console — no moderation-specific heading leaks.
+    expect(await res.text()).not.toContain('Moderation');
+  });
+
+  it('serves the review queue to an admin, listing reported playgrounds and their reasons', async () => {
+    const { handler, catalog, reportStore } = await buildAdmin(true);
+    const id = await seed(catalog, 'a questionable playground');
+    await reportStore.record({ playgroundId: id, reporter: Subject('github:reporter'), reason: 'this is spam' });
+
+    const res = await handler(new Request('http://front.local/admin'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    const body = await res.text();
+    expect(body).toContain('a questionable playground');
+    expect(body).toContain('this is spam');
+    // The action affordance to take it down is present.
+    expect(body).toContain('Unlist');
+  });
+
+  it('unlists via the admin action, redirects back, and the playground vanishes from every public read path', async () => {
+    const { handler, catalog } = await buildAdmin(true);
+    const id = await seed(catalog, 'to be taken down');
+
+    const form = new URLSearchParams({ playgroundId: id, listing: 'unlisted' });
+    const res = await handler(
+      new Request('http://front.local/admin/listing', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: form.toString(),
+      }),
+    );
+    // Post-redirect-get back to the console.
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe('/admin');
+
+    // Gone from the commons HTML...
+    const commons = await (await handler(new Request('http://front.local/commons'))).text();
+    expect(commons).not.toContain('to be taken down');
+    // ...and from the JSON projection the homepage preview reads.
+    const json = (await (await handler(new Request('http://front.local/api/playgrounds'))).json()) as unknown[];
+    expect(json).toEqual([]);
+  });
+
+  it('refuses the admin action for a non-admin, leaving the playground listed', async () => {
+    const { handler, catalog } = await buildAdmin(false);
+    const id = await seed(catalog, 'still here');
+
+    const form = new URLSearchParams({ playgroundId: id, listing: 'unlisted' });
+    const res = await handler(
+      new Request('http://front.local/admin/listing', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: form.toString(),
+      }),
+    );
+    expect(res.status).toBe(404);
+    // The playground is untouched — still in the commons.
+    expect((await catalog.listPlaygrounds()).map((s) => s.id)).toEqual([id]);
+  });
+
+  it('shows an honest "removed" notice (410) for an unlisted playground, distinct from a 404 for an unknown id', async () => {
+    const { handler, catalog } = await buildAdmin(true);
+    const id = await seed(catalog, 'taken down');
+    await catalog.setListing(id, 'unlisted');
+
+    const removed = await handler(new Request(`http://front.local/play?id=${encodeURIComponent(id)}`));
+    expect(removed.status).toBe(410);
+    expect(await removed.text()).toContain('removed');
+
+    const unknown = await handler(new Request('http://front.local/play?id=no-such-id'));
+    expect(unknown.status).toBe(404);
+    expect(await unknown.text()).toContain('not found');
+  });
+
+  it('relists an unlisted playground back into the commons', async () => {
+    const { handler, catalog } = await buildAdmin(true);
+    const id = await seed(catalog, 'back from the dead');
+    await catalog.setListing(id, 'unlisted');
+
+    const form = new URLSearchParams({ playgroundId: id, listing: 'listed' });
+    const res = await handler(
+      new Request('http://front.local/admin/listing', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: form.toString(),
+      }),
+    );
+    expect(res.status).toBe(303);
+    const commons = await (await handler(new Request('http://front.local/commons'))).text();
+    expect(commons).toContain('back from the dead');
   });
 });

@@ -2,6 +2,20 @@ import { randomUUID } from 'node:crypto';
 import type { NewReport, Report, ReportsDoc } from './types.js';
 import { ReportId } from './types.js';
 
+// THE REPORT READ SURFACE — the ability to list every recorded report, and nothing more. It is its
+// own interface so the moderation review queue (moderation-5g7.2), which READS the signal to act on
+// it, can depend on exactly that and the type system FORBIDS it recording a report — the mirror of
+// CatalogReader, which scopes the report intake path to a catalog it cannot write. The invariant
+// "the review queue never forges a report" then lives in the type, not a comment. A full ReportStore
+// is a ReportReader (it extends this), so nothing that already holds a ReportStore changes.
+// [LAW:decomposition] [LAW:types-are-the-program]
+export interface ReportReader {
+  // Every report ever recorded, in insertion order — the read the review queue (moderation-5g7.2) is
+  // built on. An empty store yields an empty list — data flow, not a special case.
+  // [LAW:dataflow-not-control-flow]
+  list(): Promise<readonly Report[]>;
+}
+
 // THE REPORT STORE SEAM. The persistence boundary for moderation SIGNALS — reports raised against
 // playgrounds — kept deliberately SEPARATE from the Catalog (design-docs/PROJECT.md keeps "what is
 // dangerous" for the sandbox and "what is unwanted" for moderation as distinct concerns). The
@@ -9,15 +23,10 @@ import { ReportId } from './types.js';
 // human reviewer (moderation-5g7.2) acts on, and whose reporter must never leak into the public read
 // path. Recording is the signal-collection half of the epic; this seam does not act on reports.
 // [LAW:decomposition] [LAW:one-source-of-truth]
-export interface ReportStore {
+export interface ReportStore extends ReportReader {
   // Record a report against a playground. The store mints the ReportId and the timestamp — a
   // reporter raises a signal, it owns neither identity nor the clock. [LAW:single-enforcer]
   record(input: NewReport): Promise<Report>;
-
-  // Every report ever recorded, in insertion order — the "listable" half of the ticket and the read
-  // the review queue (moderation-5g7.2) is built on. An empty store yields an empty list — data
-  // flow, not a special case. [LAW:dataflow-not-control-flow]
-  list(): Promise<readonly Report[]>;
 }
 
 // The swap point beneath the seam: read and write the whole reports document. This is the

@@ -6,6 +6,7 @@ import {
   makeGenerationService,
   makeHttpHandler,
   makeMemorySessionStore,
+  passThroughValidator,
   makeReportService,
   makeReviewService,
   makeSessionHandler,
@@ -43,6 +44,7 @@ const startFrontDoor = async (adminSubjects: ReadonlySet<Subject> = new Set()): 
     disposeTurn: async () => undefined,
     quota: makeTestQuota(),
     maxAttempts: 1,
+    validateArtifact: passThroughValidator,
   });
   // ONE report store behind both the intake (apiHandler → reportService) and the review queue
   // (reviewService), so the moderation console reads exactly what the report button writes — the real

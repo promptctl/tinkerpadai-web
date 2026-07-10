@@ -22,6 +22,8 @@ import type { GenerationService, GenerationStatus } from './generationService.js
 import { makeTestQuota } from './__fixtures__/testQuota.js';
 import { makeGenerationQuota, QuotaExceededError } from './generationQuota.js';
 import type { GenerationQuota } from './generationQuota.js';
+import { FunctionalDefectError, passThroughValidator } from './artifactValidation.js';
+import type { ArtifactValidator } from './artifactValidation.js';
 
 // The generation service's contract: it wires a chosen provider to the store and
 // catalog, persists exactly once on success, surfaces failure without writing anything,
@@ -44,6 +46,9 @@ const harnessFor = (
   // Default 1 = no retry, so every existing failure/dispose assertion sees exactly one attempt;
   // the retry suite opts into a larger budget.
   maxAttempts = 1,
+  // Default pass-through, so every existing success assertion sees the artifact stored unconditionally;
+  // the functional-gate suite injects a validator that rejects to exercise the built-but-broken path.
+  validateArtifact: ArtifactValidator = passThroughValidator,
 ): Harness => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
@@ -61,6 +66,7 @@ const harnessFor = (
       }),
     quota,
     maxAttempts,
+    validateArtifact,
   });
   return { service, store, catalog, disposed, providerId: ProviderId(opts.id) };
 };
@@ -206,7 +212,7 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
     const store: ArtifactStore = { ...makeMemoryArtifactStore(), put: () => Promise.reject(new Error('disk full')) };
     const catalog = makeMemoryCatalog();
-    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota(), maxAttempts: 1 });
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota(), maxAttempts: 1, validateArtifact: passThroughValidator });
 
     const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
     await expect(service.poll(handle)).rejects.toThrow('disk full');
@@ -237,6 +243,133 @@ describe('GenerationService.poll — a provider that succeeds but yields a non-s
     // Nothing entered the commons, and the create turn was released like any other failed first turn.
     expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
     expect(h.disposed).toEqual([handle]);
+  });
+});
+
+describe('GenerationService.poll — a provider that succeeds but yields a built-but-broken file', () => {
+  // A validator that rejects the way the real headless gate does: a TYPED FunctionalDefectError carrying
+  // the uncaught errors observed on load (the wave-1 class: an uncaught TypeError, a script SyntaxError).
+  const brokenValidator: ArtifactValidator = async () => {
+    throw new FunctionalDefectError(["TypeError: Cannot read properties of null (reading 'appendChild')"]);
+  };
+
+  it('routes a functional defect to the failed-turn path — actionable message, nothing catalogued, turn released', async () => {
+    // The provider SUCCEEDS and the file is self-contained, but it throws an uncaught error on load. The
+    // functional gate must translate that typed defect into a FAILED generation, never a 500 and never a
+    // catalogued-but-broken playground. This is the observable end-to-end proof the gate closes the
+    // wave-1 leak. [LAW:no-silent-failure]
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, undefined, makeTestQuota(), 1, brokenValidator);
+    const handle = await submit(h, 'a playground that throws on load');
+
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('not functional');
+    expect(status.error).toContain('uncaught');
+    expect(status.error).toContain('TypeError');
+
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
+    expect(h.disposed).toEqual([handle]);
+  });
+
+  it('runs the gate BEFORE store.put — a broken artifact never enters storage', async () => {
+    // The gate is upstream of the write, so a functionally-broken artifact costs no stored bytes: store.put
+    // is never reached. A put-spy proves the ordering behaviorally. [LAW:effects-at-boundaries]
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
+    const inner = makeMemoryArtifactStore();
+    let putCalls = 0;
+    const store: ArtifactStore = {
+      get: inner.get,
+      put: async (artifact) => {
+        putCalls += 1;
+        return inner.put(artifact);
+      },
+    };
+    const catalog = makeMemoryCatalog();
+    const service = makeGenerationService({
+      registry,
+      store,
+      catalog,
+      disposeTurn: async () => {},
+      quota: makeTestQuota(),
+      maxAttempts: 1,
+      validateArtifact: brokenValidator,
+    });
+
+    const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
+    expect((await service.poll(handle)).state).toBe('failed');
+    expect(putCalls).toBe(0);
+    expect(await catalog.listPlaygrounds()).toHaveLength(0);
+  });
+
+  it('re-throws a non-FunctionalDefectError from the validator — an infra fault is NOT relabelled', async () => {
+    // finalizeSuccess catches ONLY FunctionalDefectError. If the validator itself faults (its browser could
+    // not launch), that is an infra problem that must propagate loudly, never be misrouted to a {failed}
+    // status that hides it — exactly as a non-SelfContainmentError store fault propagates. [LAW:no-silent-failure]
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
+    const catalog = makeMemoryCatalog();
+    const service = makeGenerationService({
+      registry,
+      store: makeMemoryArtifactStore(),
+      catalog,
+      disposeTurn: async () => {},
+      quota: makeTestQuota(),
+      maxAttempts: 1,
+      validateArtifact: async () => {
+        throw new Error('chrome failed to launch');
+      },
+    });
+
+    const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
+    await expect(service.poll(handle)).rejects.toThrow('chrome failed to launch');
+    expect(await catalog.listPlaygrounds()).toHaveLength(0);
+  });
+
+  it('does NOT consume a retry — a built-but-broken artifact is TERMINAL, not retried', async () => {
+    // Retry is a provider-'failed' concern (a transient crash worth another attempt). A functional defect is
+    // a deterministic property of the produced file — retrying would only reproduce it — so it settles the
+    // request immediately even with retry budget left, exactly as a self-containment refusal does. With
+    // maxAttempts 2, one poll of a functionally-broken success yields `failed`, never a `running` retry.
+    // [LAW:dataflow-not-control-flow]
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' }, undefined, makeTestQuota(), 2, brokenValidator);
+    const handle = await submit(h, 'broken but with retry budget');
+
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('not functional');
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
+    expect(h.disposed).toEqual([handle]);
+  });
+
+  it('a continue that produces a built-but-broken artifact fails, keeps the session, and appends nothing', async () => {
+    // The append branch of the functional-defect translation: a REFINE that succeeds but throws on load
+    // fails like any refine failure — session kept (prior version still continuable), nothing appended,
+    // actionable message — never a 500 and never a released workdir.
+    const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true }, undefined, makeTestQuota(), 1, brokenValidator);
+    const seedVersion = await h.store.put({ html: '<!-- a counter -->' });
+    const seed = await h.catalog.createPlayground({
+      handle: { providerId: h.providerId, sessionId: SessionId('seed-session'), turnId: TurnId('seed-turn') },
+      prompt: 'a counter',
+      version: seedVersion,
+      lineage: null,
+      author: AUTHOR,
+      tags: [],
+    });
+
+    const handle = await h.service.continue(seed.id, { description: 'add a reset button' }, REFINER);
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('not functional');
+
+    const playground = await h.catalog.getPlayground(seed.id);
+    expect(playground.session.turns).toHaveLength(1);
+    expect(currentVersionOf(playground.session)).toBe(seedVersion);
+    // A failed refine keeps the session — reclaimOnFailure never releases an append target.
+    expect(h.disposed).toEqual([]);
   });
 });
 
@@ -569,6 +702,7 @@ describe('GenerationService — per-identity generation quota', () => {
       disposeTurn: async () => undefined,
       quota,
       maxAttempts: 1,
+      validateArtifact: passThroughValidator,
     });
     const request = { providerId: ProviderId('boom'), brief: { description: 'x' } };
     await expect(service.submit(request, AUTHOR)).rejects.toThrow('cannot start');
@@ -676,6 +810,7 @@ const flakyHarness = (
     },
     quota,
     maxAttempts,
+    validateArtifact: passThroughValidator,
   });
   return { service, store, catalog, disposed, providerId: ProviderId(opts.id), starts };
 };

@@ -4,6 +4,8 @@ import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeGenerationService } from './generationService.js';
+import { FunctionalDefectError, passThroughValidator } from './artifactValidation.js';
+import type { ArtifactValidator } from './artifactValidation.js';
 import { makeTestQuota } from './__fixtures__/testQuota.js';
 import { makeGenerationQuota } from './generationQuota.js';
 import type { GenerationQuota } from './generationQuota.js';
@@ -26,6 +28,7 @@ const handlerFor = (
   opts: ContractProviderOptions,
   resolveIdentity: IdentityResolver = grantIdentity,
   quota: GenerationQuota = makeTestQuota(),
+  validateArtifact: ArtifactValidator = passThroughValidator,
 ): ((request: Request) => Promise<Response>) => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
@@ -39,6 +42,7 @@ const handlerFor = (
     disposeTurn: async () => undefined,
     quota,
     maxAttempts: 1,
+    validateArtifact,
   });
   const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
   return makeHttpHandler(service, reports, resolveIdentity);
@@ -131,6 +135,30 @@ describe('POST /generations then POST /poll — the full submit→poll round tri
     const status = (await pollRes.json()) as { state: string; playgroundId?: string };
     expect(status.state).toBe('ready');
     expect(typeof status.playgroundId).toBe('string');
+  });
+
+  it('serializes a functional-defect failure as a 200 { state: failed } with the actionable message', async () => {
+    // The provider SUCCEEDS but the artifact is built-but-broken (an uncaught error on load). At the HTTP
+    // boundary this must surface as an ordinary poll result — 200 with { state: 'failed', error: '<not
+    // functional …>' } — not a 5xx and not a leaked stack. Exercised here at the HTTP layer (not only in
+    // the service) so a regression in how the failure response is shaped is caught where clients read it.
+    // [LAW:behavior-not-structure] [LAW:no-silent-failure]
+    const brokenValidator: ArtifactValidator = async () => {
+      throw new FunctionalDefectError(["TypeError: Cannot read properties of null (reading 'appendChild')"]);
+    };
+    const handler = handlerFor({ id: 'fake', label: 'Fake', outcome: 'success' }, grantIdentity, makeTestQuota(), brokenValidator);
+
+    const submitRes = await handler(
+      post('/generations', { providerId: 'fake', brief: { description: 'a playground that throws on load' } }),
+    );
+    expect(submitRes.status).toBe(201);
+    const { handle } = (await submitRes.json()) as { handle: Record<string, string> };
+
+    const pollRes = await handler(post('/poll', { handle }));
+    expect(pollRes.status).toBe(200);
+    const status = (await pollRes.json()) as { state: string; error?: string };
+    expect(status.state).toBe('failed');
+    expect(status.error).toContain('not functional');
   });
 });
 

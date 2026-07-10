@@ -10,7 +10,7 @@ import {
   makeSessionHandler,
   makeSessionResolver,
 } from './api/index.js';
-import type { CookieSecurity, GenerationQuota, GenerationService, OAuthProvider, ReviewService, SessionStore } from './api/index.js';
+import type { ArtifactValidator, CookieSecurity, GenerationQuota, GenerationService, OAuthProvider, ReviewService, SessionStore } from './api/index.js';
 
 // THE COMPOSITION ROOT'S GRAPH BUILDER. It composes the four agnostic seams — provider registry,
 // artifact store, catalog, session store — into the running app, and knows NOTHING about which
@@ -79,6 +79,13 @@ export interface AppDeps {
   // turn-lifecycle boundary. Stated as a value here, like the quota, so makeApp stays a pure graph
   // builder and the edge/Node roots each choose their own policy. [LAW:decomposition]
   readonly maxAttempts: number;
+  // The functional-quality gate — does a succeeded artifact actually run without an uncaught error on
+  // load? A seam whose concrete effect is chosen by the entry: the Node root a local headless Chrome, the
+  // edge the pass-through (generation is disabled there, so no turn is ever admitted to validate), a test
+  // a fake. Passed as a value, like the quota and disposer, so makeApp stays a pure graph builder and the
+  // isolated edge render sandbox swaps in here without touching the service. [LAW:decomposition]
+  // [LAW:effects-at-boundaries]
+  readonly validateArtifact: ArtifactValidator;
   // The delegated identity provider behind the login seam (GitHub in production, a loopback in dev,
   // a fake in tests). Required, not optional: there is no "auth off" mode — without a provider there
   // is no working write path, so the app cannot be constructed without one and the gate is always
@@ -125,13 +132,14 @@ export const makeApp = (deps: AppDeps): App => {
     disposeTurn,
     quota,
     maxAttempts,
+    validateArtifact,
     oauth,
     oauthCallbackUrl,
     cookieSecurity,
     adminSubjects,
   } = deps;
 
-  const service = makeGenerationService({ registry, store, catalog, disposeTurn, quota, maxAttempts });
+  const service = makeGenerationService({ registry, store, catalog, disposeTurn, quota, maxAttempts, validateArtifact });
 
   // The moderation report service — reads the catalog to prove a reported playground exists, then
   // records the signal. It shares the catalog with generation (one source of truth for what exists)

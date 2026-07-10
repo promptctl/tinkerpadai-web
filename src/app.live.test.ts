@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { makeNodeApp } from './web/nodeApp.js';
 import { Subject } from './api/index.js';
+import { resolveBrowserExecutablePath } from './api/headlessArtifactValidator.js';
 import { makeFakeOAuthProvider } from './api/__fixtures__/fakeOAuthProvider.js';
 import type { GenerationStatus } from './api/index.js';
 
@@ -34,6 +35,9 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
         // push this multi-generation live run past its own 15-minute vitest ceiling; a single fast-
         // failing attempt keeps the smoke bounded. [LAW:decomposition]
         generationPolicy: { timeoutMs: 5 * 60 * 1000, maxAttempts: 1 },
+        // The live e2e runs the REAL functional gate over real Claude-generated artifacts — the whole
+        // composition, including "does the artifact actually run", proven end to end.
+        browserExecutablePath: resolveBrowserExecutablePath(process.env),
       });
 
       const [provider] = service.listProviders();

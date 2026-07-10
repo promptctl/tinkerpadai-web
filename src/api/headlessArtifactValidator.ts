@@ -99,11 +99,19 @@ export const makeHeadlessArtifactValidator = (config: HeadlessValidatorConfig): 
           // and exfiltrate. A self-contained playground needs no external request; any is refused here.
           // [LAW:single-enforcer] [LAW:no-silent-failure]
           const toOurOrigin = request.url().startsWith(`${origin}/`) || request.url() === origin;
-          if (request.isNavigationRequest() && request.frame() === page.mainFrame() && toOurOrigin) {
-            void request.continue();
-          } else {
-            void request.abort();
-          }
+          const decision =
+            request.isNavigationRequest() && request.frame() === page.mainFrame() && toOurOrigin
+              ? request.continue()
+              : request.abort();
+          // continue()/abort() reject only on a benign CDP lifecycle race — the request was already
+          // resolved, or the target closed during teardown (more likely now that we abort navigations
+          // mid-flight). The allow/deny decision is already recorded, and the validation outcome is
+          // measured by pageerror/load, not by whether every continue/abort promise settled — so this
+          // rejection carries no signal about the artifact. Swallow it so an unhandled rejection cannot
+          // crash the generation pipeline mid-validation. This handler fires once per request and calls
+          // exactly one of continue/abort, so a double-handle bug is unrepresentable; the only rejection
+          // source is the lifecycle race. [LAW:no-silent-failure] exception: benign interception race.
+          void decision.catch(() => undefined);
         });
 
         let timedOut = false;

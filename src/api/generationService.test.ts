@@ -281,6 +281,43 @@ describe('GenerationService.continue — refine an existing playground into a ne
     expect(h.disposed).toEqual([]);
   });
 
+  it('a continue that produces a non-self-contained artifact fails, keeps the session, and appends nothing', async () => {
+    // The append branch of the SelfContainmentError translation: a REFINE whose provider succeeds but
+    // emits an external reference must fail like any refine failure — session kept (prior version still
+    // continuable), nothing appended, actionable message — never a 500 and never a released workdir. The
+    // provider's html override applies to the continue turn; submit is not run, so it is seeded directly.
+    const h = harnessFor({
+      id: 'fake',
+      label: 'Fake',
+      outcome: 'success',
+      iterable: true,
+      html: '<script src="https://evil.example.com/x.js"></script>',
+    });
+    const seedVersion = await h.store.put({ html: '<!-- a counter -->' });
+    const seed = await h.catalog.createPlayground({
+      handle: { providerId: h.providerId, sessionId: SessionId('seed-session'), turnId: TurnId('seed-turn') },
+      prompt: 'a counter',
+      version: seedVersion,
+      lineage: null,
+      author: AUTHOR,
+      tags: [],
+    });
+
+    const handle = await h.service.continue(seed.id, { description: 'add a reset button' }, REFINER);
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('not self-contained');
+
+    // Nothing appended; the original version is still current and continuable.
+    const playground = await h.catalog.getPlayground(seed.id);
+    expect(playground.session.turns).toHaveLength(1);
+    expect(currentVersionOf(playground.session)).toBe(seedVersion);
+
+    // The refine did NOT release the session — reclaimOnFailure keeps append sessions alive.
+    expect(h.disposed).toEqual([]);
+  });
+
   it('fails loudly when the playground provider cannot continue', async () => {
     const h = harnessFor({ id: 'fake', label: 'Fake', outcome: 'success' });
     const first = await submit(h, 'a counter');

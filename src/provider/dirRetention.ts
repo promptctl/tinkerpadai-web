@@ -63,6 +63,22 @@ export const evictExpiredDirs = async (opts: EvictExpiredDirsOptions): Promise<r
   );
   const present = entries.filter((entry): entry is AgedEntry => entry !== null);
   const expired = expiredByAge(present, opts.nowMs, opts.maxAgeMs);
-  await Promise.all(expired.map((name) => rm(join(opts.root, name), { recursive: true, force: true })));
-  return expired;
+  // Reclaim each expired entry independently, the same per-entry shape the stat scan uses: an entry that
+  // cannot be removed (e.g. a permission fault) is skipped and surfaced loudly rather than aborting the
+  // batch and discarding the names that WERE reclaimed. The returned list is exactly what was removed, so
+  // the owner's "reclaimed N" log is accurate even when one entry fails. [LAW:no-silent-failure]
+  // [LAW:dataflow-not-control-flow]
+  const removed = await Promise.all(
+    expired.map(async (name): Promise<string | null> => {
+      const path = join(opts.root, name);
+      try {
+        await rm(path, { recursive: true, force: true });
+        return name;
+      } catch (error) {
+        console.error(`tinkerpad: failed to reclaim expired retention entry ${path}:`, error);
+        return null;
+      }
+    }),
+  );
+  return removed.filter((name): name is string => name !== null);
 };

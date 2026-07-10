@@ -70,6 +70,17 @@ export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request
     // [LAW:types-are-the-program] [LAW:dataflow-not-control-flow]
     try {
       const playground = await catalog.getPlayground(PlaygroundId(id));
+      // The takedown made concrete: an unlisted playground STOPS being served. getPlayground still
+      // resolves it (existence is monotonic — the report/relist paths depend on that), so the refusal
+      // is a visibility check HERE, at the one origin that serves raw html, not a deletion. Without
+      // it, unlisting would hide a playground from the commons yet leave its content reachable by
+      // direct content-origin URL — a takedown that doesn't take anything down. 410 Gone: the
+      // resource existed and is intentionally no longer available, distinct from a 404 (never
+      // existed). Still sealed under the strict CSP like every response here. [LAW:single-enforcer]
+      // [LAW:no-silent-failure]
+      if (playground.listing === 'unlisted') {
+        return sealed('this playground has been removed', 410, 'text/plain; charset=utf-8');
+      }
       const artifact = await store.get(currentVersionOf(playground.session));
       // The raw, UNESCAPED file: it is meant to be live code, contained by sandbox + origin
       // + this CSP. Escaping it would break the playground; that is the opposite mistake

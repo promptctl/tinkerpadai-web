@@ -44,16 +44,24 @@ const templateUrl = new URL('./index.html.tmpl', import.meta.url);
 // [LAW:no-ambient-temporal-coupling] [LAW:locality-or-seam]
 const DEV_GENERATION_TIMEOUT_MS = 10 * 60 * 1000;
 
+// The fixed principal the loopback IdP mints — and, in dev, the sole moderation admin, so the whole
+// report→review→unlist→relist loop (moderation-5g7.2) can be driven locally without configuring an
+// allowlist. In production the admin allowlist is real config (TINKERPAD_ADMIN_SUBJECTS); here the
+// one dev subject IS the admin. [LAW:one-source-of-truth]
+const DEV_SUBJECT = Subject('dev:local');
+
 const main = async (): Promise<void> => {
   const { dataDir, port, contentPort, oauthCallbackUrl, frontDoorHost } = resolveServerConfig(import.meta.url);
 
   const app = makeNodeApp({
     dataDir,
-    oauth: makeDevOAuthProvider(Subject('dev:local')),
+    oauth: makeDevOAuthProvider(DEV_SUBJECT),
     oauthCallbackUrl,
     // Loopback dev over http://127.0.0.1 cannot offer HTTPS, so the cookie is not Secure. The real
     // session dance (state round-trip, cookie minting, write-gate flip) is otherwise identical.
     cookieSecurity: { secure: false },
+    // The dev subject is the local admin — the moderation console works in the loopback loop.
+    adminSubjects: new Set([DEV_SUBJECT]),
     driver: { timeoutMs: DEV_GENERATION_TIMEOUT_MS },
   });
 
@@ -69,6 +77,8 @@ const main = async (): Promise<void> => {
     contentOrigin: content.url,
     sessionHandler: app.sessionHandler,
     apiHandler: app.handler,
+    reviewService: app.reviewService,
+    isAdminRequest: app.isAdminRequest,
   });
   // Bind and report the front door on FRONT_DOOR_HOST — the same origin the OAuth callback
   // is scoped to — so the logged URL a developer opens carries the CSRF state cookie through

@@ -45,6 +45,27 @@ describe('makeContentHandler — the sandbox content origin', () => {
     expect(await res.text()).toBe(RAW_HTML);
   });
 
+  it('refuses an unlisted playground with a sealed 410 — the takedown actually stops serving content', async () => {
+    const { handler, catalog, store } = setup();
+    const id = await seed(catalog, store, RAW_HTML);
+    // Take it down.
+    await catalog.setListing(id, 'unlisted');
+    const res = await handler(new Request(`http://content.local/?id=${encodeURIComponent(id)}`));
+    // 410 Gone — it existed and is intentionally no longer available, distinct from a 404.
+    expect(res.status).toBe(410);
+    // The raw html is NOT served.
+    expect(await res.text()).not.toContain('<script>');
+    // Still sealed under the strict CSP like every response from this origin.
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+
+    // Relisting serves it again — the refusal is a state check, not a deletion.
+    await catalog.setListing(id, 'listed');
+    const relisted = await handler(new Request(`http://content.local/?id=${encodeURIComponent(id)}`));
+    expect(relisted.status).toBe(200);
+    expect(await relisted.text()).toBe(RAW_HTML);
+  });
+
   it('carries the deny-all, no-network CSP on the served playground', async () => {
     const { handler, catalog, store } = setup();
     const id = await seed(catalog, store, RAW_HTML);
@@ -105,6 +126,9 @@ describe('makeContentHandler — the sandbox content origin', () => {
         throw new Error('not used');
       },
       appendTurn: async () => {
+        throw new Error('not used');
+      },
+      setListing: async () => {
         throw new Error('not used');
       },
       getPlayground: async () => {

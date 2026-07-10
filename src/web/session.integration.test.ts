@@ -7,6 +7,7 @@ import {
   makeHttpHandler,
   makeMemorySessionStore,
   makeReportService,
+  makeReviewService,
   makeSessionHandler,
   makeSessionResolver,
 } from '../api/index.js';
@@ -30,7 +31,7 @@ const SUBJECT = Subject('github:7');
 // Compose the front door the way main.ts does: one session store behind both the resolver (gate)
 // and the session handler (login/callback/whoami), the fake generation + oauth providers so it
 // runs with no tmux and no real GitHub.
-const startFrontDoor = async (): Promise<RunningServer> => {
+const startFrontDoor = async (adminSubjects: ReadonlySet<Subject> = new Set()): Promise<RunningServer> => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
   const catalog = makeMemoryCatalog();
@@ -40,11 +41,22 @@ const startFrontDoor = async (): Promise<RunningServer> => {
     catalog,
     disposeTurn: async () => undefined,
   });
-  const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
+  // ONE report store behind both the intake (apiHandler → reportService) and the review queue
+  // (reviewService), so the moderation console reads exactly what the report button writes — the real
+  // wiring makeApp assembles, proven here over a socket. [LAW:one-source-of-truth]
+  const reportStore = makeMemoryReportStore();
+  const reports = makeReportService({ catalog, reports: reportStore });
 
   const sessionStore = makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60 * 60 * 1000 });
   const security = { secure: false } as const;
   const resolveIdentity = makeSessionResolver(sessionStore, security);
+  // The REAL admin gate, exactly as makeApp composes it: resolve the request's identity through the
+  // same resolver the write gate uses, then test the allowlist. This is what the moderation-console
+  // tests exercise over the socket — the session→subject→admin path, not a stub. [LAW:single-enforcer]
+  const isAdminRequest = async (request: Request): Promise<boolean> => {
+    const identity = await resolveIdentity(request);
+    return identity !== null && adminSubjects.has(identity.subject);
+  };
   const handler = makeSiteHandler({
     page: PAGE,
     catalog,
@@ -57,6 +69,8 @@ const startFrontDoor = async (): Promise<RunningServer> => {
       security,
     }),
     apiHandler: makeHttpHandler(service, reports, resolveIdentity),
+    reviewService: makeReviewService({ reports: reportStore, catalog }),
+    isAdminRequest,
   });
   return serve({ handler, port: 0 });
 };
@@ -182,5 +196,74 @@ describe('the generation gate over the composed front door', () => {
     running = await startFrontDoor();
     expect((await fetch(`${running.url}/commons`)).status).toBe(200);
     expect((await fetch(`${running.url}/providers`)).status).toBe(200);
+  });
+
+  it('keeps the moderation console invisible to the unauthenticated and to a signed-in non-admin', async () => {
+    // github:7 (the fake IdP's subject) is NOT in the empty admin allowlist here.
+    running = await startFrontDoor();
+    const base = running.url;
+    // No cookie → the same 404 any unknown route yields; the console does not advertise itself.
+    expect((await fetch(`${base}/admin`)).status).toBe(404);
+    // Signed in, but not an admin → still 404. Authentication is not authorization.
+    const cookie = await completeLogin(base);
+    expect((await fetch(`${base}/admin`, { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(`${base}/admin`, { headers: { cookie } }).then((r) => r.text()))).not.toContain('Moderation');
+  });
+
+  it('drives the whole moderation loop over a real socket: report → review queue → unlist → hidden → relist', async () => {
+    // The logged-in subject IS the configured admin, so the real session→allowlist gate opens the
+    // console — the socket-level proof of the admin path the console tests stub. [LAW:verifiable-goals]
+    running = await startFrontDoor(new Set([SUBJECT]));
+    const base = running.url;
+    const cookie = await completeLogin(base);
+
+    // Mint a playground and report it — both gated writes carrying the admin's session cookie.
+    const submit = await fetch(`${base}/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ providerId: 'fake', brief: { description: 'a questionable playground' } }),
+    });
+    const { handle } = (await submit.json()) as { handle: unknown };
+    const poll = await fetch(`${base}/poll`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ handle }),
+    });
+    const playgroundId = ((await poll.json()) as { playgroundId: string }).playgroundId;
+    const reported = await fetch(`${base}/reports`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ playgroundId, reason: 'should not be here' }),
+    });
+    expect(reported.status).toBe(201);
+
+    // The console shows the reported playground and its reason — the real review queue over the socket.
+    const queueHtml = await (await fetch(`${base}/admin`, { headers: { cookie } })).text();
+    expect(queueHtml).toContain('a questionable playground');
+    expect(queueHtml).toContain('should not be here');
+
+    // Take it down through the form action (same-origin POST), which redirects back to the console.
+    const setUnlisted = (state: 'listed' | 'unlisted'): Promise<Response> =>
+      fetch(`${base}/admin/listing`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie },
+        body: new URLSearchParams({ playgroundId, listing: state }).toString(),
+        redirect: 'manual',
+      });
+
+    const unlist = await setUnlisted('unlisted');
+    expect(unlist.status).toBe(303);
+    expect(unlist.headers.get('location')).toBe('/admin');
+
+    // Gone from the public commons, and its direct link shows the honest removed notice (410) — not a
+    // 404 that would pretend it never existed.
+    expect(await (await fetch(`${base}/commons`)).text()).not.toContain('a questionable playground');
+    const removed = await fetch(`${base}/play?id=${encodeURIComponent(playgroundId)}`);
+    expect(removed.status).toBe(410);
+    expect(await removed.text()).toContain('removed');
+
+    // Relist — the counter-notice put-back — returns it to the commons.
+    expect((await setUnlisted('listed')).status).toBe(303);
+    expect(await (await fetch(`${base}/commons`)).text()).toContain('a questionable playground');
   });
 });

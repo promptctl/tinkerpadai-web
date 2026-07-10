@@ -107,7 +107,10 @@ describe('remix action over the composed front door', () => {
     const registry = new ProviderRegistry();
     registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success', iterable: true }));
     const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => undefined });
-    const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
+    // ONE report store behind both intake and review, mirroring production — the review queue reads
+    // exactly what the report button writes. [LAW:one-source-of-truth]
+    const reportStore = makeMemoryReportStore();
+    const reports = makeReportService({ catalog, reports: reportStore });
     const site = await serve({
       handler: makeSiteHandler({
         page: PAGE,
@@ -115,7 +118,7 @@ describe('remix action over the composed front door', () => {
         contentOrigin: 'http://content.local',
         sessionHandler: async () => null,
         apiHandler: makeHttpHandler(service, reports, localIdentityResolver),
-        reviewService: makeReviewService({ reports: makeMemoryReportStore(), catalog }),
+        reviewService: makeReviewService({ reports: reportStore, catalog }),
         isAdminRequest: async () => false,
       }),
       port: 0,

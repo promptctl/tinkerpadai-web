@@ -1,0 +1,346 @@
+[
+  {
+    "type": "design",
+    "description": "A CSS gradient designer: build linear, radial, and conic gradients with add/remove/drag color stops, angle and shape controls, a few tasteful presets (sunset, ocean, aurora), and a copyable background CSS value, previewed on a large swatch and a sample button."
+  },
+  {
+    "type": "design",
+    "description": "A cubic-bezier easing curve editor: drag two control handles on a curve grid, preview a box animating across the screen with the resulting timing function, choose from named presets (ease-in-out, bounce-like, anticipate), and copy the cubic-bezier() value."
+  },
+  {
+    "type": "design",
+    "description": "A glassmorphism card designer: controls for backdrop blur, background transparency, border glow, saturation and corner radius, previewed as a frosted card floating over a colorful generated gradient background, with copyable CSS including the backdrop-filter."
+  },
+  {
+    "type": "design",
+    "description": "A CSS filter playground: stack brightness, contrast, saturate, hue-rotate, blur, grayscale and sepia with sliders on a procedurally drawn sample image on a canvas, show the live result and a copyable filter string."
+  },
+  {
+    "type": "design",
+    "description": "A neumorphism (soft UI) generator: pick a background color, then adjust distance, intensity, blur and shape (flat, concave, convex), preview soft-shadow buttons and cards on the matching surface, and copy the resulting box-shadow CSS."
+  },
+  {
+    "type": "design",
+    "description": "A button state designer: style a button's default, hover, active, focus and disabled states with color, radius, padding and transition controls, interact with a live real button to feel the transitions, and copy the full CSS with pseudo-class rules."
+  },
+  {
+    "type": "design",
+    "description": "A loading indicator designer: choose spinner, pulsing dots, progress bars, or a shimmering skeleton, control speed, color and size, preview it animating live, and copy the self-contained HTML and CSS."
+  },
+  {
+    "type": "design",
+    "description": "A custom scrollbar and focus-ring designer: control scrollbar width, track and thumb color and radius, and focus outline style and offset, previewed on a scrollable content panel and a set of form fields, with copyable CSS."
+  },
+  {
+    "type": "design",
+    "description": "A text effect designer for headlines: apply a gradient fill, outline stroke, and layered drop shadows to large display text with per-effect controls, live preview on an editable headline, and copyable CSS."
+  },
+  {
+    "type": "design",
+    "description": "An organic blob shape generator: produce a smooth SVG blob from controls for size, edge count, randomness and smoothness, regenerate with a new seed, preview it as a decorative background element, and copy the SVG path and markup."
+  },
+  {
+    "type": "design",
+    "description": "A dark-mode palette generator: from a single brand hue derive a coordinated light theme and dark theme token set (background, surface, text, muted, accent), show WCAG contrast checks for text pairs, and preview both themes on a sample card and toolbar."
+  },
+  {
+    "type": "design",
+    "description": "A CSS animation keyframe composer: sequence transform and opacity changes across several keyframe stops on a timeline, scrub and play the animation on a preview element, adjust duration and iteration, and copy the resulting @keyframes and animation CSS."
+  },
+  {
+    "type": "design",
+    "description": "An aspect-ratio and object-fit playground: a grid of media boxes with controls for aspect ratio, object-fit (contain, cover, fill, none) and object-position, previewed on procedurally drawn placeholder images on canvas, with copyable CSS."
+  },
+  {
+    "type": "design",
+    "description": "A layered paper-shadow elevation designer: pick a Material-like elevation level and fine-tune ambient and directional shadow layers, preview cards at each elevation on a light and dark surface, and copy the multi-layer box-shadow CSS."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A CSV data explorer: paste or edit an embedded comma-separated table, sort and filter by any column, see summary statistics (count, min, max, mean, median) for numeric columns, and render a simple bar chart of a chosen column, all computed in-page."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A sorting algorithm visualizer: choose bubble, insertion, selection, quicksort or merge sort, set array size and animation speed, shuffle, and watch comparisons and swaps animate on a bar chart with live counts of operations."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A binary search tree visualizer: insert and delete values to grow a self-balancing-style tree, run in-order, pre-order and post-order traversals that highlight the visited path, and search for a value watching the comparison path light up."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A statistical distribution explorer: pick normal, uniform, exponential or binomial, adjust the parameters with sliders, and see a live histogram of sampled values overlaid with the theoretical density curve plus computed mean and standard deviation."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A pathfinding visualizer: paint walls on a grid, set start and goal cells, choose breadth-first, depth-first, Dijkstra or A*, and watch the frontier expand and the final shortest path highlight, with a count of cells explored."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A hash table and collision explorer: hash a set of sample keys into buckets of an adjustable size, visualize the distribution and chained collisions, and compare a naive modulo hash against a simple mixing hash side by side."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A bitwise operations playground: enter two integers, apply AND, OR, XOR, NOT and left/right shifts, and see each operand and the result rendered as an interactive grid of bits you can toggle, with the decimal and hex values updating live."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A number base explorer: enter a value in any base and see it live in binary, octal, decimal and hexadecimal with a per-digit place-value breakdown and a row of togglable bits that update every representation."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A Unicode and UTF-8 character explorer: type any text and see, per character, its Unicode code point, name, category, and the exact UTF-8 byte sequence, with a total byte count and a highlight of multi-byte characters."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A color-space converter: enter or pick a color and see RGB, HSL, HSV and CMYK values update together, with per-channel sliders in each space that all stay in sync and a large swatch plus a hex readout."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A prime numbers explorer: enter a number to see a live factor tree and primality result, and render an interactive Sieve of Eratosthenes grid up to an adjustable limit that animates crossing out composites."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A boolean logic truth-table generator: enter a boolean expression over named variables using and, or, not and parentheses, generate its complete truth table, and highlight the rows where the expression is true."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A unit converter and scale explorer: convert across length, mass, temperature, time and data-size units live as you type, and show a visual proportional bar comparing the value against a few familiar reference points."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A run-length and simple compression explorer: type a string and watch run-length encoding and a basic dictionary (LZ-style) compression build up step by step, showing the encoded output and the achieved compression ratio."
+  },
+  {
+    "type": "data-explorer",
+    "description": "A moving-average and smoothing explorer: over an embedded noisy time-series, adjust a moving-average window and an exponential smoothing factor and see the raw series and both smoothed curves plotted live on the same chart."
+  },
+  {
+    "type": "concept-map",
+    "description": "An HTTP request lifecycle explorer: step through DNS resolution, TCP handshake, TLS negotiation, request, server processing, response and browser render as an interactive stepper, drilling into each stage's purpose and typical latency contribution."
+  },
+  {
+    "type": "concept-map",
+    "description": "A network layers explorer: walk the OSI and TCP/IP models side by side, click each layer for its responsibility and example protocols, and watch an animation of a packet gaining and shedding headers as it moves down and up the stack."
+  },
+  {
+    "type": "concept-map",
+    "description": "A design patterns concept map: browse the classic patterns grouped into creational, structural and behavioral, click one for its intent, a tiny concrete example, and a when-to-use-it note, with a search to filter by problem."
+  },
+  {
+    "type": "concept-map",
+    "description": "A finite state machine explorer: drive a vending machine and a traffic light as live state diagrams, fire events to trigger transitions, watch invalid events get rejected, and see the current state and transition history highlighted."
+  },
+  {
+    "type": "concept-map",
+    "description": "A CAP theorem explorer: interactively choose two of consistency, availability and partition tolerance, see the consequence explained, and plot where several well-known databases sit on the tradeoff space."
+  },
+  {
+    "type": "concept-map",
+    "description": "A data structures decision map: compare arrays, linked lists, hash maps, trees, heaps and graphs with big-O badges for common operations and a guided 'which should I use' flow that narrows to a recommendation based on your answers."
+  },
+  {
+    "type": "concept-map",
+    "description": "A caching strategies concept map: visualize cache-aside, read-through, write-through, write-back and write-around with animated read and write flows between app, cache and database, and see each strategy's consistency and latency implications."
+  },
+  {
+    "type": "concept-map",
+    "description": "An authentication methods concept map: compare sessions, JWT, OAuth 2.0 and API keys, click each to see its flow as a small sequence diagram between client, server and token store, plus its tradeoffs in security and scalability."
+  },
+  {
+    "type": "concept-map",
+    "description": "A JavaScript event loop explorer: step through a sample program and watch the call stack, macrotask queue and microtask queue fill and drain, so the execution order of timeouts, promises and synchronous code becomes visible."
+  },
+  {
+    "type": "concept-map",
+    "description": "A color theory explorer: an interactive color wheel where you pick a base hue and reveal harmonies (complementary, analogous, triadic, tetradic), see warm/cool grouping, and read common associations and usage notes for each color family."
+  },
+  {
+    "type": "concept-map",
+    "description": "A periodic table explorer: an interactive periodic table with all elements embedded in-page, filter or color by group, period or state of matter, and click an element to see its atomic number, mass, category and a few key properties."
+  },
+  {
+    "type": "concept-map",
+    "description": "A solar system explorer: the planets rendered to scale-ish on a canvas with adjustable orbital speed and a toggle between real relative sizes and distances, click a planet for facts like orbital period, moons and diameter, all data embedded."
+  },
+  {
+    "type": "concept-map",
+    "description": "A logical fallacies concept map: fallacies grouped into relevance, ambiguity and presumption, each as a clickable card with a plain definition, an everyday example, and how to counter it, with a quick self-test mode."
+  },
+  {
+    "type": "concept-map",
+    "description": "A recursion and the call stack explorer: pick factorial, Fibonacci or Towers of Hanoi, step forward and back through the recursive calls, and watch stack frames push and pop with their arguments and return values on a live stack diagram."
+  },
+  {
+    "type": "concept-map",
+    "description": "A SOLID principles concept map: each of the five principles as a card with a one-line statement, a small before/after code sketch, and the smell it prevents, plus a guided quiz that maps a described problem to the principle it violates."
+  },
+  {
+    "type": "document-critique",
+    "description": "A resume critique playground: an embedded sample software-engineer resume with inline suggestions on quantifying impact, replacing weak verbs, trimming length and fixing formatting, each approvable or rejectable, with a live revised resume reflecting accepted changes."
+  },
+  {
+    "type": "document-critique",
+    "description": "A commit message critique playground: several embedded sample commit messages flagged against imperative mood, conventional-commit prefixes, and body clarity, with approve, reject and comment controls and a cleaned-up commit log preview."
+  },
+  {
+    "type": "document-critique",
+    "description": "An email tone critique playground: an embedded draft business email flagged for passive-aggressive phrasing, over-hedging, and a buried ask, each suggestion approvable or rejectable, with a live 'revised email' that reads clearer and more direct."
+  },
+  {
+    "type": "document-critique",
+    "description": "A product description critique playground: an embedded e-commerce product blurb with suggestions to lead with benefits over features, cut fluff, and sharpen the call to action, approve or reject each and preview the improved copy."
+  },
+  {
+    "type": "document-critique",
+    "description": "A plain-language critique playground: an embedded paragraph of dense terms-of-service legalese with plain-English rewrite suggestions, approve or reject each, and watch a readability score improve as accepted rewrites simplify the text."
+  },
+  {
+    "type": "document-critique",
+    "description": "An error-message critique playground: an embedded list of unhelpful application error messages with suggestions to make each specific, actionable and human, approve or reject, and see a before-and-after list of the improved messages."
+  },
+  {
+    "type": "document-critique",
+    "description": "A meeting-notes critique playground: an embedded block of messy raw meeting notes with suggestions to extract decisions, action items with owners, and open questions, approve or reject each, and a structured summary assembles itself from the accepted items."
+  },
+  {
+    "type": "document-critique",
+    "description": "A slide bullet critique playground: an embedded set of wordy presentation bullets with suggestions to tighten them into scannable headlines and cut redundant points, approve or reject each, and preview a cleaner slide."
+  },
+  {
+    "type": "document-critique",
+    "description": "A UX microcopy critique playground: embedded button labels, tooltips and empty-state text flagged for clarity, consistency and voice, each approvable or rejectable, with a small live UI mock reflecting the accepted copy changes."
+  },
+  {
+    "type": "document-critique",
+    "description": "A job-description critique playground: an embedded job posting flagged for gendered or exclusionary language, vague requirements, and a missing salary range, approve or reject each suggestion, with an inclusivity and clarity score that updates."
+  },
+  {
+    "type": "document-critique",
+    "description": "A changelog critique playground: an embedded developer-centric changelog with suggestions to reframe entries around user impact, group by type, and follow keep-a-changelog conventions, approve or reject each and preview the polished changelog."
+  },
+  {
+    "type": "document-critique",
+    "description": "A support-reply critique playground: an embedded customer support draft reply flagged for missing empathy, unclear next steps and an unverified promise, approve or reject each suggestion, and see a live revised reply that lands better."
+  },
+  {
+    "type": "document-critique",
+    "description": "An abstract critique playground: an embedded research paper abstract with suggestions on structure (context, method, result, significance), jargon reduction and length, approve or reject each, and preview the tightened abstract with a word count."
+  },
+  {
+    "type": "document-critique",
+    "description": "A survey question critique playground: an embedded set of survey questions flagged for leading wording, double-barreled asks and unbalanced scales, approve or reject each fix, and preview the improved, unbiased questionnaire."
+  },
+  {
+    "type": "diff-review",
+    "description": "A performance optimization diff review: a unified diff replacing an O(n squared) nested-loop lookup with a hash-map index, with line-by-line commenting, an approve or request-changes verdict, and a short note on the complexity improvement, copyable as a review summary."
+  },
+  {
+    "type": "diff-review",
+    "description": "A null-safety diff review: a diff adding guards and optional chaining to a function that crashed on missing fields, with line comments, suggested-change blocks, and an approve or request-changes flow, plus a checklist of remaining unguarded paths."
+  },
+  {
+    "type": "diff-review",
+    "description": "An async refactor diff review: a diff converting nested callbacks into async/await, reviewed for correct error propagation and no lost rejections, with line-level comments and an approve or request-changes verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "A dependency upgrade diff review: a package manifest and lockfile diff performing a breaking major-version bump, with a migration checklist covering changelog review, deprecations and test impact, line comments, and a risk-rated verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "A CSS refactor diff review: a diff replacing magic numbers with custom properties and consolidating duplicated rules, with line comments, a checklist for visual-regression risk, and an approve or request-changes verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "An API compatibility diff review: a diff renaming and reshaping a JSON response field, reviewed for backward compatibility and versioning, with a breaking-change flag, line comments, and a suggested deprecation path."
+  },
+  {
+    "type": "diff-review",
+    "description": "A test quality diff review: a diff adding unit tests for an edge case, reviewed for assertion strength, clear naming and independence from implementation details, with line comments and an approve or request-changes verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "A container hardening diff review: a Dockerfile diff pinning base-image versions, adding a non-root user and dropping build tools from the final stage, with a security checklist, line comments, and a verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "An accessibility fix diff review: a diff adding ARIA labels, image alt text, and keyboard focus management to a form, reviewed against an accessibility checklist, with line comments and an approve or request-changes verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "A concurrency fix diff review: a diff replacing a non-atomic read-modify-write on a shared counter with an atomic update, reviewed for correctness under contention, with line comments and a verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "An error-handling diff review: a diff replacing swallowed exceptions and silent fallbacks with explicit propagation and logging, reviewed for no remaining hidden failures, with line comments and a verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "A SQL injection fix diff review: a diff replacing string-concatenated queries with parameterized statements, with a severity control, a checklist for other injection sinks, line comments and a copyable verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "A memory-leak fix diff review: a diff removing an event listener that was never detached and a closure retaining a large object, reviewed for correctness and completeness, with line comments and a verdict."
+  },
+  {
+    "type": "diff-review",
+    "description": "A feature-flag cleanup diff review: a diff removing a now-permanent feature flag and its dead alternate branch, reviewed for completeness with no orphaned code or config left behind, with line comments and a verdict."
+  },
+  {
+    "type": "code-map",
+    "description": "A layered REST API code map: routes, controllers, services, repositories and the database as interactive layers; click a layer to see its responsibility and trace a single request flowing down through them and the response coming back up."
+  },
+  {
+    "type": "code-map",
+    "description": "A CI/CD pipeline code map: commit, build, unit test, security scan, staging deploy and production deploy as stages with gates between them; click a stage for its inputs, outputs and what happens on failure, and animate a commit flowing through."
+  },
+  {
+    "type": "code-map",
+    "description": "A Redux-style data flow map: the action, dispatcher, store, and view cycle drawn as connected nodes; fire a sample action and animate the state update flowing through reducer to store to re-rendered view, click each node to inspect it."
+  },
+  {
+    "type": "code-map",
+    "description": "A database query execution map: parse, plan, optimize, execute and fetch stages for a sample SELECT; click each stage to see what it produces and where an index changes the plan, with a toggle between an indexed and unindexed run."
+  },
+  {
+    "type": "code-map",
+    "description": "A browser rendering pipeline map: HTML to DOM, CSS to CSSOM, render tree, layout, paint and composite as stages; click each for what it does, and trigger a sample style change to see which stages re-run for a reflow versus a repaint."
+  },
+  {
+    "type": "code-map",
+    "description": "A Kubernetes objects map: pods, replica sets, deployments, services and ingress as nodes with their ownership and routing relationships; click an object to inspect its role and see how a request reaches a pod through the service and ingress."
+  },
+  {
+    "type": "code-map",
+    "description": "An OAuth 2.0 authorization-code flow map: client, user agent, authorization server and resource server as actors; step through the redirect, consent, code exchange and token use, animating each message between the actors."
+  },
+  {
+    "type": "code-map",
+    "description": "A domain-driven design building-blocks map: entities, value objects, aggregates, repositories, domain services and bounded contexts drawn with their relationships; click each block for its definition and a small example within a sample domain."
+  },
+  {
+    "type": "code-map",
+    "description": "A message queue architecture map: producer, broker, exchange, queues and consumers with a toggle between fanout, topic and direct routing; publish a sample message and animate it routing to the matching queues and consumers."
+  },
+  {
+    "type": "code-map",
+    "description": "A monorepo dependency graph map: apps, feature packages and shared libraries as nodes with dependency edges; click a node to highlight its dependencies and dependents, and flag an introduced cycle in red."
+  },
+  {
+    "type": "code-map",
+    "description": "A garbage collection map: a heap diagram with young and old generations, GC roots and objects; step through a mark, sweep and compact cycle that animates reachable objects surviving and unreachable ones being collected."
+  },
+  {
+    "type": "code-map",
+    "description": "A neural network architecture map: input, hidden and output layers of neurons with weighted connections; run a forward pass that animates activations flowing left to right, and click a neuron to see its inputs, weights and output."
+  },
+  {
+    "type": "code-map",
+    "description": "A serverless request map: API gateway, function, and a datastore and queue as components; toggle between a cold-start and a warm path and animate a request flowing through, clicking each component for its role and latency contribution."
+  },
+  {
+    "type": "code-map",
+    "description": "A defense-in-depth security layers map: edge WAF, TLS termination, authentication, input validation, authorization and encryption at rest as concentric layers; click each layer for what threat it blocks and watch a malicious request get stopped at the right layer."
+  }
+]

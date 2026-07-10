@@ -238,7 +238,17 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
   const settle = async (world: TurnWorld, exitRaw: string): Promise<DriverSnapshot> => {
     const code = Number.parseInt(exitRaw.trim(), 10);
     if (code !== 0) return failWith(world, `Claude Code exited with status ${code}`);
-    const html = await readOrNull(join(world.dir, ARTIFACT_FILE));
+    // Read the artifact BEFORE killing the session: an empty-file result is a failure, and failWith must
+    // still find a live pane to capture. A non-ENOENT read fault (EACCES/EIO) is a real infra fault that
+    // propagates loudly — but the session must be torn down first, never leaked, since the fault escapes
+    // before the success-path kill below. [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling]
+    let html: string | null;
+    try {
+      html = await readOrNull(join(world.dir, ARTIFACT_FILE));
+    } catch (error) {
+      await killSession(world);
+      throw error;
+    }
     if (html === null || html.trim() === '') {
       return failWith(world, 'Claude Code finished but wrote no playground file');
     }

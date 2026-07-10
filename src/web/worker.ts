@@ -2,7 +2,7 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import page from './index.html';
 import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
-import { makeGenerationQuota, makeGitHubOAuthProvider, parseQuotaLimits } from '../api/index.js';
+import { DEFAULT_GENERATION_POLICY, makeGenerationQuota, makeGitHubOAuthProvider, parseQuotaLimits } from '../api/index.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
@@ -132,6 +132,10 @@ const handlerFor = (env: Env): Handler => {
       }),
       now: () => Date.now(),
     }),
+    // Inert while the registry is empty (no turn is ever admitted), but the seam states the policy:
+    // the default retry budget applies once public generation turns on (providers-u1h). The edge's
+    // deadline is a driver concern that arrives with that same provider work. [LAW:dataflow-not-control-flow]
+    maxAttempts: DEFAULT_GENERATION_POLICY.maxAttempts,
     oauth: makeGitHubOAuthProvider({ clientId, clientSecret }),
     oauthCallbackUrl,
     // The edge is HTTPS, so cookies are hardened: Secure + __Host- prefix. [LAW:single-enforcer]

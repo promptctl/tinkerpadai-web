@@ -77,6 +77,12 @@ export interface GenerationServiceDeps {
   // the clock are a composition-root concern and the service stays pure with respect to
   // both — it only reserves and releases. [LAW:decomposition] [LAW:single-enforcer]
   readonly quota: GenerationQuota;
+  // Total provider attempts one request may make, INCLUDING the first (1 = no retry). A failed
+  // provider attempt is retried from the same brief until this budget is spent, then the failure
+  // is surfaced. Injected as a value from the composition root's GenerationPolicy — retry lives
+  // at THIS one boundary (the owner of turn lifecycle), never sprinkled per caller, so a single
+  // policy governs submit, continue, and fork alike. [LAW:single-enforcer] [LAW:decomposition]
+  readonly maxAttempts: number;
 }
 
 export interface GenerationService {
@@ -146,25 +152,50 @@ type TurnTarget =
   | { readonly kind: 'create'; readonly lineage: Lineage | null; readonly author: Subject }
   | { readonly kind: 'append'; readonly playgroundId: PlaygroundId };
 
-// Per-turn state the service owns: the brief the turn carried (the catalog needs the
-// prompt at persist time and the handle does not carry it — so the service is the single
-// source of truth for the prompt that drove the turn), where its result will be recorded,
-// and the memoized terminal transition. [LAW:one-source-of-truth]
+// Per-REQUEST state the service owns. One record per client request, which may span several
+// provider attempts under retry: the brief the request carried (the catalog needs the prompt at
+// persist time and the handle does not carry it), where its result will be recorded, the held
+// quota slot, and — the retry machinery — how to start another attempt, which attempt is live,
+// how many remain, and the two single-flight guards. [LAW:one-source-of-truth]
 interface TurnRecord {
   readonly brief: Brief;
   readonly target: TurnTarget;
-  // The quota slot this turn holds. Freed exactly once, when the turn settles (see settle) —
-  // tying the concurrent-budget release to the same terminal transition the store+catalog write
-  // rides, so the two cannot disagree about whether the turn is still in flight. [LAW:one-source-of-truth]
+  // The quota slot this REQUEST holds — for its whole life, across every attempt. Freed exactly
+  // once, when the request settles (see settle), NOT per attempt: a retry is the same request
+  // still in flight, so it must not re-reserve or release early. [LAW:one-source-of-truth]
   readonly reservation: Reservation;
-  // Null until the first poll observes a terminal provider status; then it holds the
-  // single in-flight/settled persist. Memoizing the transition (not just a boolean) is
-  // what makes the effect fire exactly once even under concurrent polls.
+  // How to start a fresh attempt: submit re-runs startSession(brief), continue re-runs
+  // continueSession(prior, brief, seed), fork re-runs fork(parent, seed). The kind-specific
+  // provider effect captured ONCE as a value, so retry re-invokes it without ever branching on
+  // which kind of request this is. [LAW:dataflow-not-control-flow]
+  readonly restart: () => Promise<SessionHandle>;
+  // The live attempt's provider handle. The client's ORIGINAL handle is this record's stable key
+  // (it is the poll id the client holds and never changes); `current` is the session poll/persist
+  // act on. They diverge only after a retry — the client keeps polling its stable handle while the
+  // underlying attempt is swapped beneath it. [LAW:one-source-of-truth]
+  current: SessionHandle;
+  // Attempts remaining AFTER the current one. 0 means the current attempt is the last; a failure
+  // then settles the request rather than retrying.
+  attemptsLeft: number;
+  // Non-null while a retry is being launched (the failed attempt reclaimed, the next one starting).
+  // A poll that observes it reports `running` rather than starting a SECOND retry — the single-flight
+  // guard for the launch window, before `current` advances. [LAW:no-ambient-temporal-coupling]
+  retryInFlight: Promise<void> | null;
+  // Null until the first poll observes a TERMINAL outcome (success, or failure with no attempts
+  // left); then it holds the single settled transition. Memoizing it (not a boolean) is what makes
+  // the store+catalog write fire exactly once under concurrent polls. [LAW:no-ambient-temporal-coupling]
   terminal: Promise<GenerationStatus> | null;
 }
 
 export const makeGenerationService = (deps: GenerationServiceDeps): GenerationService => {
-  const { registry, store, catalog, disposeTurn, quota } = deps;
+  const { registry, store, catalog, disposeTurn, quota, maxAttempts } = deps;
+
+  // A general part defends its own contract: fewer than one attempt would admit a request that
+  // can never run, silent data loss dressed as configuration. Fail loudly at construction.
+  // [LAW:no-silent-failure]
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error(`maxAttempts must be an integer >= 1, got ${maxAttempts}`);
+  }
 
   // The single owner of in-flight turn state. In-memory and not evicted: a local
   // steel-thread limitation — turns in flight do not survive a process restart, while
@@ -323,17 +354,53 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     return { state: 'failed', error: message };
   };
 
-  // Seal a turn's terminal outcome: memoize the transition AND free its concurrent quota slot.
-  // The single seam both terminal branches of poll route through, so the slot is released in
-  // exactly one place. It runs only from that switch, which the double-checked memo guard reaches
-  // only while terminal is null — so release fires exactly once, synchronously, the instant the
-  // turn is DECIDED terminal (the provider is done), before persist's first await. The daily
-  // budget is NOT returned here: a generation that ran counts against the day.
-  // [LAW:no-ambient-temporal-coupling] [LAW:single-enforcer]
+  // Seal a REQUEST's terminal outcome: memoize the transition AND free its concurrent quota slot.
+  // The single seam every terminal path routes through — poll's success and budget-spent-failure
+  // branches, and a retry that cannot start — so the slot is released in exactly one place, once.
+  // Each caller reaches it only while terminal is null (poll via its double-checked memo guard, a
+  // retry via its finally), so release fires exactly once, synchronously, the instant the request is
+  // DECIDED terminal, before persist's first await. The daily budget is NOT returned here: a
+  // generation that ran counts against the day. [LAW:no-ambient-temporal-coupling] [LAW:single-enforcer]
   const settle = (record: TurnRecord, outcome: Promise<GenerationStatus>): Promise<GenerationStatus> => {
     record.terminal = outcome;
     record.reservation.release();
     return outcome;
+  };
+
+  // The surfaced reason when a retry could not even START a new attempt — an infra fault (e.g. the
+  // provider cannot spawn a session), distinct from a normal attempt failure the provider reported.
+  const retryStartFailureMessage = (error: unknown): string =>
+    `generation failed and the retry could not start: ${error instanceof Error ? error.message : String(error)}`;
+
+  // Launch a retry as a tracked background transition. Reclaim the failed attempt per its target,
+  // then start a fresh attempt from the same restart thunk and swap it in as `current`. The poll
+  // that triggers this — and any concurrent poll — reports `running` (guarded by retryInFlight during
+  // the launch, then by `current` having advanced) until the new attempt is live, so at most ONE
+  // retry starts. A retry that cannot even start a new attempt is an infra fault, not a silent stall:
+  // it settles the request failed (releasing its quota), never wedging every future poll on a
+  // rejection. The reservation is untouched here — a retry is the same request still in flight, so it
+  // keeps its held slot and is released only when the request finally settles.
+  // [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling] [LAW:single-enforcer]
+  const beginRetry = (record: TurnRecord): void => {
+    const launch = (async (): Promise<void> => {
+      // The failed attempt's workdir is reclaimed exactly as a settled failure reclaims it: a
+      // create/fork's dead session is released, an append keeps the still-continuable session its
+      // next attempt re-enters. [LAW:dataflow-not-control-flow]
+      await reclaimOnFailure(record.current, record.target);
+      try {
+        record.current = await record.restart();
+        record.attemptsLeft -= 1;
+      } catch (error) {
+        // Could not start the next attempt: seal the request failed and free its budget rather than
+        // leaving retryInFlight pointing at a rejection every future poll would rethrow. finalizeFailure
+        // re-reclaims the (already-reclaimed) failed attempt — idempotent, so the one failure path
+        // stays uniform. [LAW:no-silent-failure]
+        settle(record, finalizeFailure(record.current, record.target, retryStartFailureMessage(error)));
+      } finally {
+        record.retryInFlight = null;
+      }
+    })();
+    record.retryInFlight = launch;
   };
 
   return {
@@ -358,11 +425,19 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // client error that must not burn quota) and BEFORE the provider effect — over-cap fails
       // loudly with QuotaExceededError, never a silent queue. [LAW:no-silent-failure]
       const reservation = quota.reserve(requester);
-      const handle = await startTurn(reservation, () => provider.startSession(request.brief));
+      // The restart thunk IS the retriable attempt: a fresh startSession from the same brief.
+      // startTurn runs it for the first attempt (releasing the reservation if no turn comes to
+      // exist); retry re-invokes the same thunk. [LAW:dataflow-not-control-flow]
+      const restart = (): Promise<SessionHandle> => provider.startSession(request.brief);
+      const handle = await startTurn(reservation, restart);
       turns.set(handle.turnId, {
         brief: request.brief,
         target: { kind: 'create', lineage: null, author: requester },
         reservation,
+        restart,
+        current: handle,
+        attemptsLeft: maxAttempts - 1,
+        retryInFlight: null,
         terminal: null,
       });
       return handle;
@@ -402,8 +477,21 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // Reserve only once the target is known valid and continuable (the 404/422 above must not
       // burn quota) and before the provider effect. [LAW:no-silent-failure]
       const reservation = quota.reserve(requester);
-      const handle = await startTurn(reservation, () => continueSession(prior, brief, seed));
-      turns.set(handle.turnId, { brief, target: { kind: 'append', playgroundId }, reservation, terminal: null });
+      // A retriable refine: re-continue from the SAME prior handle + seed. A failed attempt
+      // appended nothing, so the playground's current version is unchanged and the seed stays
+      // valid across attempts. [LAW:dataflow-not-control-flow] [LAW:one-source-of-truth]
+      const restart = (): Promise<SessionHandle> => continueSession(prior, brief, seed);
+      const handle = await startTurn(reservation, restart);
+      turns.set(handle.turnId, {
+        brief,
+        target: { kind: 'append', playgroundId },
+        reservation,
+        restart,
+        current: handle,
+        attemptsLeft: maxAttempts - 1,
+        retryInFlight: null,
+        terminal: null,
+      });
       return handle;
     },
 
@@ -438,7 +526,11 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // Reserve only once the parent is known valid and forkable (the 404/422 above must not burn
       // quota) and before the provider effect. [LAW:no-silent-failure]
       const reservation = quota.reserve(requester);
-      const handle = await startTurn(reservation, () => forkSession(parent, seed));
+      // A retriable fork: re-branch a NEW independent session from the SAME seed. Each attempt
+      // mints its own sessionId; whichever succeeds is the one persisted, carrying the lineage
+      // values captured below. [LAW:dataflow-not-control-flow] [LAW:one-source-of-truth]
+      const restart = (): Promise<SessionHandle> => forkSession(parent, seed);
+      const handle = await startTurn(reservation, restart);
 
       // fork carries no user brief, so the service owns the new playground's first-turn
       // prompt: the parent's original describe (turns[0], always present — a session enters
@@ -447,31 +539,58 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
       // distinguishing this create from submit's. [LAW:one-source-of-truth]
       const brief: Brief = { description: session.turns[0].prompt };
       const lineage: Lineage = { parentSession: session.sessionId, forkedFromVersion };
-      turns.set(handle.turnId, { brief, target: { kind: 'create', lineage, author: requester }, reservation, terminal: null });
+      turns.set(handle.turnId, {
+        brief,
+        target: { kind: 'create', lineage, author: requester },
+        reservation,
+        restart,
+        current: handle,
+        attemptsLeft: maxAttempts - 1,
+        retryInFlight: null,
+        terminal: null,
+      });
       return handle;
     },
 
     async poll(handle: SessionHandle): Promise<GenerationStatus> {
       const record = recordOf(handle);
       if (record.terminal !== null) return record.terminal;
+      // A retry is mid-launch: report running rather than starting a second one or reading a
+      // half-swapped attempt. [LAW:no-ambient-temporal-coupling]
+      if (record.retryInFlight !== null) return { state: 'running' };
 
-      const status: SessionStatus = await registry.get(handle.providerId).getStatus(handle);
+      // Poll the LIVE attempt, not the client's stable handle — they diverge after a retry, and
+      // the live attempt is where the real provider state is. [LAW:one-source-of-truth]
+      const attempt = record.current;
+      const status: SessionStatus = await registry.get(attempt.providerId).getStatus(attempt);
 
-      // Synchronous decision point: there is NO await from the re-check below to the memo
-      // assignment, so under JS's single-threaded model a terminal transition is started
-      // exactly once even when many polls observe the same succeeded/failed status
-      // concurrently. The first poll to resume sets `record.terminal`; the rest read it.
-      // [LAW:no-ambient-temporal-coupling]
+      // Re-decide synchronously after the await: a concurrent poll may have settled the request or
+      // advanced past this attempt via a retry. There is NO await from these guards to the memo/retry
+      // assignments below, so the terminal write and the retry launch each fire exactly once even
+      // under concurrent polls. [LAW:no-ambient-temporal-coupling]
       if (record.terminal !== null) return record.terminal;
+      if (record.retryInFlight !== null) return { state: 'running' };
+      // A retry already advanced past the attempt we observed: our status is stale — report running so
+      // the client polls the new attempt next. `current` is monotonic across attempts, so identity is
+      // a reliable "is this still the live attempt" test. [LAW:no-ambient-temporal-coupling]
+      if (record.current !== attempt) return { state: 'running' };
+
       switch (status.state) {
         case 'pending':
           return { state: 'pending' };
         case 'running':
           return { state: 'running' };
         case 'succeeded':
-          return settle(record, finalizeSuccess(handle, record.brief, record.target, status.result.artifact));
+          return settle(record, finalizeSuccess(attempt, record.brief, record.target, status.result.artifact));
         case 'failed':
-          return settle(record, finalizeFailure(handle, record.target, status.error.message));
+          // A failed provider attempt with budget left is retried from the same brief; the failure is
+          // surfaced only once the budget is spent. Retry vs settle is decided by the VALUE
+          // attemptsLeft, never a branch on why the attempt failed. [LAW:dataflow-not-control-flow]
+          if (record.attemptsLeft > 0) {
+            beginRetry(record);
+            return { state: 'running' };
+          }
+          return settle(record, finalizeFailure(attempt, record.target, status.error.message));
         default: {
           const unreachable: never = status;
           return unreachable;

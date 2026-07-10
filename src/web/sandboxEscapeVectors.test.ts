@@ -65,6 +65,7 @@ const makeSecureApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     sessionStore: makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60_000 }),
     disposeTurn: async () => undefined,
     quota: makeTestQuota(),
+    maxAttempts: 1,
     oauth: makeFakeOAuthProvider({ subject: Subject('github:1') }),
     oauthCallbackUrl: `${APP_ORIGIN}/session/callback`,
     cookieSecurity: { secure: true },

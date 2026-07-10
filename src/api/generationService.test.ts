@@ -4,7 +4,7 @@ import { makeFakeProvider } from '../provider/__fixtures__/fakeProvider.js';
 import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
-import type { SessionHandle } from '../provider/index.js';
+import type { Brief, Provider, SessionHandle, SessionStatus } from '../provider/index.js';
 import {
   currentVersionOf,
   makeMemoryArtifactStore,
@@ -18,7 +18,7 @@ import {
   ProviderCannotContinueError,
   ProviderCannotForkError,
 } from './generationService.js';
-import type { GenerationService } from './generationService.js';
+import type { GenerationService, GenerationStatus } from './generationService.js';
 import { makeTestQuota } from './__fixtures__/testQuota.js';
 import { makeGenerationQuota, QuotaExceededError } from './generationQuota.js';
 import type { GenerationQuota } from './generationQuota.js';
@@ -41,6 +41,9 @@ const harnessFor = (
   opts: ContractProviderOptions & { readonly html?: string },
   disposeTurn?: (handle: SessionHandle) => Promise<void>,
   quota: GenerationQuota = makeTestQuota(),
+  // Default 1 = no retry, so every existing failure/dispose assertion sees exactly one attempt;
+  // the retry suite opts into a larger budget.
+  maxAttempts = 1,
 ): Harness => {
   const registry = new ProviderRegistry();
   registry.register(makeFakeProvider(opts));
@@ -57,6 +60,7 @@ const harnessFor = (
         disposed.push(handle);
       }),
     quota,
+    maxAttempts,
   });
   return { service, store, catalog, disposed, providerId: ProviderId(opts.id) };
 };
@@ -202,7 +206,7 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
     const store: ArtifactStore = { ...makeMemoryArtifactStore(), put: () => Promise.reject(new Error('disk full')) };
     const catalog = makeMemoryCatalog();
-    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota() });
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota(), maxAttempts: 1 });
 
     const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
     await expect(service.poll(handle)).rejects.toThrow('disk full');
@@ -564,11 +568,284 @@ describe('GenerationService — per-identity generation quota', () => {
       catalog: makeMemoryCatalog(),
       disposeTurn: async () => undefined,
       quota,
+      maxAttempts: 1,
     });
     const request = { providerId: ProviderId('boom'), brief: { description: 'x' } };
     await expect(service.submit(request, AUTHOR)).rejects.toThrow('cannot start');
     // If the failed start had leaked the one slot, this second attempt would be refused with a
     // QuotaExceededError; instead it reaches the provider and fails with the SAME start error.
     await expect(service.submit(request, AUTHOR)).rejects.toThrow('cannot start');
+  });
+});
+
+// The retry contract (quality-ppu.2): a failed provider attempt is retried from the same brief, at
+// the ONE turn-lifecycle boundary, up to the request's attempt budget — transparently to the client,
+// which keeps polling its stable handle. The assertions are over OBSERVABLE behavior: what settles,
+// what enters the catalog, which workdirs are reclaimed, and how many attempts actually started.
+// [LAW:behavior-not-structure]
+
+// A provider whose first `failFirst` attempts (counted across submit/continue/fork) report `failed`
+// and every attempt after succeeds — the fixture the retry suite needs, since makeFakeProvider's
+// outcome is fixed per instance. It counts starts so a test can prove a retry started EXACTLY one new
+// attempt (single-flight), and can throw on a chosen start to model a retry that cannot even begin.
+const makeFlakyProvider = (opts: {
+  readonly id: string;
+  readonly failFirst: number;
+  readonly iterable?: boolean;
+  readonly throwOnStart?: number;
+}): { readonly provider: Provider; readonly starts: () => number } => {
+  const providerId = ProviderId(opts.id);
+  let started = 0;
+  const turns = new Map<string, { readonly index: number; readonly html: string }>();
+
+  // A fresh-session mint (startSession/fork) passes null; a continue passes the prior session id so
+  // the appended turn belongs to the SAME session — exactly as the real provider pins it.
+  const mint = (sessionId: SessionId | null, html: string): SessionHandle => {
+    started += 1;
+    if (opts.throwOnStart === started) throw new Error(`start #${started} exploded`);
+    const turnId = TurnId(`flaky-turn-${started}`);
+    turns.set(turnId, { index: started, html });
+    return { providerId, sessionId: sessionId ?? SessionId(`flaky-session-${started}`), turnId };
+  };
+  const turnOf = (handle: SessionHandle): { readonly index: number; readonly html: string } => {
+    const turn = turns.get(handle.turnId);
+    if (turn === undefined) throw new Error(`unknown turn: ${handle.turnId}`);
+    return turn;
+  };
+  const statusOf = (handle: SessionHandle): SessionStatus => {
+    const turn = turnOf(handle);
+    return turn.index <= opts.failFirst
+      ? { state: 'failed', error: { message: `attempt ${turn.index} failed` } }
+      : { state: 'succeeded', result: { artifact: { html: turn.html } } };
+  };
+  const base: Provider = {
+    id: providerId,
+    label: opts.id,
+    startSession: async (brief: Brief) => mint(null, `<!-- ${brief.description} -->`),
+    getStatus: async (handle) => statusOf(handle),
+    streamProgress: async function* (handle) {
+      turnOf(handle);
+      yield { at: 0, message: 'progress' };
+    },
+    getResult: async (handle) => {
+      for (;;) {
+        const status = statusOf(handle);
+        if (status.state === 'succeeded') return status.result;
+        if (status.state === 'failed') throw new Error(status.error.message);
+      }
+    },
+    getAvailability: async () => ({ state: 'available' }),
+  };
+  if (opts.iterable !== true) return { provider: base, starts: () => started };
+  return {
+    provider: {
+      ...base,
+      continueSession: async (prior, followUp) => mint(prior.sessionId, `<!-- ${followUp.description} -->`),
+      fork: async (_parent, seed) => mint(null, seed.html),
+    },
+    starts: () => started,
+  };
+};
+
+interface FlakyHarness {
+  readonly service: GenerationService;
+  readonly store: ArtifactStore;
+  readonly catalog: ReturnType<typeof makeMemoryCatalog>;
+  readonly disposed: SessionHandle[];
+  readonly providerId: ProviderId;
+  readonly starts: () => number;
+}
+
+const flakyHarness = (
+  opts: { readonly id: string; readonly failFirst: number; readonly iterable?: boolean; readonly throwOnStart?: number },
+  maxAttempts: number,
+  quota: GenerationQuota = makeTestQuota(),
+): FlakyHarness => {
+  const registry = new ProviderRegistry();
+  const { provider, starts } = makeFlakyProvider(opts);
+  registry.register(provider);
+  const store = makeMemoryArtifactStore();
+  const catalog = makeMemoryCatalog();
+  const disposed: SessionHandle[] = [];
+  const service = makeGenerationService({
+    registry,
+    store,
+    catalog,
+    disposeTurn: async (handle) => {
+      disposed.push(handle);
+    },
+    quota,
+    maxAttempts,
+  });
+  return { service, store, catalog, disposed, providerId: ProviderId(opts.id), starts };
+};
+
+// Poll a handle to its terminal outcome the way a real client does: repeatedly, until ready or
+// failed — never asserting an exact number of `running` reads, since retry adds an
+// implementation-timing number of them. [LAW:behavior-not-structure]
+const pollToTerminal = async (service: GenerationService, handle: SessionHandle): Promise<GenerationStatus> => {
+  for (let i = 0; i < 100; i += 1) {
+    const status = await service.poll(handle);
+    if (status.state === 'ready' || status.state === 'failed') return status;
+  }
+  throw new Error('turn did not settle within the poll budget');
+};
+
+// Seed a continuable/forkable playground directly for a provider id, honoring the invariant every real
+// playground satisfies: its current artifact is in the store (continue/fork read it as the seed).
+const seedPlayground = async (h: FlakyHarness, prompt: string): Promise<PlaygroundId> => {
+  const version = await h.store.put({ html: `<!-- ${prompt} -->` });
+  const playground = await h.catalog.createPlayground({
+    handle: { providerId: h.providerId, sessionId: SessionId('seed-session'), turnId: TurnId('seed-turn') },
+    prompt,
+    version,
+    lineage: null,
+    author: AUTHOR,
+    tags: [],
+  });
+  return playground.id;
+};
+
+describe('makeGenerationService — construction defends its attempt budget', () => {
+  it('throws loudly when maxAttempts is below one, never admitting a request that can never run', () => {
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
+    expect(() =>
+      makeGenerationService({
+        registry,
+        store: makeMemoryArtifactStore(),
+        catalog: makeMemoryCatalog(),
+        disposeTurn: async () => undefined,
+        quota: makeTestQuota(),
+        maxAttempts: 0,
+      }),
+    ).toThrow('maxAttempts must be an integer >= 1');
+  });
+});
+
+describe('GenerationService.poll — retry: a failed provider attempt is retried from the same brief', () => {
+  it('retries a create that fails once, then reports ready and catalogs the retried artifact', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 1 }, 2);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'a wave explorer' } }, AUTHOR);
+
+    const status = await pollToTerminal(h.service, handle);
+    expect(status.state).toBe('ready');
+
+    // Exactly one retry started — the initial attempt plus one, never more.
+    expect(h.starts()).toBe(2);
+
+    // The playground is catalogued once, from the SUCCEEDING (second) attempt.
+    const summaries = await h.catalog.listPlaygrounds();
+    expect(summaries).toHaveLength(1);
+    const version = summaries[0]?.currentVersion;
+    if (version === undefined) throw new Error('no version');
+    expect((await h.store.get(version)).html).toContain('a wave explorer');
+
+    // The failed FIRST attempt's workdir was reclaimed — it is the client's original handle.
+    expect(h.disposed).toEqual([handle]);
+  });
+
+  it('surfaces failure only after the whole attempt budget is spent, reclaiming each failed attempt', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 2 }, 2);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'doomed' } }, AUTHOR);
+
+    const status = await pollToTerminal(h.service, handle);
+    // The surfaced message is the LAST attempt's, not the first.
+    expect(status).toEqual({ state: 'failed', error: 'attempt 2 failed' });
+    expect(h.starts()).toBe(2);
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
+    // Both failed create attempts were reclaimed (the retry reclaimed the first, the settle the second).
+    expect(h.disposed).toHaveLength(2);
+  });
+
+  it('maxAttempts = 1 disables retry — a failed create settles after a single attempt', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 1 }, 1);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'no retry' } }, AUTHOR);
+
+    const status = await pollToTerminal(h.service, handle);
+    expect(status).toEqual({ state: 'failed', error: 'attempt 1 failed' });
+    expect(h.starts()).toBe(1);
+    expect(h.disposed).toHaveLength(1);
+  });
+
+  it('starts at most ONE retry even when concurrent polls observe the same failure', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 1 }, 3);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'race the retry' } }, AUTHOR);
+
+    // Two polls observe the first attempt's failure at once; only one retry may start.
+    await Promise.all([h.service.poll(handle), h.service.poll(handle)]);
+    const status = await pollToTerminal(h.service, handle);
+
+    expect(status.state).toBe('ready');
+    // Initial attempt + exactly one retry: a double-retry would show 3 starts.
+    expect(h.starts()).toBe(2);
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(1);
+  });
+
+  it('does not re-charge the daily budget on a retry — a retried request spends one daily slot', async () => {
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 5, maxDaily: 1 }, now: () => 0 });
+    const h = flakyHarness({ id: 'flaky', failFirst: 1 }, 3, quota);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'one budget' } }, AUTHOR);
+    // The request retries internally and still succeeds on its single daily slot.
+    expect((await pollToTerminal(h.service, handle)).state).toBe('ready');
+    // The day's one slot is now spent — a fresh submit is refused, proving the retry never reserved again.
+    await expect(
+      h.service.submit({ providerId: h.providerId, brief: { description: 'second' } }, AUTHOR),
+    ).rejects.toThrow(QuotaExceededError);
+  });
+
+  it('retries a continue that fails once, appending the retried version and keeping the session', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 1, iterable: true }, 2);
+    const playgroundId = await seedPlayground(h, 'a counter');
+
+    const handle = await h.service.continue(playgroundId, { description: 'add a reset button' }, REFINER);
+    const status = await pollToTerminal(h.service, handle);
+    expect(status.state).toBe('ready');
+    if (status.state !== 'ready') throw new Error('unreachable');
+    expect(status.playgroundId).toBe(playgroundId);
+
+    const playground = await h.catalog.getPlayground(playgroundId);
+    expect(playground.session.turns).toHaveLength(2);
+    const current = currentVersionOf(playground.session);
+    expect((await h.store.get(current)).html).toContain('add a reset button');
+    // A refine keeps its session across retries — nothing is released.
+    expect(h.disposed).toEqual([]);
+  });
+
+  it('retries a fork that fails once, creating the lineaged playground and reclaiming the failed branch', async () => {
+    const h = flakyHarness({ id: 'flaky', failFirst: 1, iterable: true }, 2);
+    const parentId = await seedPlayground(h, 'a counter');
+
+    const handle = await h.service.fork(parentId, FORKER);
+    const status = await pollToTerminal(h.service, handle);
+    expect(status.state).toBe('ready');
+    if (status.state !== 'ready') throw new Error('unreachable');
+    expect(status.playgroundId).not.toBe(parentId);
+
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(2);
+    const child = await h.catalog.getPlayground(status.playgroundId);
+    expect(child.session.lineage?.parentSession).toBe(SessionId('seed-session'));
+    expect(child.session.author).toBe(FORKER);
+    // A failed fork attempt is a failed CREATE — its own dead branch is reclaimed (the parent is untouched).
+    expect(h.disposed).toHaveLength(1);
+  });
+
+  it('settles failed loudly when a retry cannot even start, and frees the concurrent slot', async () => {
+    const quota = makeGenerationQuota({ limits: { maxConcurrent: 1, maxDaily: 100 }, now: () => 0 });
+    // The first attempt fails; the retry's startSession throws — an infra fault, not a normal failure.
+    const h = flakyHarness({ id: 'flaky', failFirst: 1, throwOnStart: 2 }, 2, quota);
+    const handle = await h.service.submit({ providerId: h.providerId, brief: { description: 'retry cannot start' } }, AUTHOR);
+
+    const status = await pollToTerminal(h.service, handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('retry could not start');
+    expect(status.error).toContain('start #2 exploded');
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
+
+    // The request settled, so its one concurrent slot is freed — the next submit is admitted.
+    await expect(
+      h.service.submit({ providerId: h.providerId, brief: { description: 'after' } }, AUTHOR),
+    ).resolves.toBeDefined();
   });
 });

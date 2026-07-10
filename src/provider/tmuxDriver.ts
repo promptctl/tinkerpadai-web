@@ -30,11 +30,16 @@ const run = promisify(execFile);
 
 export interface TmuxDriverConfig {
   // Milliseconds between completion checks while a turn is running; this is where the
-  // driver OWNS pacing so the provider's await-loop never spins. [LAW:no-ambient-temporal-coupling]
+  // driver OWNS pacing so the provider's await-loop never spins. Internal pacing with a sane
+  // default — not a policy the deploy must state. [LAW:no-ambient-temporal-coupling]
   readonly pollIntervalMs?: number;
-  // Hard deadline for a single generation; past it the turn fails loudly rather than
-  // hanging forever. [LAW:no-silent-failure]
-  readonly timeoutMs?: number;
+  // Hard deadline for a single generation; past it the turn fails loudly rather than hanging
+  // forever. REQUIRED, not defaulted: the deadline is a deliberate deploy POLICY (a real brief
+  // brushes right up against it), so the composition root must state it — a driver that silently
+  // inherited a fallback is exactly how production ran on 5 minutes while briefs needed 10+
+  // (quality-ppu.2). Making it required makes "no deadline chosen" unrepresentable.
+  // [LAW:types-are-the-program] [LAW:no-silent-failure]
+  readonly timeoutMs: number;
 }
 
 const ARTIFACT_FILE = 'playground.html';
@@ -157,9 +162,9 @@ const forkPromptFor = (artifactPath: string): string =>
     HEADLESS_CLOSING_DIRECTIVE,
   ].join('\n');
 
-export const makeTmuxDriver = (config: TmuxDriverConfig = {}): CodeGenDriver => {
+export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
   const pollIntervalMs = config.pollIntervalMs ?? 750;
-  const timeoutMs = config.timeoutMs ?? 5 * 60 * 1000;
+  const timeoutMs = config.timeoutMs;
   const worlds = new Map<string, TurnWorld>();
 
   const worldOf = (handle: SessionHandle): TurnWorld => {

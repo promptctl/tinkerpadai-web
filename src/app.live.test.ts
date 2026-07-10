@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { makeNodeApp } from './web/nodeApp.js';
-import { Subject } from './api/index.js';
+import { DEFAULT_GENERATION_POLICY, Subject } from './api/index.js';
 import { makeFakeOAuthProvider } from './api/__fixtures__/fakeOAuthProvider.js';
 import type { GenerationStatus } from './api/index.js';
 
@@ -28,7 +28,7 @@ describe.runIf(live)('generation API (live, real tmux provider)', () => {
         oauthCallbackUrl: 'http://127.0.0.1/session/callback',
         cookieSecurity: { secure: false },
         adminSubjects: new Set(),
-        driver: { pollIntervalMs: 1000 },
+        generationPolicy: DEFAULT_GENERATION_POLICY,
       });
 
       const [provider] = service.listProviders();

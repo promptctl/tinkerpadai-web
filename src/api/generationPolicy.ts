@@ -1,0 +1,53 @@
+// THE GENERATION POLICY — the two deliberate knobs that bound one generation: how long a
+// single attempt may run before it is a loud failure (timeoutMs), and how many attempts a
+// request may make before its failure is surfaced (maxAttempts). Both are DEPLOY policy, so
+// the composition roots state them here rather than inheriting a silent default buried in the
+// driver — the exact trap quality-ppu.2 found, where production ran on the tmux driver's
+// hardcoded 5-minute fallback while real briefs need 5-11 minutes. Mirrors QuotaLimits: a
+// typed policy, a documented default, one parser both roots read the environment through.
+// [LAW:one-source-of-truth] [LAW:decomposition]
+
+export interface GenerationPolicy {
+  // The per-attempt deadline the provider enforces: past it, one attempt fails loudly rather
+  // than hanging forever. It bounds a SINGLE attempt — the whole request's ceiling is this
+  // times maxAttempts, which the seeding client's liveness backstop must stay above.
+  // [LAW:no-silent-failure]
+  readonly timeoutMs: number;
+  // Total attempts one request may make, INCLUDING the first (so 1 = no retry, the prior
+  // behavior). A failed provider attempt (timeout, crash, empty file) is retried from the
+  // same brief until this budget is spent, then the failure is surfaced. >= 1 always.
+  readonly maxAttempts: number;
+}
+
+// The default policy. 15 minutes covers the observed real-brief distribution (lean briefs
+// ~1-4 min, rich briefs up to ~11 min with a tail past 10) with margin; 2 attempts gives one
+// retry as a backstop for transient failures without unbounding a request's cost. A deploy
+// overrides either via TINKERPAD_GENERATION_TIMEOUT_MS / TINKERPAD_MAX_GENERATION_ATTEMPTS.
+export const DEFAULT_GENERATION_POLICY: GenerationPolicy = {
+  timeoutMs: 15 * 60 * 1000,
+  maxAttempts: 2,
+};
+
+// Parse one positive-integer policy value from an optional env string. Mirrors parseQuotaLimits'
+// parseLimit exactly: an explicitly-SET but non-integer/below-minimum value fails LOUDLY at boot
+// (a silent fallback would run production on a deadline/retry the operator did not choose), while
+// an UNSET value is the honest "use the default". [LAW:no-silent-failure]
+const parsePositiveInt = (value: string | undefined, name: string, min: number, fallback: number): number => {
+  if (value === undefined) return fallback;
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < min) {
+    throw new Error(`${name}=${JSON.stringify(value)} is not an integer >= ${min}`);
+  }
+  return n;
+};
+
+// The one parser both composition roots read the generation policy through, so "how the env
+// becomes the policy" is defined once and cannot drift between the Node and edge deploys —
+// exactly as parseQuotaLimits does for the rate-limit caps. [LAW:one-source-of-truth]
+export const parseGenerationPolicy = (env: {
+  readonly timeoutMs: string | undefined;
+  readonly maxAttempts: string | undefined;
+}): GenerationPolicy => ({
+  timeoutMs: parsePositiveInt(env.timeoutMs, 'TINKERPAD_GENERATION_TIMEOUT_MS', 1, DEFAULT_GENERATION_POLICY.timeoutMs),
+  maxAttempts: parsePositiveInt(env.maxAttempts, 'TINKERPAD_MAX_GENERATION_ATTEMPTS', 1, DEFAULT_GENERATION_POLICY.maxAttempts),
+});

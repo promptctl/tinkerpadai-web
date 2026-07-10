@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { makeWorkdirDiagnostics } from './tmuxDriver.js';
+import { WORKDIR_ROOT, makeWorkdirDiagnostics } from './tmuxDriver.js';
 import type { SessionHandle } from './types.js';
 import { ProviderId, SessionId, TurnId } from './types.js';
 
@@ -12,11 +12,9 @@ import { ProviderId, SessionId, TurnId } from './types.js';
 // proven without the live agent — the same way the GC's effect is proven with controlled workdirs. The
 // driver's pane-tail capture (which needs a live tmux pane) is the live test's job. [LAW:behavior-not-structure]
 
-// The driver keys every session workdir under this root; the preserver resolves the source from it, so
-// the test mirrors that one constant exactly as the GC test does. A drift would make the copy find
-// nothing and the assertions fail loudly. [LAW:one-source-of-truth]
-const ROOT = join(tmpdir(), 'tinkerpad-gen');
-
+// The driver keys every session workdir under WORKDIR_ROOT; the preserver resolves the source from it,
+// so the test stages workdirs under the SAME exported constant — no mirrored literal to drift from.
+// [LAW:one-source-of-truth]
 const handleFor = (sessionId: string): SessionHandle => ({
   providerId: ProviderId('claude-code-tmux'),
   sessionId: SessionId(sessionId),
@@ -26,10 +24,10 @@ const handleFor = (sessionId: string): SessionHandle => ({
 describe('makeWorkdirDiagnostics — preserves a failed turn workdir into a durable diagnostics dir', () => {
   const created: string[] = [];
 
-  // A real failed-turn workdir under ROOT: the prompt that drove it, a partial artifact, an exit code,
-  // and the pane tail the driver captured on failure — the full self-contained record.
+  // A real failed-turn workdir under WORKDIR_ROOT: the prompt that drove it, a partial artifact, an exit
+  // code, and the pane tail the driver captured on failure — the full self-contained record.
   const seedWorkdir = async (handle: SessionHandle): Promise<string> => {
-    const dir = join(ROOT, handle.sessionId);
+    const dir = join(WORKDIR_ROOT, handle.sessionId);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'prompt.txt'), 'build a wave explorer', 'utf8');
     await writeFile(join(dir, 'playground.html'), '<!-- partial -->', 'utf8');

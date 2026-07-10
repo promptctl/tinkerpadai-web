@@ -59,8 +59,9 @@ const PANE_TAIL_LINES = 200;
 
 // The single root every session workdir lives under — named once so dirOf (which
 // resolves one session's dir) and the idle GC (which scans them all) cannot drift on
-// where the workdirs are. [LAW:one-source-of-truth]
-const WORKDIR_ROOT = join(tmpdir(), 'tinkerpad-gen');
+// where the workdirs are. Exported so tests that stage real workdirs reference this one
+// constant rather than re-declaring the literal. [LAW:one-source-of-truth]
+export const WORKDIR_ROOT = join(tmpdir(), 'tinkerpad-gen');
 
 // Per-turn world state the driver owns: where its files live, what its tmux session
 // is called, when it must give up, and whether this turn re-seeded a cold workdir (so

@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { accessSync, constants } from 'node:fs';
-import puppeteer from 'puppeteer-core';
+import puppeteer, { TimeoutError } from 'puppeteer-core';
 import type { Artifact } from '../provider/index.js';
 import { FunctionalDefectError } from './artifactValidation.js';
 import type { ArtifactValidator } from './artifactValidation.js';
@@ -60,62 +60,74 @@ export const makeHeadlessArtifactValidator = (config: HeadlessValidatorConfig): 
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
 
-    const browser = await puppeteer.launch({
-      executablePath: config.executablePath,
-      headless: true,
-      // NO --no-sandbox: Chrome's OS sandbox stays ON while it executes untrusted code.
-      args: ['--disable-gpu'],
-    });
+    // The server is now listening, so its close is owed on EVERY exit — including a puppeteer.launch that
+    // throws (a bad executable path, Chrome missing a shared lib, a denied sandbox). The launch lives
+    // INSIDE this try so the outer finally always reclaims the socket; the browser gets its own inner
+    // finally so it too is closed on every post-launch path, without depending on launch having
+    // succeeded. Two resources, two nested finallys, no leak on any branch. [LAW:no-ambient-temporal-coupling]
     try {
-      const page = await browser.newPage();
-
-      // The signal. pageerror fires for BOTH wave-1 defect classes — an uncaught runtime exception AND an
-      // inline-script SyntaxError — and stays silent for a clean playground and for a playground's own
-      // console.error logging. It is the low-false-positive discriminator; console-level errors are NOT
-      // used (they flag a playground's own console.error and offline resource failures, which are the
-      // static self-containment check's concern, not this one). [LAW:types-are-the-program]
-      const errors: string[] = [];
-      page.on('pageerror', (error) =>
-        errors.push(error instanceof Error ? `${error.name}: ${error.message}` : String(error)),
-      );
-
-      await page.setRequestInterception(true);
-      page.on('request', (request) => {
-        // Allow ONLY the main-frame navigation to our throwaway origin; abort everything else. A self-
-        // contained playground needs no subresources, so any other request is an external load (which the
-        // runtime CSP also blocks) or an exfiltration attempt — refused here. [LAW:single-enforcer]
-        if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
-          void request.continue();
-        } else {
-          void request.abort();
-        }
+      const browser = await puppeteer.launch({
+        executablePath: config.executablePath,
+        headless: true,
+        // NO --no-sandbox: Chrome's OS sandbox stays ON while it executes untrusted code.
+        args: ['--disable-gpu'],
       });
-
       try {
-        await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load', timeout: loadTimeoutMs });
-      } catch {
-        // The load did not complete within budget (a heavy or wedged playground). A wedged renderer's
-        // main thread fires no error events, so this is genuinely INCONCLUSIVE — not observed-broken.
-        // Passing it (rather than rejecting) keeps the gate's zero-false-positive contract: a slow-but-
-        // valid playground must not be failed. Surfaced loudly, never silently swallowed. Distinguishing
-        // a true hang from slow-load is a separate concern (tinkerpadai-quality-ppu). [LAW:no-silent-failure]
-        console.warn(
-          `tinkerpad: functional validation did not finish loading within ${loadTimeoutMs}ms; passing as inconclusive`,
-        );
-        return;
-      }
+        const page = await browser.newPage();
 
-      // A short settle to observe an error scheduled just after load, then decide on the collected set.
-      await new Promise((resolve) => setTimeout(resolve, settleMs));
-      const [first, ...rest] = errors;
-      if (first !== undefined) {
-        throw new FunctionalDefectError([first, ...rest]);
+        // The signal. pageerror fires for BOTH wave-1 defect classes — an uncaught runtime exception AND an
+        // inline-script SyntaxError — and stays silent for a clean playground and for a playground's own
+        // console.error logging. It is the low-false-positive discriminator; console-level errors are NOT
+        // used (they flag a playground's own console.error and offline resource failures, which are the
+        // static self-containment check's concern, not this one). [LAW:types-are-the-program]
+        const errors: string[] = [];
+        page.on('pageerror', (error) =>
+          errors.push(error instanceof Error ? `${error.name}: ${error.message}` : String(error)),
+        );
+
+        await page.setRequestInterception(true);
+        page.on('request', (request) => {
+          // Allow ONLY the main-frame navigation to our throwaway origin; abort everything else. A self-
+          // contained playground needs no subresources, so any other request is an external load (which the
+          // runtime CSP also blocks) or an exfiltration attempt — refused here. [LAW:single-enforcer]
+          if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+            void request.continue();
+          } else {
+            void request.abort();
+          }
+        });
+
+        try {
+          await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load', timeout: loadTimeoutMs });
+        } catch (error) {
+          // ONLY a load-deadline timeout is inconclusive: a heavy or wedged playground whose renderer fires
+          // no error events, where passing (rather than rejecting) keeps the gate's zero-false-positive
+          // contract — a slow-but-valid playground must not be failed. Any OTHER navigation failure (a
+          // renderer crash, a protocol error) is NOT a slow load; it is an infra fault that must propagate
+          // loudly rather than silently admit an unvalidated artifact — the same discrimination the service
+          // makes between a typed quality failure and a real fault. [LAW:no-silent-failure]
+          if (!(error instanceof TimeoutError)) throw error;
+          console.warn(
+            `tinkerpad: functional validation did not finish loading within ${loadTimeoutMs}ms; passing as inconclusive`,
+          );
+          return;
+        }
+
+        // A short settle to observe an error scheduled just after load, then decide on the collected set.
+        await new Promise((resolve) => setTimeout(resolve, settleMs));
+        const [first, ...rest] = errors;
+        if (first !== undefined) {
+          throw new FunctionalDefectError([first, ...rest]);
+        }
+      } finally {
+        // Close the browser on every post-launch path — a clean check, a thrown defect, a hang. A fresh
+        // browser per check means a wedged playground's process is fully reclaimed and cannot affect the
+        // next. [LAW:no-ambient-temporal-coupling]
+        await browser.close();
       }
     } finally {
-      // Tear down unconditionally, whatever happened — a rejected check, a thrown defect, a hang. A fresh
-      // browser per check means a wedged playground's process is fully reclaimed and cannot affect the
-      // next. [LAW:no-ambient-temporal-coupling]
-      await browser.close();
+      // Reclaim the listening socket on every exit, INCLUDING a launch that threw before the browser
+      // existed — the leak the reviewer flagged. [LAW:no-ambient-temporal-coupling]
       server.close();
     }
   };

@@ -5,6 +5,7 @@ import { renderReviewQueue } from './adminPages.js';
 import { filterSummaries, parseCommonsQuery, tagFacets } from './commonsQuery.js';
 import { COPYRIGHT_DOC, GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
+import { buildAppCsp } from './appCsp.js';
 
 // THE APP-ORIGIN SURFACE — the front door's one composed Web handler. It serves the trusted
 // app pages (creation page at `/`, the commons list, the player chrome) and delegates every
@@ -52,36 +53,31 @@ const html = (body: string, status = 200): Response =>
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 
-// Defense-in-depth for the TRUSTED origin — the one that actually holds the session credential.
-// The content origin (contentHandler) is already sealed; this is its counterpart, and the audit's
-// gap R1: the app pages (login, player, commons) shipped with only content-type, so ANY site could
-// frame them → clickjacking of the login form. These directives close that and the adjacent cheap
-// wins:
-//   frame-ancestors 'self'  : only the app may frame the app — the concrete clickjacking fix.
-//   base-uri 'none'         : no injected <base> can re-root the page's relative URLs.
-//   form-action 'self'      : a form can only post back to the app, never to an attacker.
-//   object-src 'none'       : no <object>/<embed> plugin surface.
-// A full script-src is deliberately DEFERRED: the app runs inline scripts (index.html, player), so
-// locking it needs per-script hashes/nonces — tracked separately, not smuggled in here half-done.
-const APP_CSP = ["frame-ancestors 'self'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"].join('; ');
-
-// THE ONE app-origin response seal. Every response leaving this handler — a page, the JSON
-// projection, a delegated session/API response (the login page included) — passes through here and
-// carries the same hardening headers, mirroring how the content origin seals every response in one
-// place. Applied by MUTATION, not by rebuilding: the inner handler owns body/status/content-type
-// and its own Set-Cookie; this seal only ADDS the cross-cutting security headers and never touches
-// set-cookie, so cookie integrity cannot depend on Headers copy-fold behavior. X-Frame-Options is
-// the legacy twin of frame-ancestors, kept for pre-CSP3 browsers. [LAW:single-enforcer]
-const harden = (response: Response): Response => {
-  response.headers.set('content-security-policy', APP_CSP);
-  response.headers.set('x-frame-options', 'SAMEORIGIN');
-  response.headers.set('x-content-type-options', 'nosniff');
-  response.headers.set('referrer-policy', 'same-origin');
-  return response;
-};
-
 export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => Promise<Response>) => {
   const { page, catalog, contentOrigin, sessionHandler, apiHandler, reviewService, isAdminRequest } = deps;
+
+  // The app-origin CSP, derived once from the served front-door page (appCsp.ts). It carries the
+  // framing/injection directives from sandbox-bci.3 (only the app frames the app; no injected <base>,
+  // cross-origin form post, or plugin surface) AND, closing gap R1, a hash-based script-src that
+  // admits only the app's own static inline scripts — so an injected inline script cannot run on the
+  // origin that holds the session credential. Derived from the same `page` served at `GET /`, so the
+  // policy and the markup cannot drift. [LAW:single-enforcer] [LAW:one-source-of-truth]
+  const appCsp = buildAppCsp(page);
+
+  // THE ONE app-origin response seal. Every response leaving this handler — a page, the JSON
+  // projection, a delegated session/API response (the login page included) — passes through here and
+  // carries the same hardening headers, mirroring how the content origin seals every response in one
+  // place. Applied by MUTATION, not by rebuilding: the inner handler owns body/status/content-type
+  // and its own Set-Cookie; this seal only ADDS the cross-cutting security headers and never touches
+  // set-cookie, so cookie integrity cannot depend on Headers copy-fold behavior. X-Frame-Options is
+  // the legacy twin of frame-ancestors, kept for pre-CSP3 browsers. [LAW:single-enforcer]
+  const harden = (response: Response): Response => {
+    response.headers.set('content-security-policy', appCsp);
+    response.headers.set('x-frame-options', 'SAMEORIGIN');
+    response.headers.set('x-content-type-options', 'nosniff');
+    response.headers.set('referrer-policy', 'same-origin');
+    return response;
+  };
 
   // The two honest dead ends when a /play id is not a LISTED playground, told apart by the catalog:
   // getPlayground resolves an unlisted playground (existence is monotonic) but throws for a truly

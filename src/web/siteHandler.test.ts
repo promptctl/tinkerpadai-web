@@ -325,6 +325,11 @@ describe('makeSiteHandler', () => {
     expect(csp).toContain("base-uri 'none'");
     expect(csp).toContain("form-action 'self'");
     expect(csp).toContain("object-src 'none'");
+    // Gap R1's backstop (sandbox-bci.6): a hash-based script-src on every app-origin response, with no
+    // 'unsafe-inline' escape hatch — so an injected inline script cannot run on the credentialed origin.
+    // The exact admit/reject contract is proven in appCsp.test.ts; here we assert the seal emits it.
+    expect(csp).toMatch(/script-src 'sha256-/);
+    expect(csp).not.toContain("'unsafe-inline'");
     // Legacy twin for pre-CSP3 browsers.
     expect(res.headers.get('x-frame-options')).toBe('SAMEORIGIN');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');

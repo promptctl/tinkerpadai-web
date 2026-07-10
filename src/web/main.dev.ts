@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
 import { DEFAULT_GENERATION_POLICY, Subject } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
+import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { generateIndexHtml } from './generateIndexHtml.js';
 import { makeSiteHandler } from './siteHandler.js';
@@ -63,6 +64,9 @@ const main = async (): Promise<void> => {
     // The dev subject is the local admin — the moderation console works in the loopback loop.
     adminSubjects: new Set([DEV_SUBJECT]),
     generationPolicy: { timeoutMs: DEV_GENERATION_TIMEOUT_MS, maxAttempts: DEFAULT_GENERATION_POLICY.maxAttempts },
+    // The dev loop drives real generation, so it runs the real functional gate too — the same headless
+    // Chrome production uses. TINKERPAD_CHROME_PATH overrides; otherwise a known install is probed.
+    browserExecutablePath: resolveBrowserExecutablePath(process.env),
   });
 
   const content = await serve({

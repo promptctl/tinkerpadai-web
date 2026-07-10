@@ -5,6 +5,9 @@ import { ProviderRegistry, cleanupTurn, makeTmuxDriver, makeTmuxProvider } from 
 import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore } from '../storage/index.js';
 import { makeGenerationQuota, makeMemorySessionStore, DEFAULT_QUOTA_LIMITS } from '../api/index.js';
 import type { CookieSecurity, GenerationPolicy, OAuthProvider, QuotaLimits, Subject } from '../api/index.js';
+// Imported DIRECTLY (not via api/index.js) so puppeteer stays out of the edge Worker bundle, which
+// reaches api/index.js but never this Node-only composition root. [LAW:decomposition]
+import { makeHeadlessArtifactValidator } from '../api/headlessArtifactValidator.js';
 
 // THE NODE COMPOSITION ROOT — the one place that knows the concrete shape of the local steel thread:
 // the provider is the tmux/Claude-Code body, storage is the local file backends, sessions live in an
@@ -46,6 +49,12 @@ export interface NodeAppConfig {
   // it from the environment, main.dev.ts widens the deadline for local rich briefs. Both roots route
   // its two halves to the two seams that enforce them. [LAW:decomposition] [LAW:one-source-of-truth]
   readonly generationPolicy: GenerationPolicy;
+  // The Chrome/Chromium executable the functional-validation gate drives. A machine-specific path the
+  // entry resolves (resolveBrowserExecutablePath) and passes in as a value, exactly like dataDir — so
+  // this root builds the local headless validator without itself probing the filesystem or reading env.
+  // Required: a Node deployment always registers the tmux provider, so generation is live and the gate is
+  // in its path; there is no "generation without a functional gate" mode. [LAW:effects-at-boundaries]
+  readonly browserExecutablePath: string;
   readonly providerId?: string;
   readonly providerLabel?: string;
 }
@@ -82,6 +91,10 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
     quota,
     // The retry half of the policy flows to the service, the single owner of turn lifecycle.
     maxAttempts: config.generationPolicy.maxAttempts,
+    // The local functional-validation gate: a real headless Chrome on this machine, wired here because
+    // this root is the one place that knows the local steel thread runs a browser. When public generation
+    // moves to the edge, an isolated render sandbox swaps in at that sibling root, not here.
+    validateArtifact: makeHeadlessArtifactValidator({ executablePath: config.browserExecutablePath }),
     oauth: config.oauth,
     oauthCallbackUrl: config.oauthCallbackUrl,
     cookieSecurity: config.cookieSecurity,

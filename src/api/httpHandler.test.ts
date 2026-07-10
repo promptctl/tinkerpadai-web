@@ -4,6 +4,7 @@ import { ProviderRegistry } from '../provider/index.js';
 import type { ContractProviderOptions } from '../provider/provider.contract.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore } from '../storage/index.js';
 import { makeGenerationService } from './generationService.js';
+import { passThroughValidator } from './artifactValidation.js';
 import { makeTestQuota } from './__fixtures__/testQuota.js';
 import { makeGenerationQuota } from './generationQuota.js';
 import type { GenerationQuota } from './generationQuota.js';
@@ -39,6 +40,7 @@ const handlerFor = (
     disposeTurn: async () => undefined,
     quota,
     maxAttempts: 1,
+    validateArtifact: passThroughValidator,
   });
   const reports = makeReportService({ catalog, reports: makeMemoryReportStore() });
   return makeHttpHandler(service, reports, resolveIdentity);

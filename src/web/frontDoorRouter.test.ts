@@ -5,7 +5,7 @@ import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import type { SessionHandle } from '../provider/index.js';
 import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore, PlaygroundId, VersionId } from '../storage/index.js';
 import type { ArtifactStore, Catalog } from '../storage/index.js';
-import { makeMemorySessionStore, Subject } from '../api/index.js';
+import { makeMemorySessionStore, passThroughValidator, Subject } from '../api/index.js';
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
 import { makeTestQuota } from '../api/__fixtures__/testQuota.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
@@ -40,6 +40,7 @@ const makeMemoryApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     disposeTurn: async () => undefined,
     quota: makeTestQuota(),
     maxAttempts: 1,
+    validateArtifact: passThroughValidator,
     oauth: makeFakeOAuthProvider({ subject: Subject('github:1') }),
     oauthCallbackUrl: `${APP_ORIGIN}/session/callback`,
     cookieSecurity: { secure: true },

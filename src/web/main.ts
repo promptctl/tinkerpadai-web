@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { makeNodeApp } from './nodeApp.js';
 import { parseAdminSubjects } from '../app.js';
-import { makeGitHubOAuthProvider, parseGenerationPolicy, parseQuotaLimits } from '../api/index.js';
+import { makeGitHubOAuthProvider, parseGenerationPolicy, parseQuotaLimits, startTurnRetentionSweeper } from '../api/index.js';
 import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.js';
 import { startWorkdirJanitor } from '../provider/index.js';
 import { makeSiteHandler } from './siteHandler.js';
@@ -97,6 +97,13 @@ const main = async (): Promise<void> => {
   // intentionally unreferenced — the sweep runs for the life of the process and stops on
   // exit (its timer is unref'd). [LAW:effects-at-boundaries] [LAW:no-ambient-temporal-coupling]
   startWorkdirJanitor();
+
+  // Start the settled-turn retention sweeper — the agnostic-service sibling of the workdir janitor.
+  // It bounds the service's in-memory turn map by evicting records whose outcome has been observable
+  // long enough, and it lives HERE for the same reason: a background timer is a runtime effect makeApp
+  // must not own. The handle is intentionally unreferenced — it sweeps for the life of the process and
+  // stops on exit (its timer is unref'd). [LAW:effects-at-boundaries] [LAW:no-ambient-temporal-coupling]
+  startTurnRetentionSweeper(app.service);
 
   // The logs the operator needs: where each origin listens, and the OAuth callback the GitHub app
   // must have registered (a mismatch is the most common login misconfiguration). [LAW:no-silent-failure]

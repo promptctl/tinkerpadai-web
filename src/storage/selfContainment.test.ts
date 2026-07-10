@@ -69,6 +69,10 @@ describe('self-containment: accepts artifacts that depend on nothing external', 
     expect(ok('<style>/* background: url(https://cdn.example.com/x.png) */ .a{color:red}</style>')).toBeNull();
   });
 
+  it('accepts a reference inside a CSS comment inside an inline style="" attribute — uniform comment handling', () => {
+    expect(ok('<div style="/* background: url(https://cdn.example.com/x.png) */ color:red"></div>')).toBeNull();
+  });
+
   it('accepts a speculative preconnect/dns-prefetch hint — the page renders identically without it', () => {
     expect(ok('<link rel="preconnect" href="https://fonts.gstatic.com">')).toBeNull();
     expect(ok('<link rel="dns-prefetch" href="https://fonts.gstatic.com">')).toBeNull();

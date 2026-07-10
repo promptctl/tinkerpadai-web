@@ -294,7 +294,9 @@ const cssRegions = (html: string): CssRegion[] => {
     // value (group 3) ends AT the match end. The offset points at the value's start either way.
     const trailingQuote = m[3] === undefined ? 1 : 0;
     const offset = (m.index ?? 0) + (m[0].length - trailingQuote - value.length);
-    regions.push({ text: value, offset });
+    // Strip CSS comments here too — a /* */ is valid CSS in an inline style and the browser never
+    // fetches a url() inside one, so comment handling must be uniform across every CSS region.
+    regions.push({ text: stripCssComments(value), offset });
   }
   return regions;
 };

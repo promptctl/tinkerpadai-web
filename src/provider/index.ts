@@ -12,6 +12,7 @@ export type { TmuxProviderConfig } from './tmuxProvider.js';
 export {
   makeTmuxDriver,
   cleanupTurn,
+  makeWorkdirDiagnostics,
   expiredWorkdirs,
   evictIdleWorkdirs,
   startWorkdirJanitor,

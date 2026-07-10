@@ -64,10 +64,11 @@ export interface AppDeps {
   // Live sessions and their lifecycle: an in-memory map on Node (dies with the process, which is
   // correct for dev), a durable D1-backed store at the edge (survives Worker cold starts).
   readonly sessionStore: SessionStore;
-  // Release a settled turn's provider-internal resources. The Node entry supplies tmux's disposer
-  // (cleanupTurn); the edge, with no provider, supplies a no-op — the service disposes
+  // Dispose a failed turn's provider-internal resources, given why it failed. The Node entry supplies
+  // tmux's disposer (cleanupTurn, composed behind diagnostics preservation so the reason is captured to
+  // a durable record, ppu.4); the edge, with no provider, supplies a no-op — the service disposes
   // unconditionally, so this is a value varying, not a branch. [LAW:dataflow-not-control-flow]
-  readonly disposeTurn: (handle: SessionHandle) => Promise<void>;
+  readonly disposeTurn: (handle: SessionHandle, reason: string) => Promise<void>;
   // The per-identity generation budget. Built by each entry (its caps from the environment, its
   // clock the real one) and passed in as a value, exactly like the session store — so makeApp
   // stays a pure graph builder and a future durable edge quota swaps here without touching the

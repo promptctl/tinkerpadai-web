@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -45,11 +45,23 @@ export interface TmuxDriverConfig {
 const ARTIFACT_FILE = 'playground.html';
 const PROMPT_FILE = 'prompt.txt';
 const EXIT_FILE = 'exit.code';
+// The pane's recent output, captured into the workdir the instant a turn fails — the only moment the
+// tmux pane still exists. It makes the workdir a self-contained diagnostic record: prompt + any partial
+// artifact + exit code + what the agent was doing when it died, all in one place for the failure
+// disposer to preserve (ppu.4). [LAW:one-source-of-truth]
+const PANE_TAIL_FILE = 'pane.tail';
+// The surfaced failure reason, written beside a preserved workdir so the on-disk record states WHY the
+// turn failed — a timeout leaves no other marker, and a functional defect's load errors live only here.
+const FAILURE_FILE = 'failure.txt';
+// How much scrollback to preserve — enough to see the trailing activity of a stalled or crashed turn,
+// bounded so a runaway pane cannot write an unbounded file.
+const PANE_TAIL_LINES = 200;
 
 // The single root every session workdir lives under — named once so dirOf (which
 // resolves one session's dir) and the idle GC (which scans them all) cannot drift on
-// where the workdirs are. [LAW:one-source-of-truth]
-const WORKDIR_ROOT = join(tmpdir(), 'tinkerpad-gen');
+// where the workdirs are. Exported so tests that stage real workdirs reference this one
+// constant rather than re-declaring the literal. [LAW:one-source-of-truth]
+export const WORKDIR_ROOT = join(tmpdir(), 'tinkerpad-gen');
 
 // Per-turn world state the driver owns: where its files live, what its tmux session
 // is called, when it must give up, and whether this turn re-seeded a cold workdir (so
@@ -184,19 +196,76 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
     }
   };
 
+  // Tear down a turn's tmux session. Best-effort — a turn may already have exited on its own.
+  const killSession = (world: TurnWorld): Promise<unknown> =>
+    tmux(['kill-session', '-t', world.session]).catch(() => undefined);
+
+  // The tail of the pane's output — the last thing the agent did before the session ends. Only
+  // readable while the session is still alive, so it is always captured BEFORE killSession. A capture
+  // fault returns '' so the record is still written, but is surfaced loudly: an empty pane.tail must be
+  // distinguishable from a crashed capture. This is a single diagnostic moment, not the hot progress
+  // loop (which silences transient misses on purpose). [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling]
+  const capturePaneTail = async (world: TurnWorld): Promise<string> => {
+    try {
+      const pane = (await run('tmux', ['capture-pane', '-p', '-S', `-${PANE_TAIL_LINES}`, '-t', world.session])) as {
+        stdout: string;
+      };
+      return pane.stdout;
+    } catch (error) {
+      console.error(`tinkerpad: failed to capture pane for ${world.session}:`, error);
+      return '';
+    }
+  };
+
+  // Tear down a session, capturing its pane tail into the workdir first — the ONE place the driver ends
+  // a session, so the pane is preserved on EVERY teardown, not only driver-level failures. This is what
+  // gives a built-but-broken artifact (a driver success the service later rejects — FunctionalDefectError
+  // / SelfContainmentError, the wave-1 class) its pane context in the preserved record (ppu.4), since the
+  // session is already dead by the time the service rejects. Capture is unconditional, not a branch on
+  // outcome; a capture/write fault is surfaced loudly but never converts an outcome into a crash — the
+  // diagnostic is auxiliary. [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+  const captureAndKill = async (world: TurnWorld): Promise<void> => {
+    try {
+      await writeFile(join(world.dir, PANE_TAIL_FILE), await capturePaneTail(world), 'utf8');
+    } catch (error) {
+      console.error(`tinkerpad: failed to write pane tail for ${world.session}:`, error);
+    }
+    await killSession(world);
+  };
+
+  // Resolve a turn to a loud failure, tearing the session down (which preserves its pane tail into the
+  // workdir) first, so the whole workdir is a self-contained diagnostic record the failure disposer
+  // preserves before it reaps the workdir (ppu.4). [LAW:no-silent-failure]
+  const failWith = async (world: TurnWorld, message: string): Promise<DriverSnapshot> => {
+    await captureAndKill(world);
+    return { state: 'failed', message };
+  };
+
   // Resolve a terminal turn: the exit sentinel exists, so the pane's process is done.
-  // Map the exit code + artifact presence onto the snapshot, then tear down the
-  // session. Only a clean exit WITH a non-empty file is a success. [LAW:no-silent-failure]
+  // Map the exit code + artifact presence onto the snapshot. Every teardown goes through captureAndKill,
+  // so the pane tail is preserved whether the turn failed here or succeeded (and is later rejected
+  // downstream); only a clean exit WITH a non-empty file is a success. [LAW:no-silent-failure]
   const settle = async (world: TurnWorld, exitRaw: string): Promise<DriverSnapshot> => {
-    await tmux(['kill-session', '-t', world.session]).catch(() => undefined);
     const code = Number.parseInt(exitRaw.trim(), 10);
-    if (code !== 0) {
-      return { state: 'failed', message: `Claude Code exited with status ${code}` };
+    if (code !== 0) return failWith(world, `Claude Code exited with status ${code}`);
+    // Read the artifact BEFORE killing the session: an empty-file result is a failure, and failWith must
+    // still find a live pane to capture. A non-ENOENT read fault (EACCES/EIO) is a real infra fault that
+    // propagates loudly — but the session must be torn down first, never leaked, since the fault escapes
+    // before the success-path kill below. [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling]
+    let html: string | null;
+    try {
+      html = await readOrNull(join(world.dir, ARTIFACT_FILE));
+    } catch (error) {
+      await captureAndKill(world);
+      throw error;
     }
-    const html = await readOrNull(join(world.dir, ARTIFACT_FILE));
     if (html === null || html.trim() === '') {
-      return { state: 'failed', message: 'Claude Code finished but wrote no playground file' };
+      return failWith(world, 'Claude Code finished but wrote no playground file');
     }
+    // Success still tears down through captureAndKill: a self-contained file can still be built-but-
+    // broken, and the service's functional/self-containment gate rejects it AFTER the session is gone —
+    // so its preserved record needs the pane captured here, the last moment it exists (ppu.4).
+    await captureAndKill(world);
     return { state: 'succeeded', html };
   };
 
@@ -311,8 +380,7 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
       if (exitRaw !== null) return settle(world, exitRaw);
 
       if (Date.now() > world.deadline) {
-        await tmux(['kill-session', '-t', world.session]).catch(() => undefined);
-        return { state: 'failed', message: `generation timed out after ${timeoutMs}ms` };
+        return failWith(world, `generation timed out after ${timeoutMs}ms`);
       }
       // Still running: pace here so the provider's getResult loop does not spin.
       await delay(pollIntervalMs);
@@ -357,6 +425,44 @@ export const makeTmuxDriver = (config: TmuxDriverConfig): CodeGenDriver => {
 export const cleanupTurn = async (handle: SessionHandle): Promise<void> => {
   await rm(dirOf(handle), { recursive: true, force: true });
 };
+
+// A collision-free, filesystem-safe name for one failed turn's diagnostics — its session and turn
+// ids (both randomUUID-based, so globally unique) reduced to a safe token, the same reduction tmux
+// session names use. sessionId alone is unique among reclaimed create/fork failures (each attempt mints
+// a fresh session), and turnId disambiguates any future sharing. [LAW:one-source-of-truth]
+const diagnosticName = (handle: SessionHandle): string =>
+  `${handle.sessionId}-${handle.turnId}`.replace(/[^A-Za-z0-9_-]/g, '_');
+
+// Preserve a FAILED turn's evidence before its workdir is reclaimed. The workdir is the turn's
+// self-contained diagnostic record — the prompt that drove it (prompt.txt), any partial or built-but-
+// broken artifact (playground.html), the shell exit code (exit.code), and the pane tail the driver
+// captured on failure (pane.tail). cleanupTurn would rm all of it (and the idle GC lives in tmpdir,
+// wiped on reboot), so this COPIES the workdir into a DURABLE diagnostics directory under the app's
+// data dir, alongside the surfaced failure reason (failure.txt), so a timeout or failure can be
+// diagnosed or retried intelligently after the fact instead of being reaped (ppu.4). It only preserves;
+// the caller composes it before cleanupTurn, so the workdir is still reclaimed. Best-effort: a
+// preservation fault is surfaced loudly but never rejects — it must not unmake the failure outcome, the
+// same contract the service's release seam gives its disposer. [LAW:no-silent-failure] [LAW:decomposition]
+export const makeWorkdirDiagnostics =
+  (diagnosticsDir: string) =>
+  async (handle: SessionHandle, reason: string): Promise<void> => {
+    const src = dirOf(handle);
+    try {
+      // A create/fork failure always leaves its workdir; absence means it was already reaped (or a
+      // restart wiped tmpdir) — a real empty state, not a fault to preserve nothing from.
+      if (!(await dirExists(src))) return;
+      const dest = join(diagnosticsDir, diagnosticName(handle));
+      await mkdir(dest, { recursive: true });
+      // Write the reason FIRST, then copy the workdir: failure.txt is the smallest and only
+      // non-reconstructable piece (a timeout leaves no other marker of why it failed), so it is the one
+      // most worth surviving a mid-write disk-full — the bulky cp comes last. cp merges into dest
+      // without disturbing failure.txt (it is not in src). [LAW:no-silent-failure]
+      await writeFile(join(dest, FAILURE_FILE), reason, 'utf8');
+      await cp(src, dest, { recursive: true });
+    } catch (error) {
+      console.error(`tinkerpad: failed to preserve diagnostics for turn ${handle.turnId}:`, error);
+    }
+  };
 
 // ── Idle workdir eviction ───────────────────────────────────────────────────
 // A successful session's workdir is a CACHE of its durable artifact, kept warm so a

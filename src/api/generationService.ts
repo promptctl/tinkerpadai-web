@@ -68,12 +68,14 @@ export interface GenerationServiceDeps {
   readonly registry: ProviderRegistry;
   readonly store: ArtifactStore;
   readonly catalog: Catalog;
-  // Release a settled turn's provider-internal resources once its outcome is durably
-  // recorded. Injected, not imported, so the service never names a concrete provider:
-  // the composition root supplies the tmux disposer (cleanupTurn); a provider with
-  // nothing to release supplies a no-op. The service disposes unconditionally — a value
-  // varying, not a branch on which provider is in play. [LAW:dataflow-not-control-flow]
-  readonly disposeTurn: (handle: SessionHandle) => Promise<void>;
+  // Dispose a FAILED turn's provider-internal resources, given the reason it failed. Injected, not
+  // imported, so the service never names a concrete provider: the composition root supplies the tmux
+  // disposer (cleanupTurn, which the Node root composes behind diagnostics preservation — the reason is
+  // what that record states, ppu.4); a provider with nothing to release supplies a no-op. Only failed
+  // turns are disposed (a successful one's workdir is continuable), so the reason is always meaningful.
+  // The service disposes unconditionally — a value varying, not a branch on which provider is in play.
+  // [LAW:dataflow-not-control-flow]
+  readonly disposeTurn: (handle: SessionHandle, reason: string) => Promise<void>;
   // The per-identity generation budget, consulted at the start of every turn (submit,
   // continue, fork) and released when the turn settles. Injected as a seam so the caps and
   // the clock are a composition-root concern and the service stays pure with respect to
@@ -224,9 +226,9 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   // turn behind that lie forever. Outcome integrity has one enforcer: this service, which
   // owns the outcome, not each disposer. [FRAMING:representation] [LAW:no-silent-failure]
   // [LAW:single-enforcer] [LAW:decomposition]
-  const release = async (handle: SessionHandle): Promise<void> => {
+  const release = async (handle: SessionHandle, reason: string): Promise<void> => {
     try {
-      await disposeTurn(handle);
+      await disposeTurn(handle, reason);
     } catch (error) {
       console.error(`tinkerpad: failed to release turn ${handle.turnId}:`, error);
     }
@@ -353,10 +355,10 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   // delete the live state a subsequent refine re-enters. The disposal is the target
   // value, not a branch on which provider ran. [LAW:dataflow-not-control-flow]
   // [LAW:types-are-the-program] [LAW:no-ambient-temporal-coupling]
-  const reclaimOnFailure = (handle: SessionHandle, target: TurnTarget): Promise<void> => {
+  const reclaimOnFailure = (handle: SessionHandle, target: TurnTarget, reason: string): Promise<void> => {
     switch (target.kind) {
       case 'create':
-        return release(handle);
+        return release(handle, reason);
       case 'append':
         return Promise.resolve();
       default: {
@@ -374,7 +376,9 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
     target: TurnTarget,
     message: string,
   ): Promise<GenerationStatus> => {
-    await reclaimOnFailure(handle, target);
+    // The surfaced message IS the reason the diagnostics record states, so the on-disk record and what
+    // the client is told cannot drift — one source of truth for why the turn failed. [LAW:one-source-of-truth]
+    await reclaimOnFailure(handle, target, message);
     return { state: 'failed', error: message };
   };
 
@@ -405,13 +409,15 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
   // rejection. The reservation is untouched here — a retry is the same request still in flight, so it
   // keeps its held slot and is released only when the request finally settles.
   // [LAW:no-silent-failure] [LAW:no-ambient-temporal-coupling] [LAW:single-enforcer]
-  const beginRetry = (record: TurnRecord): void => {
+  const beginRetry = (record: TurnRecord, reason: string): void => {
     const launch = (async (): Promise<void> => {
       try {
         // The failed attempt's workdir is reclaimed exactly as a settled failure reclaims it: a
-        // create/fork's dead session is released, an append keeps the still-continuable session its
-        // next attempt re-enters. [LAW:dataflow-not-control-flow]
-        await reclaimOnFailure(record.current, record.target);
+        // create/fork's dead session is released (preserving its diagnostics first, ppu.4 — an
+        // intermediate attempt that fails-then-retries must not silently destroy its evidence), an
+        // append keeps the still-continuable session its next attempt re-enters. The reason is this
+        // attempt's surfaced failure. [LAW:dataflow-not-control-flow]
+        await reclaimOnFailure(record.current, record.target, reason);
         record.current = await record.restart();
         record.attemptsLeft -= 1;
       } catch (error) {
@@ -613,7 +619,7 @@ export const makeGenerationService = (deps: GenerationServiceDeps): GenerationSe
           // surfaced only once the budget is spent. Retry vs settle is decided by the VALUE
           // attemptsLeft, never a branch on why the attempt failed. [LAW:dataflow-not-control-flow]
           if (record.attemptsLeft > 0) {
-            beginRetry(record);
+            beginRetry(record, status.error.message);
             return { state: 'running' };
           }
           return settle(record, finalizeFailure(attempt, record.target, status.error.message));

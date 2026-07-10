@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { evictIdleWorkdirs, expiredWorkdirs } from './tmuxDriver.js';
+import { WORKDIR_ROOT, evictIdleWorkdirs, expiredWorkdirs } from './tmuxDriver.js';
 import type { WorkdirEntry } from './tmuxDriver.js';
 
 // The idle-workdir GC. The PURE policy (expiredWorkdirs) is exercised exhaustively and
@@ -11,9 +10,9 @@ import type { WorkdirEntry } from './tmuxDriver.js';
 // with controlled mtimes so the readdir/stat/rm glue is proven without the live agent.
 // The full re-seed-after-eviction round trip is the live test's job. [LAW:behavior-not-structure]
 
-// The driver keys every workdir under this root; the test mirrors that one constant so a
-// drift in where dirs live would make the effect test find nothing and fail loudly.
-const ROOT = join(tmpdir(), 'tinkerpad-gen');
+// The driver keys every workdir under WORKDIR_ROOT; the test stages dirs under that same exported
+// constant so there is no mirrored literal to drift from. [LAW:one-source-of-truth]
+const ROOT = WORKDIR_ROOT;
 
 describe('expiredWorkdirs — the pure idle policy', () => {
   const entry = (name: string, mtimeMs: number): WorkdirEntry => ({ name, mtimeMs });

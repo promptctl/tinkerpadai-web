@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { makeHeadlessArtifactValidator, resolveBrowserExecutablePath } from './headlessArtifactValidator.js';
 import { FunctionalDefectError } from './artifactValidation.js';
+import type { ArtifactValidator } from './artifactValidation.js';
 
 // A LIVE test of the REAL headless-Chrome validator: it launches an actual browser and loads real
 // artifacts, so it is gated behind TINKERPAD_LIVE=1 (needs a Chrome/Chromium install and takes a couple
@@ -13,7 +14,14 @@ import { FunctionalDefectError } from './artifactValidation.js';
 const live = process.env.TINKERPAD_LIVE === '1';
 
 describe.runIf(live)('headless artifact validator (live, real Chrome)', () => {
-  const validator = makeHeadlessArtifactValidator({ executablePath: resolveBrowserExecutablePath(process.env) });
+  // Resolve Chrome and build the validator in beforeAll, NOT at describe-body level: describe.runIf(false)
+  // still evaluates its callback body at collection, so a describe-level resolveBrowserExecutablePath would
+  // throw on a browserless CI runner and break the whole suite before any test runs. beforeAll does not run
+  // for a runIf(false)-skipped suite, so collection stays effect-free. [LAW:effects-at-boundaries]
+  let validator: ArtifactValidator;
+  beforeAll(() => {
+    validator = makeHeadlessArtifactValidator({ executablePath: resolveBrowserExecutablePath(process.env) });
+  });
 
   it('passes a clean playground that uses canvas and requestAnimationFrame', async () => {
     const html = `<!doctype html><html><body><canvas id="c" width="200" height="200"></canvas>
@@ -39,6 +47,16 @@ describe.runIf(live)('headless artifact validator (live, real Chrome)', () => {
     await expect(validator({ html })).rejects.toBeInstanceOf(FunctionalDefectError);
     await expect(validator({ html })).rejects.toThrow('SyntaxError');
   }, 20_000);
+
+  it('rejects a playground that throws an uncaught error and then hangs the renderer (a timeout must not discard an observed defect)', async () => {
+    // The first script throws (observed as a pageerror); the second wedges the renderer so `load` never
+    // fires and the navigation times out. The observed error must still fail the gate — a timeout does not
+    // silently launder a broken artifact into a pass. [LAW:no-silent-failure]
+    const html = `<!doctype html><html><body>
+<script>null.foo;</script>
+<script>while (true) {}</script></body></html>`;
+    await expect(validator({ html })).rejects.toBeInstanceOf(FunctionalDefectError);
+  }, 30_000);
 
   it('does NOT flag a playground that uses console.error for its own logging (no false positive)', async () => {
     const html = `<!doctype html><html><body>

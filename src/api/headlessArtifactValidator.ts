@@ -97,27 +97,35 @@ export const makeHeadlessArtifactValidator = (config: HeadlessValidatorConfig): 
           }
         });
 
+        let timedOut = false;
         try {
           await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load', timeout: loadTimeoutMs });
+          // Normal load completed: a short settle to observe an error scheduled just after the load event.
+          await new Promise((resolve) => setTimeout(resolve, settleMs));
         } catch (error) {
-          // ONLY a load-deadline timeout is inconclusive: a heavy or wedged playground whose renderer fires
-          // no error events, where passing (rather than rejecting) keeps the gate's zero-false-positive
-          // contract — a slow-but-valid playground must not be failed. Any OTHER navigation failure (a
-          // renderer crash, a protocol error) is NOT a slow load; it is an infra fault that must propagate
+          // ONLY a load-deadline timeout is recoverable here — a heavy or wedged renderer. Any OTHER
+          // navigation failure (a renderer crash, a protocol error) is an infra fault that must propagate
           // loudly rather than silently admit an unvalidated artifact — the same discrimination the service
           // makes between a typed quality failure and a real fault. [LAW:no-silent-failure]
           if (!(error instanceof TimeoutError)) throw error;
-          console.warn(
-            `tinkerpad: functional validation did not finish loading within ${loadTimeoutMs}ms; passing as inconclusive`,
-          );
-          return;
+          timedOut = true;
         }
 
-        // A short settle to observe an error scheduled just after load, then decide on the collected set.
-        await new Promise((resolve) => setTimeout(resolve, settleMs));
+        // Decide on the errors observed through load — OR up to a timeout. This check runs on BOTH paths:
+        // an uncaught error observed before a timeout is a real defect and must not be discarded by the
+        // timeout (an artifact that throws and then hangs is broken, not inconclusive). [LAW:no-silent-failure]
         const [first, ...rest] = errors;
         if (first !== undefined) {
           throw new FunctionalDefectError([first, ...rest]);
+        }
+
+        // No uncaught error observed. A timeout with nothing observed is genuinely INCONCLUSIVE (a wedged
+        // renderer fires no error events) — passing keeps the gate's zero-false-positive contract, but it is
+        // surfaced loudly, never silently. [LAW:no-silent-failure]
+        if (timedOut) {
+          console.warn(
+            `tinkerpad: functional validation did not finish loading within ${loadTimeoutMs}ms; passing as inconclusive`,
+          );
         }
       } finally {
         // Close the browser on every post-launch path — a clean check, a thrown defect, a hang. A fresh

@@ -186,10 +186,12 @@ const srcAttr = (name: string): RegExp =>
 const SCRIPT_SRC = srcAttr('script');
 const IMG_SRC = srcAttr('img');
 const LINK_TAG = openTag('link');
-// A whole <script> element, opening tag through the first </script> — the boundary a browser also uses
-// (inline JS cannot contain a literal </script>). Used to BLANK script bodies before CSS extraction so
-// a <style> element written as a string literal inside JS is never mistaken for real CSS.
-const SCRIPT_BLOCK = new RegExp(`<script\\b${TAG_INNER}*>[\\s\\S]*?</script>`, 'gi');
+// A <script> element split into its opening tag, body, and close — matched to the FIRST </script> (or
+// end of input for a malformed unclosed script), the same boundary a browser uses since inline JS
+// cannot contain a literal </script>. Used to BLANK the BODY while KEEPING both tags: script content is
+// raw text (not HTML, not CSS), so blanking it makes it inert for comment stripping and CSS scanning
+// alike, while the preserved <script src> opening tag stays visible to the script-src scan.
+const SCRIPT_ELEMENT = new RegExp(`(<script\\b${TAG_INNER}*>)([\\s\\S]*?)(</script>|$)`, 'gi');
 const STYLE_BLOCK = new RegExp(`<style\\b${TAG_INNER}*>([\\s\\S]*?)</style>`, 'gi');
 // A style="" / style='' / style=unquoted attribute value, anchored to a real attribute boundary (see
 // attrValue) so it is not read out of `data-style`. All three legal quoting forms are covered — the
@@ -330,24 +332,30 @@ export const findSelfContainmentViolation = (artifact: Artifact): SelfContainmen
   if (bytes > MAX_ARTIFACT_BYTES) {
     return { kind: 'oversize', bytes, limit: MAX_ARTIFACT_BYTES };
   }
-  // Scan the html with comments removed, so the validator's judgment mirrors what the BROWSER actually
-  // fetches: a reference inside <!-- --> is inert and is never requested, so flagging it would falsely
-  // reject a self-contained playground. HTML comments do not nest, so a single non-greedy strip is
-  // exact. Residual, documented limits of a parser-less scan (a `<script src=…>` built dynamically at
-  // runtime) are out of static reach — the CSP neutralizes those at runtime; this gate catches the
-  // clear, common ingest violations. [FRAMING:representation]
-  const scannable = artifact.html.replace(/<!--[\s\S]*?-->/g, '');
-  // For the CSS detectors ONLY, blank <script> bodies with equal-length whitespace: a <style> element
-  // written as a string literal inside JS is then not extracted as CSS, closing the one remaining path
-  // by which <script> content could reach a CSS detector. Length-preserving, so every hit index stays
-  // in the same coordinate space as the src/link/img scans over `scannable` — earliest-reporting stays
-  // exact. src/link/img still scan the intact `scannable` (they need the real <script src>).
-  const cssScannable = scannable.replace(SCRIPT_BLOCK, (m) => ' '.repeat(m.length));
+  // Preprocess in the same order a browser resolves structure, so the scan judges what the browser
+  // actually fetches. ORDER IS LOAD-BEARING:
+  // 1. Blank <script> BODIES (keeping both tags, length-preserving). Script content is raw text — a
+  //    `<!--` inside it is NOT a comment opener to a browser — so this MUST run before comment
+  //    stripping: otherwise a `<!--` in a script body, with its matching `-->` further down, would let
+  //    the comment strip swallow a real <script src> in between and evade the gate. Blanking bodies also
+  //    keeps a <style> literal written inside JS from being extracted as CSS. The <script src> opening
+  //    tag is preserved for the script-src scan; blanking is length-preserving so hit indices stay in
+  //    one coordinate space for earliest-reporting.
+  // 2. Strip HTML comments — now `<!--` appears only where a browser parses a comment. A reference
+  //    inside a real <!-- --> is inert and never fetched, so flagging it would falsely reject a
+  //    self-contained playground. Comments do not nest, so one non-greedy strip is exact.
+  // Residual, documented limits of a parser-less scan (a `<script src=…>` built dynamically at runtime)
+  // are out of static reach — the CSP neutralizes those at runtime. [LAW:decomposition] [FRAMING:representation]
+  const bodyBlanked = artifact.html.replace(
+    SCRIPT_ELEMENT,
+    (_m, open: string, body: string, close: string) => open + ' '.repeat(body.length) + close,
+  );
+  const scannable = bodyBlanked.replace(/<!--[\s\S]*?-->/g, '');
   const hits = [
     ...scanSrc(scannable, 'script', SCRIPT_SRC),
     ...scanLinks(scannable),
     ...scanSrc(scannable, 'image', IMG_SRC),
-    ...scanCss(cssScannable),
+    ...scanCss(scannable),
   ];
   const earliest = hits.reduce<SinkHit | null>((best, hit) => (best === null || hit.index < best.index ? hit : best), null);
   if (earliest === null) return null;

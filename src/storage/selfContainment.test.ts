@@ -199,6 +199,16 @@ describe('self-containment: rejects external resource references, naming the sin
     const v = findSelfContainmentViolation({ html: '<link rel="stylesheet" href="https://evil.example.com/s.css?a=>b">' });
     expect(v).toEqual({ kind: 'external-resource', sink: 'stylesheet', reference: 'https://evil.example.com/s.css?a=>b' });
   });
+
+  it('is not evaded by a <!-- inside a <script> body whose --> comes after a real <script src>', () => {
+    // A browser treats a <!-- inside script text as raw text, not a comment opener. If HTML comments
+    // were stripped before script bodies are blanked, the strip would span from the in-script <!-- to a
+    // later --> and swallow the external <script src> between them. Body-blanking-first prevents that.
+    const v = findSelfContainmentViolation({
+      html: '<script>x="<!--"</script><script src="https://evil.example.com/x.js"></script><!-- -->',
+    });
+    expect(v).toEqual({ kind: 'external-resource', sink: 'script', reference: 'https://evil.example.com/x.js' });
+  });
 });
 
 describe('self-containment: size cap', () => {

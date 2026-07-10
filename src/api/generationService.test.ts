@@ -193,6 +193,21 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     // The turn is still released even though nothing was stored.
     expect(h.disposed).toEqual([handle]);
   });
+
+  it('re-throws a non-self-containment store failure — an infra fault is NOT relabelled as a generation failure', async () => {
+    // finalizeSuccess catches ONLY SelfContainmentError (a quality failure routed to the failed-turn
+    // path). Any OTHER store error — a disk/backend fault — must propagate loudly, never be misrouted to
+    // a {failed} status that would hide a real infra problem. [LAW:no-silent-failure]
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
+    const store: ArtifactStore = { ...makeMemoryArtifactStore(), put: () => Promise.reject(new Error('disk full')) };
+    const catalog = makeMemoryCatalog();
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota() });
+
+    const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
+    await expect(service.poll(handle)).rejects.toThrow('disk full');
+    expect(await catalog.listPlaygrounds()).toHaveLength(0);
+  });
 });
 
 describe('GenerationService.poll — a provider that succeeds but yields a non-self-contained file', () => {

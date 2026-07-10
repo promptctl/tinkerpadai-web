@@ -24,7 +24,7 @@ import type { Artifact } from '../provider/index.js';
 // closed allowlist below. [LAW:no-mode-explosion]
 export type ResourceSink =
   | 'script' // <script src>
-  | 'stylesheet' // <link href> with a fetch-initiating rel (stylesheet, preload, icon, preconnect, …)
+  | 'stylesheet' // <link href> with a fetch-initiating rel (stylesheet, preload, icon, manifest, …)
   | 'image' // <img src>
   | 'css-url' // url(...) in CSS — backgrounds, @font-face fonts, list-style-image, …
   | 'css-import'; // @import in CSS
@@ -234,6 +234,43 @@ interface CssRegion {
   readonly offset: number;
 }
 
+// Strip CSS /* */ comments, but ONLY those that open OUTSIDE a string. A naive regex cannot tell a
+// comment opener from the bytes `/*` sitting inside a quoted value — `url("https://x/*/y.png")` — and
+// would swallow the whole url() to the next `*/`, SILENTLY HIDING a real external reference from the
+// scan. A single left-to-right pass that tracks string state draws the line correctly: inside a
+// "…"/'…' string, `/*` is data; only outside is it a comment. Escapes are honored so a `\"` does not
+// close a string early. [LAW:no-silent-failure] [LAW:types-are-the-program]
+const stripCssComments = (css: string): string => {
+  let out = '';
+  let quote: string | null = null;
+  for (let i = 0; i < css.length; i += 1) {
+    const c = css[i];
+    if (quote !== null) {
+      out += c;
+      if (c === '\\' && i + 1 < css.length) {
+        out += css[i + 1];
+        i += 1;
+      } else if (c === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      out += c;
+      continue;
+    }
+    if (c === '/' && css[i + 1] === '*') {
+      const end = css.indexOf('*/', i + 2);
+      if (end === -1) return out; // an unterminated comment runs to end of the CSS
+      i = end + 1; // resume after the '*/'; the loop's i += 1 lands on the next char
+      continue;
+    }
+    out += c;
+  }
+  return out;
+};
+
 // THE CSS DOMAIN, extracted. url()/@import are CSS constructs — they mean "load this" only inside CSS,
 // which in HTML is exactly <style> block contents and style="" attribute values. Scanning ONLY these,
 // never the whole file, keeps the CSS detectors out of <script> JS (where `new URL(...)` is a URL
@@ -247,7 +284,7 @@ const cssRegions = (html: string): CssRegion[] => {
   for (const m of html.matchAll(STYLE_BLOCK)) {
     const inner = m[1] ?? '';
     const offset = (m.index ?? 0) + (m[0].length - inner.length - '</style>'.length);
-    regions.push({ text: inner.replace(/\/\*[\s\S]*?\*\//g, ''), offset });
+    regions.push({ text: stripCssComments(inner), offset });
   }
   for (const m of html.matchAll(STYLE_ATTR)) {
     const value = m[1] ?? m[2] ?? m[3] ?? '';

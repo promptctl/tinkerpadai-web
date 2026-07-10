@@ -160,6 +160,15 @@ describe('self-containment: rejects external resource references, naming the sin
     expect(v).toEqual({ kind: 'external-resource', sink: 'css-url', reference: 'https://x.example.com/f.woff2' });
   });
 
+  it('still detects an external url() whose quoted value contains /* (CSS comment strip respects strings)', () => {
+    // A naive comment strip would treat the `/*` inside the quoted URL as a comment opener and swallow
+    // the whole url(), hiding the external reference. The string-aware stripper must not.
+    const v = findSelfContainmentViolation({
+      html: '<style>.a{background:url("https://evil.example.com/*/img.png")}.b{color:red /* real */}</style>',
+    });
+    expect(v).toEqual({ kind: 'external-resource', sink: 'css-url', reference: 'https://evil.example.com/*/img.png' });
+  });
+
   it('rejects regardless of tag/attribute/scheme case', () => {
     const v = findSelfContainmentViolation({ html: '<SCRIPT SRC="HTTPS://CDN.EXAMPLE.COM/X.JS"></SCRIPT>' });
     expect(v).toEqual({ kind: 'external-resource', sink: 'script', reference: 'HTTPS://CDN.EXAMPLE.COM/X.JS' });

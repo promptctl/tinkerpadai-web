@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Artifact } from '../provider/index.js';
+import { findSelfContainmentViolation, SelfContainmentError } from './selfContainment.js';
 import type { VersionId } from './types.js';
 import { VersionId as mkVersionId } from './types.js';
 
@@ -31,12 +32,23 @@ export interface BlobStore {
   read(versionId: VersionId): Promise<Artifact | undefined>;
 }
 
-// The single implementation of the ArtifactStore invariants — mint a fresh version,
-// and turn an absent key into a loud failure — over any BlobStore. The two local
-// adapters (memory, file) supply only the backend; this logic exists once.
-// [LAW:single-enforcer]
+// The single implementation of the ArtifactStore invariants — enforce self-containment, mint a fresh
+// version, and turn an absent key into a loud failure — over any BlobStore. The three adapters (memory,
+// file, R2) supply only the backend and ALL compose through here, so self-containment is enforced at
+// exactly one seam for every environment: nothing at a composition root can forget to wrap it, and no
+// caller of put can slip an external-referencing artifact past. Self-containment is an ArtifactStore
+// invariant (what is allowed to be stored) — the mechanism lives here; the POLICY (what counts as
+// self-contained) lives in selfContainment.ts, composed in as a value. [LAW:single-enforcer] [LAW:decomposition]
 export const makeArtifactStore = (blobs: BlobStore): ArtifactStore => ({
   async put(artifact: Artifact): Promise<VersionId> {
+    // Reject before minting a version or writing a byte: a non-self-contained artifact never enters
+    // storage, so nothing half-written is later mistaken for a real playground. The refusal is loud
+    // and typed — the generation service routes SelfContainmentError to the failed-turn path so the
+    // author gets an actionable message and a retry, not a silent bad file. [LAW:no-silent-failure]
+    const violation = findSelfContainmentViolation(artifact);
+    if (violation !== null) {
+      throw new SelfContainmentError(violation);
+    }
     const versionId = mkVersionId(randomUUID());
     await blobs.write(versionId, artifact);
     return versionId;

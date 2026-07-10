@@ -38,7 +38,7 @@ interface Harness {
 }
 
 const harnessFor = (
-  opts: ContractProviderOptions,
+  opts: ContractProviderOptions & { readonly html?: string },
   disposeTurn?: (handle: SessionHandle) => Promise<void>,
   quota: GenerationQuota = makeTestQuota(),
 ): Harness => {
@@ -193,6 +193,47 @@ describe('GenerationService.poll — failure is loud and writes nothing', () => 
     // The turn is still released even though nothing was stored.
     expect(h.disposed).toEqual([handle]);
   });
+
+  it('re-throws a non-self-containment store failure — an infra fault is NOT relabelled as a generation failure', async () => {
+    // finalizeSuccess catches ONLY SelfContainmentError (a quality failure routed to the failed-turn
+    // path). Any OTHER store error — a disk/backend fault — must propagate loudly, never be misrouted to
+    // a {failed} status that would hide a real infra problem. [LAW:no-silent-failure]
+    const registry = new ProviderRegistry();
+    registry.register(makeFakeProvider({ id: 'fake', label: 'Fake', outcome: 'success' }));
+    const store: ArtifactStore = { ...makeMemoryArtifactStore(), put: () => Promise.reject(new Error('disk full')) };
+    const catalog = makeMemoryCatalog();
+    const service = makeGenerationService({ registry, store, catalog, disposeTurn: async () => {}, quota: makeTestQuota() });
+
+    const handle = await service.submit({ providerId: ProviderId('fake'), brief: { description: 'x' } }, AUTHOR);
+    await expect(service.poll(handle)).rejects.toThrow('disk full');
+    expect(await catalog.listPlaygrounds()).toHaveLength(0);
+  });
+});
+
+describe('GenerationService.poll — a provider that succeeds but yields a non-self-contained file', () => {
+  it('routes the storage refusal to the failed-turn path — actionable message, nothing catalogued, turn released', async () => {
+    // The provider SUCCEEDS but emits an external <script>. The store refuses it at the seam; the
+    // service must translate that typed refusal into a FAILED generation (retry-able), never a 500 and
+    // never a half-written playground. This is the observable proof of the single-enforcer + translation
+    // seam working end to end. [LAW:no-silent-failure]
+    const h = harnessFor({
+      id: 'fake',
+      label: 'Fake',
+      outcome: 'success',
+      html: '<script src="https://cdn.example.com/x.js"></script>',
+    });
+    const handle = await submit(h, 'a playground that cheats');
+
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('not self-contained');
+    expect(status.error).toContain('https://cdn.example.com/x.js');
+
+    // Nothing entered the commons, and the create turn was released like any other failed first turn.
+    expect(await h.catalog.listPlaygrounds()).toHaveLength(0);
+    expect(h.disposed).toEqual([handle]);
+  });
 });
 
 describe('GenerationService.continue — refine an existing playground into a new version', () => {
@@ -252,6 +293,43 @@ describe('GenerationService.continue — refine an existing playground into a ne
     // leaves nothing continuable, is released (see the create-failure test above). This
     // is the disposal invariant carried by the turn's target value, not the provider.
     // [LAW:dataflow-not-control-flow]
+    expect(h.disposed).toEqual([]);
+  });
+
+  it('a continue that produces a non-self-contained artifact fails, keeps the session, and appends nothing', async () => {
+    // The append branch of the SelfContainmentError translation: a REFINE whose provider succeeds but
+    // emits an external reference must fail like any refine failure — session kept (prior version still
+    // continuable), nothing appended, actionable message — never a 500 and never a released workdir. The
+    // provider's html override applies to the continue turn; submit is not run, so it is seeded directly.
+    const h = harnessFor({
+      id: 'fake',
+      label: 'Fake',
+      outcome: 'success',
+      iterable: true,
+      html: '<script src="https://evil.example.com/x.js"></script>',
+    });
+    const seedVersion = await h.store.put({ html: '<!-- a counter -->' });
+    const seed = await h.catalog.createPlayground({
+      handle: { providerId: h.providerId, sessionId: SessionId('seed-session'), turnId: TurnId('seed-turn') },
+      prompt: 'a counter',
+      version: seedVersion,
+      lineage: null,
+      author: AUTHOR,
+      tags: [],
+    });
+
+    const handle = await h.service.continue(seed.id, { description: 'add a reset button' }, REFINER);
+    const status = await h.service.poll(handle);
+    expect(status.state).toBe('failed');
+    if (status.state !== 'failed') throw new Error('unreachable');
+    expect(status.error).toContain('not self-contained');
+
+    // Nothing appended; the original version is still current and continuable.
+    const playground = await h.catalog.getPlayground(seed.id);
+    expect(playground.session.turns).toHaveLength(1);
+    expect(currentVersionOf(playground.session)).toBe(seedVersion);
+
+    // The refine did NOT release the session — reclaimOnFailure keeps append sessions alive.
     expect(h.disposed).toEqual([]);
   });
 

@@ -85,5 +85,5 @@ briefs coincided with real manifest entries, and one redundant pre-existing "tin
 
 - 1 brief never became a playground: a `diff-review` whose pass-B generation the functional
   gate rejected. Not re-driven — the commons is well past 100 with strong per-type balance
-  (`diff-review` alone has 13), so no coverage gap remains. A future wave could refine that
-  brief if desired.
+  (`diff-review` from this wave alone contributed 13, on top of wave 1's 4), so no coverage
+  gap remains. A future wave could refine that brief if desired.

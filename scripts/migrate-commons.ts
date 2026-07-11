@@ -1,8 +1,8 @@
-import { access, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { hydrateStoredDoc } from '../src/storage/index.js';
+import { artifactObjectKey, hydrateStoredDoc } from '../src/storage/index.js';
 import type { CatalogDoc, VersionId } from '../src/storage/index.js';
 
 // THE COMMONS MIGRATION — carries the locally-seeded commons into the edge stores (R2 + D1) at
@@ -20,14 +20,11 @@ import type { CatalogDoc, VersionId } from '../src/storage/index.js';
 // real edge adapters under `wrangler dev` (see design-docs/deploy-cloudflare.md). [LAW:one-source-of-truth]
 // [LAW:single-enforcer] [LAW:verifiable-goals]
 
-// The R2 object key for a version's html. Mirrors makeR2ArtifactStore's private keyOf; the local
-// artifact file is already named `<versionId>.html`, so the file basename IS the R2 key. The end-to-end
-// readback through the real R2 adapter is the check that this convention still matches. [LAW:one-source-of-truth]
-const keyOf = (versionId: VersionId): string => `${versionId}.html`;
-
 export interface ArtifactRef {
   readonly versionId: VersionId;
-  // The R2 object key AND the local file basename — identical by the shared key convention above.
+  // The R2 object key AND the local file basename — both derived from artifactObjectKey, the single
+  // owner of the `<versionId>.html` convention in the storage seam, so this cannot drift from what the
+  // edge R2 adapter reads. [LAW:one-source-of-truth]
   readonly key: string;
 }
 
@@ -56,7 +53,7 @@ export const planCommonsMigration = (catalogJson: string): CommonsMigrationPlan 
       const versionId = turn.version;
       if (seen.has(versionId)) continue;
       seen.add(versionId);
-      artifacts.push({ versionId, key: keyOf(versionId) });
+      artifacts.push({ versionId, key: artifactObjectKey(versionId) });
     }
   }
   return { catalogDoc: JSON.stringify(doc), artifacts, playgroundCount: doc.playgrounds.length };
@@ -165,11 +162,17 @@ export const runMigration = async (
 
   const flag = wranglerTargetFlag(config.sink);
 
+  // The SQL file is scratch — written, handed to wrangler, then removed on both success and failure so
+  // repeated runs don't accumulate temp dirs (the tool is idempotent and meant to be re-run). [LAW:no-silent-failure]
   const sqlDir = await mkdtemp(join(tmpdir(), 'tinkerpad-migrate-'));
-  const sqlPath = join(sqlDir, 'catalog.sql');
-  await writeFile(sqlPath, buildCatalogSql(plan.catalogDoc), 'utf8');
-  log(`writing catalog document → D1 ${config.d1Database} (${flag})`);
-  await run('wrangler', ['d1', 'execute', config.d1Database, '--file', sqlPath, flag, '--yes']);
+  try {
+    const sqlPath = join(sqlDir, 'catalog.sql');
+    await writeFile(sqlPath, buildCatalogSql(plan.catalogDoc), 'utf8');
+    log(`writing catalog document → D1 ${config.d1Database} (${flag})`);
+    await run('wrangler', ['d1', 'execute', config.d1Database, '--file', sqlPath, flag, '--yes']);
+  } finally {
+    await rm(sqlDir, { recursive: true, force: true });
+  }
 
   let done = 0;
   for (const artifact of plan.artifacts) {

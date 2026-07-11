@@ -1,6 +1,10 @@
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { hydrateStoredDoc } from '../src/storage/index.js';
-import { buildCatalogSql, planCommonsMigration, resolveConfig, sqlStringLiteral, UsageError } from './migrate-commons.js';
+import type { CommonsMigrationPlan, MigrationConfig } from './migrate-commons.js';
+import { buildCatalogSql, planCommonsMigration, resolveConfig, runMigration, sqlStringLiteral, UsageError } from './migrate-commons.js';
 
 // A minimal catalog document in the on-disk shape. Two playgrounds; the second reuses a version the
 // first already referenced, so dedup and referenced-only selection are both exercised.
@@ -75,6 +79,40 @@ describe('buildCatalogSql', () => {
   it('is a single-row upsert so a re-run replaces rather than duplicates', () => {
     const sql = buildCatalogSql('{"playgrounds":[]}');
     expect(sql).toBe(`INSERT INTO catalog (id, doc) VALUES (1, '{"playgrounds":[]}') ON CONFLICT(id) DO UPDATE SET doc = excluded.doc;`);
+  });
+});
+
+describe('runMigration (executor guards)', () => {
+  const planFor = (versionId: string): CommonsMigrationPlan => ({
+    catalogDoc: '{"playgrounds":[]}',
+    artifacts: [{ versionId: versionId as CommonsMigrationPlan['artifacts'][number]['versionId'], key: `${versionId}.html` }],
+    playgroundCount: 1,
+  });
+  const configFor = (dataDir: string, sink: MigrationConfig['sink']): MigrationConfig => ({
+    sink,
+    dataDir,
+    d1Database: 'tinkerpad',
+    r2Bucket: 'tinkerpad-artifacts',
+  });
+
+  it('dry-run performs no writes and returns after the plan (never invokes wrangler)', async () => {
+    const version = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    await mkdir(join(dataDir, 'artifacts'), { recursive: true });
+    await writeFile(join(dataDir, 'artifacts', `${version}.html`), '<!doctype html>', 'utf8');
+    const lines: string[] = [];
+    // Would throw if it tried to spawn a real wrangler with a nonexistent DB; dry-run must not spawn.
+    await expect(runMigration(planFor(version), configFor(dataDir, 'dry-run'), (l) => lines.push(l))).resolves.toBeUndefined();
+    expect(lines.some((l) => l.includes('dry-run'))).toBe(true);
+  });
+
+  it('aborts loudly when a referenced artifact file is missing — before any wrangler write', async () => {
+    const version = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
+    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    // No artifacts dir at all: the referenced file is missing, so the precondition must fail — with
+    // sink 'local' this proves it aborts BEFORE the wrangler d1 execute rather than shipping a
+    // catalog whose /play would 404.
+    await expect(runMigration(planFor(version), configFor(dataDir, 'local'), () => {})).rejects.toThrow(/missing/);
   });
 });
 

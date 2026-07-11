@@ -62,8 +62,9 @@ verified end-to-end account-free with `--local` + `wrangler dev` (the app lists 
 the content origin serves each artifact byte-identical to the local copy). To seed from a different
 machine's data, point `TINKERPAD_DATA_DIR` at the exported dir; `TINKERPAD_D1_DATABASE` /
 `TINKERPAD_R2_BUCKET` override the store names. Reversal of a botched run: `wrangler d1 execute
-tinkerpad --remote --command "DELETE FROM catalog WHERE id = 1;"` (the unreferenced R2 objects are
-harmless and overwritten by the next run).
+<database> --remote --command "DELETE FROM catalog WHERE id = 1;"`, where `<database>` is the same
+name the migration wrote to — `tinkerpad` by default, or whatever `TINKERPAD_D1_DATABASE` was set to
+(the unreferenced R2 objects are harmless and overwritten by the next run).
 
 ## Deploy
 

@@ -7,6 +7,12 @@ export type { ArtifactStore, BlobStore } from './artifactStore.js';
 export { makeArtifactStore, artifactObjectKey } from './artifactStore.js';
 export { makeMemoryArtifactStore } from './memoryArtifactStore.js';
 export { makeFileArtifactStore } from './fileArtifactStore.js';
+
+export type { ThumbnailStore } from './thumbnailStore.js';
+export { thumbnailObjectKey } from './thumbnailStore.js';
+export { makeMemoryThumbnailStore } from './memoryThumbnailStore.js';
+// makeR2ThumbnailStore is imported directly by the Worker composition root (like makeR2ArtifactStore),
+// never through this barrel — the R2 adapter belongs to the edge graph only.
 export { SelfContainmentError, findSelfContainmentViolation, MAX_ARTIFACT_BYTES } from './selfContainment.js';
 export type { SelfContainmentViolation, ResourceSink } from './selfContainment.js';
 

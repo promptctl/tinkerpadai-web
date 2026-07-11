@@ -31,7 +31,7 @@ bucket_name = "tinkerpad-artifacts"
 [[d1_databases]]
 binding = "DB"
 database_name = "tinkerpad"
-database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+database_id = "4c0c7651-3a48-4f41-b1d5-59f1ab2c7048"
 migrations_dir = "migrations"
 
 # Non-secret config. The two origins MUST be different hosts — the sandbox boundary. Set these to the
@@ -39,12 +39,13 @@ migrations_dir = "migrations"
 #   wrangler secret put GITHUB_CLIENT_ID
 #   wrangler secret put GITHUB_CLIENT_SECRET
 [vars]
-TINKERPAD_OAUTH_CALLBACK_URL = "https://app.tinkerpad.example/session/callback"
-TINKERPAD_CONTENT_ORIGIN = "https://content.tinkerpad.example"
+TINKERPAD_OAUTH_CALLBACK_URL = "https://tinkerpad.ai/session/callback"
+TINKERPAD_CONTENT_ORIGIN = "https://content.tinkerpad.ai"
 
 # Routes bind the app AND the separate content host to this one Worker; fetch() splits them by host.
-# Uncomment and set to real zones at deploy (both hosts point at this Worker):
-# routes = [
-#   { pattern = "app.tinkerpad.example", custom_domain = true },
-#   { pattern = "content.tinkerpad.example", custom_domain = true },
-# ]
+# Both are custom domains on the tinkerpad.ai zone; the content host is a DISTINCT host — the sandbox
+# boundary — never collapsed to the app host.
+routes = [
+  { pattern = "tinkerpad.ai", custom_domain = true },
+  { pattern = "content.tinkerpad.ai", custom_domain = true },
+]

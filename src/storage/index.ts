@@ -4,7 +4,7 @@
 // nothing upstream changes. See design-docs/PROJECT.md.
 
 export type { ArtifactStore, BlobStore } from './artifactStore.js';
-export { makeArtifactStore } from './artifactStore.js';
+export { makeArtifactStore, artifactObjectKey } from './artifactStore.js';
 export { makeMemoryArtifactStore } from './memoryArtifactStore.js';
 export { makeFileArtifactStore } from './fileArtifactStore.js';
 export { SelfContainmentError, findSelfContainmentViolation, MAX_ARTIFACT_BYTES } from './selfContainment.js';

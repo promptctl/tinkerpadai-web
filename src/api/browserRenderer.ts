@@ -56,8 +56,11 @@ export interface BrowserRenderer {
 }
 
 // How long the artifact gets to load before the render treats the load as done anyway. A self-contained
-// (<=5MB) file loads in a second or two; this is generous. Mirrors the Node validator's LOAD_TIMEOUT_MS —
-// a fixed, documented constant, not a deploy knob. [LAW:no-mode-explosion]
+// (<=5MB) file loads in a second or two; this is generous. It plays the SAME role as the Node validator's
+// LOAD_TIMEOUT_MS but is INDEPENDENTLY tuned for this target (edge Browser Rendering) — the two are not one
+// value with two copies, they are separate knobs (this 15s is deliberately more generous than the
+// validator's 10s), so they are NOT shared: forcing them equal would couple two renderers that legitimately
+// differ. A fixed, documented constant, not a deploy knob. [LAW:no-mode-explosion] [LAW:one-type-per-behavior]
 const LOAD_TIMEOUT_MS = 15_000;
 
 // A brief settle after load so first paint and any just-after-load error are captured before the shot.
@@ -115,7 +118,14 @@ export const makeBrowserRenderer = (binding: BrowserWorker): BrowserRenderer => 
                 request.isNavigationRequest() &&
                 request.frame() === page.mainFrame() &&
                 sameOrigin(request.url(), targetOrigin);
-              void (allow ? request.continue() : request.abort()).catch(() => undefined);
+              void (allow ? request.continue() : request.abort()).catch((error) =>
+                // The abort/continue promise rejects on a benign CDP lifecycle race carrying no artifact
+                // signal — swallowed so it cannot crash the render. But a NON-benign rejection (an
+                // interceptor logic bug: double-abort, continue-after-handle) would be swallowed just as
+                // silently; surface it at debug so it is visible when debugging without adding noise to the
+                // frequent benign case. [LAW:no-silent-failure]
+                console.debug(`tinkerpad render: request interception rejected (benign lifecycle race unless repeated): ${error instanceof Error ? error.message : String(error)}`),
+              );
             });
 
             let timedOut = false;
@@ -137,15 +147,24 @@ export const makeBrowserRenderer = (binding: BrowserWorker): BrowserRenderer => 
             return { png: new Uint8Array(shot), pageErrors };
           } finally {
             // Dispose the context on every path — a clean render, a thrown fault, a hang — so a wedged or
-            // malicious playground leaves nothing behind for the next render. [LAW:no-ambient-temporal-coupling]
-            await context.close();
+            // malicious playground leaves nothing behind for the next render. Best-effort: a close() that
+            // throws must NOT shadow the successful `return` above (JS finally semantics would discard the
+            // captured screenshot and turn a valid render into a failure/retry), so its own fault is logged,
+            // not propagated. [LAW:no-ambient-temporal-coupling] [LAW:no-silent-failure]
+            await context.close().catch((error) =>
+              console.warn(`tinkerpad render: context close failed (screenshot already captured): ${error instanceof Error ? error.message : String(error)}`),
+            );
           }
         },
       };
       return await run(session);
     } finally {
-      // Close the browser on every exit, so the batch's one launch is always reclaimed. [LAW:no-ambient-temporal-coupling]
-      await browser.close();
+      // Close the browser on every exit, so the batch's one launch is always reclaimed. Best-effort for the
+      // same reason as the context close: a close() fault must not shadow the batch's return value.
+      // [LAW:no-ambient-temporal-coupling] [LAW:no-silent-failure]
+      await browser.close().catch((error) =>
+        console.warn(`tinkerpad render: browser close failed: ${error instanceof Error ? error.message : String(error)}`),
+      );
     }
   },
 });

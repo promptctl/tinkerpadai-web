@@ -5,7 +5,7 @@ import type { BackfillDeps, RenderJob, RenderMessage, RenderPipelineDeps } from 
 import { makeMemoryCatalog } from '../storage/memoryCatalog.js';
 import { makeMemoryThumbnailStore } from '../storage/memoryThumbnailStore.js';
 import { makeMemoryRenderStatusStore } from '../storage/memoryRenderStatusStore.js';
-import type { Catalog } from '../storage/index.js';
+import type { Catalog, RenderStatusStore, ThumbnailStore } from '../storage/index.js';
 import { PlaygroundId, VersionId } from '../storage/index.js';
 import type { NewPlayground } from '../storage/types.js';
 import { Subject } from '../identity/index.js';
@@ -168,6 +168,60 @@ describe('renderAttempt', () => {
     // NOT recorded failed — it may still succeed on a later attempt. [LAW:no-silent-failure]
     expect(await d.statuses.get(version)).toBeUndefined();
     warn.mockRestore();
+  });
+
+  it('a persistence failure after a successful render retries — never recorded as a failed artifact', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const catalog = makeMemoryCatalog();
+    const pg = await catalog.createPlayground(newPlayground());
+    const version = pg.session.turns[0].version;
+    const statuses = makeMemoryRenderStatusStore();
+    // The render succeeds but the thumbnail store is down. renderAttempt must stay TOTAL: a store fault is
+    // transient and the render is redoable, so it retries — and must NOT be recorded 'failed' (the artifact
+    // is fine, only persistence blipped). [LAW:no-silent-failure]
+    const failingThumbnails: ThumbnailStore = {
+      get: async () => undefined,
+      put: async () => { throw new Error('R2 unavailable'); },
+    };
+    const d: RenderPipelineDeps = {
+      catalog,
+      thumbnails: failingThumbnails,
+      statuses,
+      contentUrlOf: (id) => `https://content.example/?id=${encodeURIComponent(id)}`,
+    };
+    const { session } = fakeSession({ png: png([1]) });
+
+    const result = await renderAttempt(session, d, { playgroundId: pg.id }, { number: 1, max: 3 });
+
+    expect(result).toEqual({ kind: 'retry' });
+    expect(await statuses.get(version)).toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it('a terminal failure whose status write ALSO fails still returns done — total, never throws', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const catalog = makeMemoryCatalog();
+    const pg = await catalog.createPlayground(newPlayground());
+    // At the bound the render is terminally failed AND recording 'failed' fails too (KV down). renderAttempt
+    // must STILL return done and never throw, or the edge shell's ack/retry mapping breaks. The backfill
+    // re-enqueues the still-pending version later. [FRAMING:representation] [LAW:no-silent-failure]
+    const failingStatuses: RenderStatusStore = {
+      get: async () => undefined,
+      set: async () => { throw new Error('KV unavailable'); },
+      clear: async () => undefined,
+    };
+    const d: RenderPipelineDeps = {
+      catalog,
+      thumbnails: makeMemoryThumbnailStore(),
+      statuses: failingStatuses,
+      contentUrlOf: (id) => `https://content.example/?id=${encodeURIComponent(id)}`,
+    };
+    const { session } = fakeSession({ throws: new Error('renderer crashed') });
+
+    const result = await renderAttempt(session, d, { playgroundId: pg.id }, { number: 3, max: 3 });
+
+    expect(result).toEqual({ kind: 'done' });
+    error.mockRestore();
   });
 
   it('a render failure AT the bound records failed and is done — surfaced, not an eternal blank', async () => {

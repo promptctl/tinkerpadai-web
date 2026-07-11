@@ -100,21 +100,42 @@ export const renderAttempt = async (
     return RETRY;
   }
 
+  // The RENDER itself — separated from persistence below so a store fault is never miscounted as a render
+  // failure. A throw here is the renderer crashing/timing out: below the bound retry; AT the bound record
+  // 'failed' and finish. The terminal status write is BEST-EFFORT — this function is documented TOTAL
+  // (never throws, so the edge shell is a pure ack/retry mapping), so a KV outage while recording must not
+  // escape: if it fails, the version stays pending-without-thumbnail and the self-healing backfill
+  // re-enqueues it, re-recording 'failed' once KV recovers. [LAW:no-silent-failure] [FRAMING:representation]
+  let png: Uint8Array;
   try {
-    const { png } = await session.render(target.contentUrl);
-    await deps.thumbnails.put(target.versionId, png);
-    await deps.statuses.clear(target.versionId);
-    return DONE;
+    ({ png } = await session.render(target.contentUrl));
   } catch (error) {
     const message = messageOf(error);
     if (attempt.number >= attempt.max) {
       console.error(
         `tinkerpad render: version ${target.versionId} failed after ${attempt.number} attempt(s); recording failed: ${message}`,
       );
-      await deps.statuses.set(target.versionId, 'failed');
+      await deps.statuses.set(target.versionId, 'failed').catch((statusError) =>
+        console.error(`tinkerpad render: version ${target.versionId} failed but recording 'failed' also failed; backfill will retry: ${messageOf(statusError)}`),
+      );
       return DONE;
     }
     console.warn(`tinkerpad render: version ${target.versionId} attempt ${attempt.number} failed, will retry: ${message}`);
+    return RETRY;
+  }
+
+  // The render SUCCEEDED. Persist it; a persistence fault (KV/R2 unavailable) is transient and the render is
+  // redoable and IDEMPOTENT, so it is a retry, not a throw and not a recorded failure — a later delivery
+  // re-renders and re-puts, after which resolveRenderTarget skips it as already-rendered. put is the
+  // load-bearing write (rendered-ness lives in the blob); clearing the 'pending' marker is a follow-up the
+  // blob already shadows. Keeping this OUT of the render catch is what stops a store blip from ever being
+  // recorded as a 'failed' artifact. [LAW:one-source-of-truth] [LAW:no-silent-failure]
+  try {
+    await deps.thumbnails.put(target.versionId, png);
+    await deps.statuses.clear(target.versionId);
+    return DONE;
+  } catch (error) {
+    console.warn(`tinkerpad render: version ${target.versionId} rendered but persisting failed, will retry: ${messageOf(error)}`);
     return RETRY;
   }
 };

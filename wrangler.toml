@@ -11,6 +11,21 @@ compatibility_date = "2026-07-02"
 # reachable from the Worker graph and are tree-shaken out.
 compatibility_flags = ["nodejs_compat"]
 
+# Routes MUST be a top-level key (before any [table] header) — a `routes` key placed after [vars]
+# parses as vars.routes, an env var, and no domain is bound. Both are custom domains on the tinkerpad.ai
+# zone bound to this one Worker; fetch() splits them by host. The content host is a DISTINCT host — the
+# sandbox boundary — never collapsed to the app host.
+routes = [
+  { pattern = "tinkerpad.ai", custom_domain = true },
+  { pattern = "content.tinkerpad.ai", custom_domain = true },
+]
+
+# The two custom domains above are the ONLY intended public surface. Disable the workers.dev subdomain
+# and preview URLs so the app is not also served on an unadvertised origin where the OAuth callback
+# (pinned to tinkerpad.ai) can't complete. [LAW:single-enforcer]
+workers_dev = false
+preview_urls = false
+
 # Bundle the committed, generated front door (src/web/index.html) as a TEXT module so
 # `import page from './index.html'` in the Worker yields its string. Run `pnpm build` in the deploy
 # pipeline first so the committed file is current (a vitest drift test also guards it).
@@ -45,12 +60,4 @@ TINKERPAD_CONTENT_ORIGIN = "https://content.tinkerpad.ai"
 # The moderation admin allowlist — comma-separated subjects (github:<numeric-id>) allowed into /admin.
 # Absent/empty = no admins = the console is reachable by NO ONE (safe default), but takedowns can't be
 # actioned until it's set. Uncomment and set to the operator's subject before honoring reports/DMCA.
-# TINKERPAD_ADMIN_SUBJECTS = "github:0000000"
-
-# Routes bind the app AND the separate content host to this one Worker; fetch() splits them by host.
-# Both are custom domains on the tinkerpad.ai zone; the content host is a DISTINCT host — the sandbox
-# boundary — never collapsed to the app host.
-routes = [
-  { pattern = "tinkerpad.ai", custom_domain = true },
-  { pattern = "content.tinkerpad.ai", custom_domain = true },
-]
+TINKERPAD_ADMIN_SUBJECTS = "github:530235"

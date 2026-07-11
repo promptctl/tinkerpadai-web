@@ -5,7 +5,7 @@ import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
 import { makeGenerationQuota, makeGitHubOAuthProvider, parseMaxGenerationAttempts, parseQuotaLimits, passThroughValidator } from '../api/index.js';
 import type { RenderJob, RenderPipelineDeps } from '../api/index.js';
-import { parseRenderJob, renderAttempt, runBackfill } from '../api/index.js';
+import { runBackfill, runRenderBatch } from '../api/index.js';
 import { makeBrowserRenderer } from '../api/browserRenderer.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
@@ -255,28 +255,17 @@ const enqueueRenderJobs = async (queue: Queue<RenderJob>, jobs: readonly RenderJ
   }
 };
 
-// THE QUEUE CONSUMER — renders a batch of jobs on ONE browser (Browser Rendering rate-limits launches, so
-// the whole batch shares a single withSession; each render still gets a fresh isolated context). Per
-// message: parse at the trust boundary (a malformed body is a poison message, logged and acked, never
-// retried), then run one attempt and map its directive onto the queue's ack/retry. renderAttempt is total
-// and owns the failed-recording, so this shell is pure mechanics. [LAW:effects-at-boundaries] [LAW:decomposition]
+// THE QUEUE CONSUMER EDGE — owns only the browser lifecycle: one browser for the whole batch (Browser
+// Rendering rate-limits launches, so the batch shares a single withSession; each render still gets a fresh
+// isolated context), on which the pure per-batch mapping (runRenderBatch) runs. The ack/retry mapping,
+// poison-pill handling, and attempt-bound logic all live in that tested core; a real Cloudflare
+// Message<unknown> satisfies its RenderMessage shape structurally, so messages pass straight through.
+// [LAW:effects-at-boundaries] [LAW:decomposition]
 const consumeRenderBatch = async (env: Env, batch: MessageBatch<unknown>): Promise<void> => {
   const { pipeline } = renderContextFor(env);
-  await makeBrowserRenderer(env.BROWSER).withSession(async (session) => {
-    for (const message of batch.messages) {
-      let job: RenderJob;
-      try {
-        job = parseRenderJob(message.body);
-      } catch (error) {
-        console.error(`tinkerpad render: dropping malformed queue message ${message.id}: ${error instanceof Error ? error.message : String(error)}`);
-        message.ack();
-        continue;
-      }
-      const result = await renderAttempt(session, pipeline, job, { number: message.attempts, max: MAX_RENDER_ATTEMPTS });
-      if (result.kind === 'retry') message.retry();
-      else message.ack();
-    }
-  });
+  await makeBrowserRenderer(env.BROWSER).withSession((session) =>
+    runRenderBatch(session, pipeline, batch.messages, MAX_RENDER_ATTEMPTS),
+  );
 };
 
 // THE SCHEDULED BACKFILL — the idempotent, self-healing tick that populates the grid: it enqueues a render

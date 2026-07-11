@@ -1,6 +1,6 @@
 import type { RenderSession } from './browserRenderer.js';
 import type { CatalogReader, PlaygroundSummary, RenderStatusStore, ThumbnailStore, VersionId } from '../storage/index.js';
-import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../storage/index.js';
+import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf, renderStateOf } from '../storage/index.js';
 
 // THE ASYNC RENDER PIPELINE — the derivation that turns the store + driver (render-dax.1, .2) into a
 // running producer of thumbnails, ASYNC and OUT of any generation-create path. This module is the PURE
@@ -138,16 +138,27 @@ export interface BackfillReport {
 
 // IDEMPOTENT commons backfill — what populates the grid TODAY, independent of edge generation being off,
 // and the self-healing tick that later picks up any newly-published playground the immediate hook missed.
-// Enqueues a job for every listed playground whose CURRENT version has no thumbnail yet, marking each
-// 'pending' so an honest awaiting-render slot appears immediately; skips those already rendered, so
-// re-running enqueues only the gaps and converges to a no-op once the commons is fully rendered.
+// Enqueues a job only for a listed playground whose CURRENT version is still awaiting a render, marking it
+// 'pending' so an honest awaiting-render slot appears immediately, and converges to a true no-op once every
+// version is either rendered or terminally failed.
+//
+// Skippability is the SAME 3-state view the card reads (renderStateOf): 'rendered' (a thumbnail exists) and
+// 'failed' (past the retry bound, recorded terminal) are both skipped; only a 'pending' version — never
+// enqueued, or enqueued-but-not-yet-done — is a gap to fill. Consulting the status store here, not just the
+// thumbnail cache, is what makes 'failed' actually terminal: without it a persistently-unrenderable
+// playground has no thumbnail, so it would land in the gap set every tick and burn its whole retry budget of
+// browser renders every 15 minutes, forever — the eternally-retried counterpart of the eternally-empty slot
+// renderAttempt already guards against. A genuinely-fixable failure is re-rendered by an operator clearing
+// its status, not by the backfill grinding on it. [LAW:no-silent-failure] [LAW:one-source-of-truth]
 // [LAW:dataflow-not-control-flow]
 export const runBackfill = async (deps: BackfillDeps): Promise<BackfillReport> => {
   const summaries = await deps.catalog.listPlaygrounds();
   const missing: PlaygroundSummary[] = [];
   let skipped = 0;
   for (const summary of summaries) {
-    if ((await deps.thumbnails.get(summary.currentVersion)) !== undefined) {
+    const hasThumbnail = (await deps.thumbnails.get(summary.currentVersion)) !== undefined;
+    const status = await deps.statuses.get(summary.currentVersion);
+    if (renderStateOf(hasThumbnail, status) !== 'pending') {
       skipped += 1;
       continue;
     }
@@ -157,6 +168,46 @@ export const runBackfill = async (deps: BackfillDeps): Promise<BackfillReport> =
   const jobs = missing.map((summary): RenderJob => ({ playgroundId: summary.id }));
   await deps.enqueue(jobs);
   return { enqueued: jobs.length, skipped };
+};
+
+// A delivered queue message, reduced to exactly what the batch processor needs — its untyped body, its
+// 1-based delivery count, an id for logging, and the two acknowledgements it can send. Cloudflare's
+// Message<unknown> satisfies this shape structurally, so the edge shell passes real messages straight in
+// while a test passes fakes: the batch logic never names a Cloudflare type. [LAW:decomposition]
+export interface RenderMessage {
+  readonly id: string;
+  readonly body: unknown;
+  readonly attempts: number;
+  ack(): void;
+  retry(): void;
+}
+
+// Process one delivered batch on an ALREADY-OPEN session — the pure per-batch logic lifted out of the edge
+// shell so the Cloudflare-Queue-specific wiring is testable without a browser. Per message: parse at the
+// trust boundary (a malformed body is a poison message — logged and ACKED so it leaves the queue, never
+// retried into a permanent block), then run one bounded attempt and map its directive onto the queue's
+// ack/retry. The browser lifecycle (one launch per batch) and the real Message live in worker.ts; this owns
+// only the mapping, so a wrong ack/retry or a missing poison-pill guard is caught by a fake-message test
+// rather than only in production. [LAW:effects-at-boundaries] [LAW:decomposition] [LAW:dataflow-not-control-flow]
+export const runRenderBatch = async (
+  session: RenderSession,
+  deps: RenderPipelineDeps,
+  messages: readonly RenderMessage[],
+  maxAttempts: number,
+): Promise<void> => {
+  for (const message of messages) {
+    let job: RenderJob;
+    try {
+      job = parseRenderJob(message.body);
+    } catch (error) {
+      console.error(`tinkerpad render: dropping malformed queue message ${message.id}: ${messageOf(error)}`);
+      message.ack();
+      continue;
+    }
+    const result = await renderAttempt(session, deps, job, { number: message.attempts, max: maxAttempts });
+    if (result.kind === 'retry') message.retry();
+    else message.ack();
+  }
 };
 
 // The trust boundary for a queue message body — foreign, untyped bytes off the wire become a typed

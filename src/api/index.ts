@@ -23,9 +23,10 @@ export type { ArtifactValidator, LoadErrors } from './artifactValidation.js';
 // The render pipeline's PURE core — it only imports the browserRenderer as a TYPE, so no puppeteer runtime
 // dep flows through this barrel. The concrete makeBrowserRenderer (which imports puppeteer) stays out of
 // here for the same reason the headless validator does, imported directly by the edge root. [LAW:decomposition]
-export { resolveRenderTarget, renderAttempt, runBackfill, parseRenderJob } from './renderPipeline.js';
+export { resolveRenderTarget, renderAttempt, runBackfill, runRenderBatch, parseRenderJob } from './renderPipeline.js';
 export type {
   RenderJob,
+  RenderMessage,
   RenderPipelineDeps,
   RenderTarget,
   ResolveResult,

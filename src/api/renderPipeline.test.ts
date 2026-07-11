@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RenderResult, RenderSession } from './browserRenderer.js';
-import { parseRenderJob, renderAttempt, resolveRenderTarget, runBackfill } from './renderPipeline.js';
-import type { BackfillDeps, RenderJob, RenderPipelineDeps } from './renderPipeline.js';
+import { parseRenderJob, renderAttempt, resolveRenderTarget, runBackfill, runRenderBatch } from './renderPipeline.js';
+import type { BackfillDeps, RenderJob, RenderMessage, RenderPipelineDeps } from './renderPipeline.js';
 import { makeMemoryCatalog } from '../storage/memoryCatalog.js';
 import { makeMemoryThumbnailStore } from '../storage/memoryThumbnailStore.js';
 import { makeMemoryRenderStatusStore } from '../storage/memoryRenderStatusStore.js';
@@ -129,6 +129,30 @@ describe('renderAttempt', () => {
     warn.mockRestore();
   });
 
+  it('a resolve-time infra fault retries without recording failed — an outage is not a bad artifact', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // A catalog that cannot be READ (unlike an unknown id, which resolves to PlaygroundNotFoundError) — a
+    // transient infra fault during resolveRenderTarget. It must retry, distinct from the drop-on-unknown
+    // path, and record NO 'failed' status (the artifact was never even reached). [LAW:no-silent-failure]
+    const brokenCatalog: Catalog = {
+      createPlayground: async () => { throw new Error('not used'); },
+      appendTurn: async () => { throw new Error('not used'); },
+      setListing: async () => { throw new Error('not used'); },
+      getPlayground: async () => { throw new Error('catalog unreachable'); },
+      listPlaygrounds: async () => [],
+    };
+    const d = deps(brokenCatalog);
+    const { session, urls } = fakeSession({ png: png([1]) });
+
+    const result = await renderAttempt(session, d, { playgroundId: PlaygroundId('anything') }, { number: 1, max: 3 });
+
+    expect(result).toEqual({ kind: 'retry' });
+    // The session was never reached, and no status was recorded — the fault is upstream of the render.
+    expect(urls).toEqual([]);
+    expect(await d.statuses.get(VersionId('anything'))).toBeUndefined();
+    warn.mockRestore();
+  });
+
   it('a render failure below the bound retries and records no failed status', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const catalog = makeMemoryCatalog();
@@ -216,6 +240,25 @@ describe('runBackfill', () => {
     expect(enqueued.map((j) => j.playgroundId)).toEqual([b.id]);
   });
 
+  it('skips a version already marked failed — a terminal failure is not re-enqueued every tick', async () => {
+    const catalog = makeMemoryCatalog();
+    const failed = await catalog.createPlayground(newPlayground());
+    const pending = await catalog.createPlayground(newPlayground());
+    const statuses = makeMemoryRenderStatusStore();
+    // `failed` is past its retry bound (recorded terminal), with no thumbnail. Without consulting the status
+    // store the backfill would find it "missing" and re-enqueue it forever, burning render quota every tick.
+    await statuses.set(failed.session.turns[0].version, 'failed');
+    const { deps: d, enqueued } = backfillDeps(catalog, makeMemoryThumbnailStore(), statuses);
+
+    const report = await runBackfill(d);
+
+    // Only the genuinely-pending version is enqueued; the failed one is skipped and its status is preserved.
+    expect(report).toEqual({ enqueued: 1, skipped: 1 });
+    expect(enqueued.map((j) => j.playgroundId)).toEqual([pending.id]);
+    expect(await statuses.get(failed.session.turns[0].version)).toBe('failed');
+    expect(await statuses.get(pending.session.turns[0].version)).toBe('pending');
+  });
+
   it('never enqueues an unlisted playground — listPlaygrounds already excludes it', async () => {
     const catalog = makeMemoryCatalog();
     const a = await catalog.createPlayground(newPlayground());
@@ -224,6 +267,83 @@ describe('runBackfill', () => {
     const report = await runBackfill(d);
     expect(report).toEqual({ enqueued: 0, skipped: 0 });
     expect(enqueued).toEqual([]);
+  });
+});
+
+// The edge glue that maps the pure directive onto the queue's ack/retry, lifted out of worker.ts so it is
+// testable without a browser. These are the acceptance criteria for "a bug in the Cloudflare-Queue wiring
+// (wrong ack/retry, missing poison-pill guard) is caught before production". [LAW:verifiable-goals]
+describe('runRenderBatch', () => {
+  // A fake queue message that records how it was acknowledged — the RenderMessage seam a real Cloudflare
+  // Message satisfies structurally.
+  const fakeMessage = (body: unknown, attempts = 1): { message: RenderMessage; calls: { ack: number; retry: number } } => {
+    const calls = { ack: 0, retry: 0 };
+    return {
+      message: { id: 'msg', body, attempts, ack: () => void (calls.ack += 1), retry: () => void (calls.retry += 1) },
+      calls,
+    };
+  };
+
+  it('acks a message whose render succeeds, and stores its thumbnail', async () => {
+    const catalog = makeMemoryCatalog();
+    const pg = await catalog.createPlayground(newPlayground());
+    const d = deps(catalog);
+    const { session } = fakeSession({ png: png([1, 2, 3]) });
+    const { message, calls } = fakeMessage({ playgroundId: pg.id }, 1);
+
+    await runRenderBatch(session, d, [message], 3);
+
+    expect(calls).toEqual({ ack: 1, retry: 0 });
+    expect(await d.thumbnails.get(pg.session.turns[0].version)).toEqual(png([1, 2, 3]));
+  });
+
+  it('retries a message whose render fails below the bound — not acked', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const catalog = makeMemoryCatalog();
+    const pg = await catalog.createPlayground(newPlayground());
+    const { session } = fakeSession({ throws: new Error('renderer crashed') });
+    const { message, calls } = fakeMessage({ playgroundId: pg.id }, 1);
+
+    await runRenderBatch(session, deps(catalog), [message], 3);
+
+    expect(calls).toEqual({ ack: 0, retry: 1 });
+    warn.mockRestore();
+  });
+
+  it('acks a malformed message as a poison pill and keeps processing the rest of the batch', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const catalog = makeMemoryCatalog();
+    const pg = await catalog.createPlayground(newPlayground());
+    const d = deps(catalog);
+    const { session } = fakeSession({ png: png([9]) });
+    // A malformed body would loop forever if retried; it must be acked-and-dropped. The well-formed message
+    // AFTER it must still render — one poison pill cannot sink the whole batch. [LAW:no-silent-failure]
+    const poison = fakeMessage('not-an-object', 1);
+    const good = fakeMessage({ playgroundId: pg.id }, 1);
+
+    await runRenderBatch(session, d, [poison.message, good.message], 3);
+
+    expect(poison.calls).toEqual({ ack: 1, retry: 0 });
+    expect(good.calls).toEqual({ ack: 1, retry: 0 });
+    expect(await d.thumbnails.get(pg.session.turns[0].version)).toEqual(png([9]));
+    expect(error).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it('acks a message whose render fails AT the bound — the failure is recorded, not retried forever', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const catalog = makeMemoryCatalog();
+    const pg = await catalog.createPlayground(newPlayground());
+    const d = deps(catalog);
+    const { session } = fakeSession({ throws: new Error('renderer crashed') });
+    // attempts === max: renderAttempt records 'failed' and returns done, so the queue must ack (not retry).
+    const { message, calls } = fakeMessage({ playgroundId: pg.id }, 3);
+
+    await runRenderBatch(session, d, [message], 3);
+
+    expect(calls).toEqual({ ack: 1, retry: 0 });
+    expect(await d.statuses.get(pg.session.turns[0].version)).toBe('failed');
+    error.mockRestore();
   });
 });
 

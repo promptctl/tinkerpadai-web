@@ -203,18 +203,23 @@ describe('makeContentHandler — the /thumb preview route', () => {
     const res = await handler(new Request(`http://content.local/thumb?id=${encodeURIComponent(id)}`));
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('image/png');
-    // The `v` cache-buster in the card's URL makes each version's bytes safely immutable.
+    // The `v` cache-buster in the card's URL makes each version's bytes safely immutable — the ONE response
+    // that opts out of the origin's default revalidate-before-use caching.
     expect(res.headers.get('cache-control')).toContain('immutable');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
   });
 
-  it('returns an honest 404 for a version with no thumbnail yet — never a fabricated image', async () => {
+  it('returns an honest, revalidating 404 for a version with no thumbnail yet — never a fabricated image', async () => {
     const { handler, catalog, store } = setup();
     const id = await seed(catalog, store, RAW_HTML);
     // No thumbnail stored: pending or failed render. The card turns this into a neutral slot.
     const res = await handler(new Request(`http://content.local/thumb?id=${encodeURIComponent(id)}`));
     expect(res.status).toBe(404);
+    // MUST NOT be heuristically cached: the URL is identical before and after the thumbnail lands (same
+    // version), so a cached 404 would pin the neutral slot even once the preview exists. no-cache forces a
+    // revalidation that picks up the newly-rendered PNG. [FRAMING:representation]
+    expect(res.headers.get('cache-control')).toBe('no-cache');
     // Still sealed under the strict CSP like every response from this origin.
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
   });

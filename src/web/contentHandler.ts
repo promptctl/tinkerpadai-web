@@ -72,11 +72,20 @@ export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request
   // Every response from the content origin — html, PNG, and errors alike — carries the strict CSP
   // and nosniff. There is no path out of this handler that serves anything permissively. `extra`
   // carries the response-specific headers (a thumbnail's cache directives), MERGED over the seal but
-  // never replacing it, so the cross-cutting hardening can't be dropped by a caller. [LAW:single-enforcer]
+  // never replacing the hardening, so the cross-cutting security headers can't be dropped by a caller.
+  //
+  // Cacheability is stated ONCE here and DEFAULTS to `no-cache` (revalidate before use): most responses at
+  // this origin can CHANGE for the same URL — a "not rendered yet" 404 becomes a 200 when the thumbnail
+  // lands, an unlisted 410 becomes a 200 on relist, the raw html changes when a version is refined — so a
+  // heuristically-cached copy would pin a stale meaning (a neutral slot after the preview exists, a "removed"
+  // page after a put-back). The ONE genuinely-immutable response, the versioned PNG, opts out via `extra`
+  // (its URL carries the version, so its bytes never change). Default-safe, explicit-immutable.
+  // [LAW:single-enforcer] [FRAMING:representation]
   const sealed = (body: string | Uint8Array, status: number, contentType: string, extra: Record<string, string> = {}): Response =>
     new Response(body, {
       status,
       headers: {
+        'cache-control': 'no-cache',
         ...extra,
         'content-type': contentType,
         'content-security-policy': csp,

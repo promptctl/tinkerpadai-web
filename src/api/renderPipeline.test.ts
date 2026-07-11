@@ -111,13 +111,28 @@ describe('renderAttempt', () => {
     expect(await d.statuses.get(version)).toBeUndefined();
   });
 
-  it('a skipped job is done without touching the session', async () => {
+  it('an unlisted job is done without touching the session', async () => {
     const catalog = makeMemoryCatalog();
     const pg = await catalog.createPlayground(newPlayground());
     await catalog.setListing(pg.id, 'unlisted');
     const { session, urls } = fakeSession({ png: png([1]) });
     expect(await renderAttempt(session, deps(catalog), { playgroundId: pg.id }, attempt)).toEqual({ kind: 'done' });
     expect(urls).toEqual([]);
+  });
+
+  it('an already-rendered job is done without touching the session — idempotent re-delivery', async () => {
+    const catalog = makeMemoryCatalog();
+    const pg = await catalog.createPlayground(newPlayground());
+    const d = deps(catalog);
+    // The current version already has a thumbnail (a prior render, or an overlapping backfill): renderAttempt
+    // composes resolveRenderTarget's 'already-rendered' skip into a DONE and never re-renders. [LAW:one-source-of-truth]
+    await d.thumbnails.put(pg.session.turns[0].version, png([1, 2]));
+    const { session, urls } = fakeSession({ png: png([9]) });
+
+    expect(await renderAttempt(session, d, { playgroundId: pg.id }, attempt)).toEqual({ kind: 'done' });
+    expect(urls).toEqual([]);
+    // The existing thumbnail is untouched — not overwritten by a needless re-render.
+    expect(await d.thumbnails.get(pg.session.turns[0].version)).toEqual(png([1, 2]));
   });
 
   it('an unknown playground is a dropped poison message, not a retry', async () => {

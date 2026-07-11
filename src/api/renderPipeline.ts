@@ -174,21 +174,25 @@ export interface BackfillReport {
 // [LAW:dataflow-not-control-flow]
 export const runBackfill = async (deps: BackfillDeps): Promise<BackfillReport> => {
   const summaries = await deps.catalog.listPlaygrounds();
-  const missing: PlaygroundSummary[] = [];
-  let skipped = 0;
-  for (const summary of summaries) {
-    const hasThumbnail = (await deps.thumbnails.get(summary.currentVersion)) !== undefined;
-    const status = await deps.statuses.get(summary.currentVersion);
-    if (renderStateOf(hasThumbnail, status) !== 'pending') {
-      skipped += 1;
-      continue;
-    }
-    missing.push(summary);
-  }
+  // Resolve every version's render state in ONE bounded round of concurrency — each summary's two authorities
+  // (thumbnail presence, operational status) read in parallel — rather than 2N sequential R2/KV round trips
+  // that would stretch the cron tick linearly as the commons grows. [LAW:dataflow-not-control-flow]
+  const states = await Promise.all(
+    summaries.map(async (summary) => {
+      const [thumbnail, status] = await Promise.all([
+        deps.thumbnails.get(summary.currentVersion),
+        deps.statuses.get(summary.currentVersion),
+      ]);
+      return { summary, state: renderStateOf(thumbnail !== undefined, status) };
+    }),
+  );
+  // Only a 'pending' version is a gap to fill; 'rendered' and 'failed' are both skipped (see the comment
+  // above — this is what makes 'failed' terminal). [LAW:one-source-of-truth]
+  const missing = states.filter((entry) => entry.state === 'pending').map((entry) => entry.summary);
   await Promise.all(missing.map((summary) => deps.statuses.set(summary.currentVersion, 'pending')));
   const jobs = missing.map((summary): RenderJob => ({ playgroundId: summary.id }));
   await deps.enqueue(jobs);
-  return { enqueued: jobs.length, skipped };
+  return { enqueued: jobs.length, skipped: summaries.length - missing.length };
 };
 
 // A delivered queue message, reduced to exactly what the batch processor needs — its untyped body, its

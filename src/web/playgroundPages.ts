@@ -1,6 +1,7 @@
-import type { ForkAttribution, ParentRef, PlaygroundId, PlaygroundSummary } from '../storage/index.js';
+import type { ForkAttribution, ParentRef, PlaygroundId, PlaygroundSummary, VersionId } from '../storage/index.js';
 import type { CommonsQuery, TagFacet } from './commonsQuery.js';
 import { commonsHref, isActiveQuery, withTagToggled } from './commonsQuery.js';
+import { playgroundThumbnailUrl } from './contentUrl.js';
 import { escapeHtml } from './escapeHtml.js';
 import { bylineText, stepText } from './frontDoorChrome.js';
 import { renderPageShell, siteFooter, siteNav } from './pageShell.js';
@@ -100,15 +101,40 @@ const cardForkedFrom = (forkedFrom: ForkAttribution | null): string =>
 const playerForkedFrom = (forkedFrom: ForkAttribution | null): string =>
   forkedFrom === null ? '' : `<p class="forked-from">↳ ${forkedFromLabel(forkedFrom.parent)}</p>`;
 
+// The card's preview band — the TRUE rendered thumbnail of the playground's current version (discovery-rye.3),
+// the "shop window" that turns a grid of prompts into a grid of previews. The <img> points at the derived
+// PNG on the content origin (playgroundThumbnailUrl, the one URL formula the serve route answers), keyed
+// off the CURRENT version so it refreshes when the playground iterates. Its states are resolved by the
+// BROWSER, not a server read: a rendered version loads its pixels; a pending or failed one 404s and the
+// neutral slot beneath shows through — an HONEST "no preview yet", never a fabricated gradient painted as
+// if it were the playground (the 2026-07-08 decision). alt="" marks it decorative, so a not-yet-rendered
+// version shows the empty slot, not broken-image chrome; the title link carries the accessible name, so
+// this duplicate link is out of the tab order and hidden from assistive tech. The URL crosses the single
+// enforcer into the attribute like every outside value on this trusted origin. [FRAMING:representation]
+// [LAW:dataflow-not-control-flow] [LAW:single-enforcer] [LAW:no-silent-failure]
+//
+// The pending-vs-failed DISTINCTION lives in the render-state model (renderStateOf / RenderStatusStore)
+// and surfaces where it is actionable — operator logs today, the owner's my-playgrounds view next — NOT
+// painted onto every public card: resolving it here would join a status + blob read into every one of the
+// grid's cards on every load, growing carrying cost for a transient state a public viewer cannot act on,
+// and would couple the catalog projection to the render pipeline the two epics deliberately kept apart.
+// The card's job is "show the preview or an honest blank"; diagnosing the pipeline is a different part.
+// [LAW:decomposition] [LAW:carrying-cost] [LAW:one-source-of-truth]
+const cardPreview = (id: PlaygroundId, version: VersionId, contentOrigin: string): string =>
+  `<a class="card-preview" href="${playHref(id)}" tabindex="-1" aria-hidden="true"><img class="card-preview-img" src="${escapeHtml(playgroundThumbnailUrl(contentOrigin, id, version))}" alt="" loading="lazy" /></a>`;
+
 // One playground rendered as a design-system card — the reusable unit of the commons grid. It is
 // exported because the same card is what the "my playgrounds" profile page (blocked on this
 // ticket) will render, so a playground reads identically wherever it is listed; the discovery
 // filters (also blocked here) reorder these same cards, never a second shape. The card is a
-// container (not a wrapping anchor) so the fork line's link-back is a real nested link, never an
-// illegal anchor-in-anchor. Every outside value crosses the single enforcer. [LAW:one-source-of-truth]
+// container (not a wrapping anchor) so the preview and fork-line links are real nested links, never
+// an illegal anchor-in-anchor. The content origin is passed in (the card cannot invent it — it is a
+// composition-root value the calling surface already holds) so the same card renders on any origin
+// layout. Every outside value crosses the single enforcer. [LAW:one-source-of-truth]
 // [LAW:single-enforcer] [LAW:composability]
-export const playgroundCard = (s: PlaygroundSummary): string =>
+export const playgroundCard = (s: PlaygroundSummary, contentOrigin: string): string =>
   `  <article class="card">
+    ${cardPreview(s.id, s.currentVersion, contentOrigin)}
     <a class="card-title" href="${playHref(s.id)}">${escapeHtml(s.prompt)}</a>
     <div class="card-meta">${escapeHtml(s.providerId)} · ${byline(s.author)} · ${stepLabel(s.recipe)}</div>
     ${tagChips(s.tags)}
@@ -165,7 +191,7 @@ export interface CommonsView {
 // they carry two DIFFERENT meanings the message distinguishes: an active filter that matched nothing
 // (offer a way to clear) vs a genuinely empty commons (offer a way to build). The message is a value
 // chosen by whether the query narrows, never a skipped branch. [LAW:dataflow-not-control-flow]
-export const renderCommons = (view: CommonsView): string => {
+export const renderCommons = (view: CommonsView, contentOrigin: string): string => {
   const { results, facets, query } = view;
   const emptyState = isActiveQuery(query)
     ? `<div class="empty">No playgrounds match your search. <a href="/commons">Clear filters →</a></div>`
@@ -173,7 +199,7 @@ export const renderCommons = (view: CommonsView): string => {
   const grid =
     results.length === 0
       ? emptyState
-      : `<div class="card-grid">\n${results.map(playgroundCard).join('\n')}\n</div>`;
+      : `<div class="card-grid">\n${results.map((s) => playgroundCard(s, contentOrigin)).join('\n')}\n</div>`;
   return renderPageShell(
     'The Commons — TinkerPad',
     'Browse every playground the TinkerPad community has made. Open one to tinker, or remix it into your own.',

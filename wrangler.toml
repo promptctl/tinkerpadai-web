@@ -40,6 +40,52 @@ fallthrough = true
 binding = "ARTIFACTS"
 bucket_name = "tinkerpad-artifacts"
 
+# THE RENDER PIPELINE'S BINDINGS (tinkerpadai-render-dax.3) — the async derivation of preview thumbnails.
+# All four are consumed ONLY by the queue/scheduled handlers in worker.ts, never by fetch.
+
+# Browser Rendering: the isolated headless-Chrome sandbox the driver loads untrusted playground html in
+# (src/api/browserRenderer.ts). Requires the browser:write token scope (wrangler login) on the account.
+[browser]
+binding = "BROWSER"
+
+# R2: derived PNG previews, one object per version — a DISTINCT bucket from tinkerpad-artifacts so the
+# evictable cache is kept physically apart from the immutable source of truth and can never clobber it.
+# Create with: wrangler r2 bucket create tinkerpad-thumbnails
+[[r2_buckets]]
+binding = "THUMBNAILS"
+bucket_name = "tinkerpad-thumbnails"
+
+# KV: per-version render status (pending/failed) — the pipeline's operational state, distinct from the
+# catalog and the thumbnail bucket. Provisioned for the tinkerpad launch account (created with
+# `wrangler kv namespace create RENDER_STATUS`); the id below is real. A fresh environment re-provisions and
+# replaces the id.
+[[kv_namespaces]]
+binding = "RENDER_STATUS"
+id = "eb2726076fcc4e72ad7144c39c0b05c8"
+
+# Cloudflare Queues: the render job channel. The Worker is BOTH producer (the scheduled backfill enqueues)
+# and consumer (the queue handler renders). Create with: wrangler queues create tinkerpad-render
+[[queues.producers]]
+binding = "RENDER_QUEUE"
+queue = "tinkerpad-render"
+
+# The consumer side. max_batch_size is small: each message is a real browser render (seconds), and the whole
+# batch shares ONE browser (Browser Rendering rate-limits launches), so a large batch would risk the
+# invocation's wall-clock budget. max_retries backstops an UNEXPECTED throw only — renderAttempt owns the
+# real retry bound (MAX_RENDER_ATTEMPTS in worker.ts) and acks a terminal failure as 'failed' before this is
+# reached, so a bad render is recorded, never dead-lettered.
+[[queues.consumers]]
+queue = "tinkerpad-render"
+max_batch_size = 3
+max_batch_timeout = 30
+max_retries = 3
+
+# The self-healing backfill cadence: every 15 minutes the scheduled handler enqueues any listed playground
+# missing a thumbnail. Idempotent — once the commons is fully rendered each tick is a cheap no-op (a list +
+# per-version thumbnail HEADs, no enqueues).
+[triggers]
+crons = ["*/15 * * * *"]
+
 # D1: the catalog (single-row document) and live sessions (one table). This is the PROVISIONED
 # database for the tinkerpad.ai launch (schema applied --remote, commons migrated in) — the id below is
 # real, not a placeholder. A fresh environment re-provisions with `wrangler d1 create tinkerpad` and

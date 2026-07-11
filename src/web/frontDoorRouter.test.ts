@@ -3,7 +3,7 @@ import { makeApp } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import type { SessionHandle } from '../provider/index.js';
-import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore, PlaygroundId, VersionId } from '../storage/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryReportStore, makeMemoryThumbnailStore, PlaygroundId, VersionId } from '../storage/index.js';
 import type { ArtifactStore, Catalog } from '../storage/index.js';
 import { makeMemorySessionStore, passThroughValidator, Subject } from '../api/index.js';
 import { makeFakeOAuthProvider } from '../api/__fixtures__/fakeOAuthProvider.js';
@@ -36,6 +36,7 @@ const makeMemoryApp = (): { catalog: Catalog; store: ArtifactStore; router: Retu
     registry: new ProviderRegistry(),
     store,
     catalog,
+    thumbnails: makeMemoryThumbnailStore(),
     reportStore: makeMemoryReportStore(),
     sessionStore: makeMemorySessionStore({ now: () => Date.now(), ttlMs: 60_000 }),
     disposeTurn: async () => undefined,

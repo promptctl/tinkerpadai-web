@@ -1,7 +1,7 @@
 import { ProviderRegistry } from './provider/index.js';
 import type { SessionHandle } from './provider/index.js';
 import { Subject } from './identity/index.js';
-import type { ArtifactStore, Catalog, ReportStore } from './storage/index.js';
+import type { ArtifactStore, Catalog, ReportStore, ThumbnailStore } from './storage/index.js';
 import {
   makeGenerationService,
   makeHttpHandler,
@@ -29,6 +29,11 @@ export interface App {
   readonly service: GenerationService;
   readonly store: ArtifactStore;
   readonly catalog: Catalog;
+  // The derived-preview cache (render-dax.1), surfaced so the composition roots can hand it to the
+  // content handler's /thumb route. makeApp itself never reads it — it is a read seam of the same shape
+  // as `store`/`catalog`, exposed here so the ONE graph builder stays the single source of the app's
+  // storage seams and each root need not reach past it. [LAW:one-source-of-truth] [LAW:decomposition]
+  readonly thumbnails: ThumbnailStore;
   readonly handler: (request: Request) => Promise<Response>;
   // The session lifecycle surface (login + whoami), composed onto the app origin ahead of the
   // generation API. It owns its own routes and returns null for everything else, so the front
@@ -57,6 +62,11 @@ export interface AppDeps {
   readonly store: ArtifactStore;
   // The single source of truth for what playgrounds exist: a JSON file on Node, D1 at the edge.
   readonly catalog: Catalog;
+  // The derived preview-thumbnail cache (render-dax.1): an R2 bucket at the edge (populated by the async
+  // render pipeline), an empty in-memory store on Node until a Node-side renderer exists. Absence is a
+  // value (the card shows an honest neutral slot), never a fault — so a deployment without a renderer
+  // simply serves no previews, it does not break. [LAW:no-silent-failure]
+  readonly thumbnails: ThumbnailStore;
   // Where moderation reports are persisted: a JSON file on Node, D1 at the edge. A separate seam from
   // the catalog because a report is a private moderation signal, not part of the public commons — the
   // same reason the store never crosses into the read path. [LAW:decomposition]
@@ -133,6 +143,7 @@ export const makeApp = (deps: AppDeps): App => {
     registry,
     store,
     catalog,
+    thumbnails,
     reportStore,
     sessionStore,
     disposeTurn,
@@ -182,6 +193,7 @@ export const makeApp = (deps: AppDeps): App => {
     service,
     store,
     catalog,
+    thumbnails,
     handler: makeHttpHandler(service, reports, resolveIdentity),
     sessionHandler: makeSessionHandler({
       store: sessionStore,

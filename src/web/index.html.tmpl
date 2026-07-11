@@ -481,7 +481,8 @@
         box-shadow: var(--shadow-widget);
         border-color: var(--accent);
       }
-      .pg-card-preview { height: 120px; }
+      .pg-card-preview { height: 120px; background: var(--surface); overflow: hidden; }
+      .pg-card-preview-img { /*tp:preview-img*/ }
       .pg-card-body { padding: 0.9rem 1rem 1rem; }
       .pg-card-title {
         font-size: 0.95rem;
@@ -988,16 +989,6 @@
       // `pnpm build`; the drift test fails if this block and the source disagree. [LAW:one-source-of-truth]
       /*tp:formats*/
 
-      // The preview gradient — a pure function of the playground id, so a card wears the same colour
-      // on every render. The hue is folded into the indigo→violet→cyan brand band [200,320) rather
-      // than a hardcoded palette, keeping colour derived, not sprinkled. [LAW:one-source-of-truth]
-      const previewGradient = (id) => {
-        let h = 0;
-        for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-        const hue = 200 + (h % 120);
-        return `linear-gradient(135deg, hsl(${hue} 75% 62%), hsl(${(hue + 40) % 360} 68% 54%))`;
-      };
-
       // One summary → one card, built through the DOM so every server value is text, never markup —
       // the createElement/textContent path is the escape boundary, so no prompt or author can inject
       // an element. [LAW:single-enforcer] The whole card is one anchor (no nested link on this
@@ -1007,9 +998,23 @@
         card.className = 'pg-card';
         card.href = `/play?id=${encodeURIComponent(summary.id)}`;
 
+        // The preview band — the TRUE rendered thumbnail (discovery-rye.3), replacing the old id-derived
+        // gradient placeholder (the 2026-07-08 "no fabricated placeholder" decision). thumbnailUrl is the
+        // content-origin PNG built server-side from the ONE URL formula the server card and serve route
+        // also use. A pending or failed version's PNG 404s, so the <img> errors; we remove it and the
+        // neutral .pg-card-preview slot shows through — an honest "no preview yet", never a fabricated
+        // image or broken-image chrome. alt="" marks it decorative (the card is the link). setting src to
+        // an absent thumbnailUrl simply errors into the same honest slot. [FRAMING:representation]
+        // [LAW:no-silent-failure] [LAW:one-source-of-truth]
         const preview = document.createElement('div');
         preview.className = 'pg-card-preview';
-        preview.style.background = previewGradient(summary.id);
+        const previewImg = document.createElement('img');
+        previewImg.className = 'pg-card-preview-img';
+        previewImg.src = summary.thumbnailUrl;
+        previewImg.alt = '';
+        previewImg.loading = 'lazy';
+        previewImg.addEventListener('error', () => previewImg.remove());
+        preview.replaceChildren(previewImg);
 
         const body = document.createElement('div');
         body.className = 'pg-card-body';

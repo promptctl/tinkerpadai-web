@@ -9,7 +9,7 @@ import {
   makeTmuxProvider,
   makeWorkdirDiagnostics,
 } from '../provider/index.js';
-import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore } from '../storage/index.js';
+import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore, makeMemoryThumbnailStore } from '../storage/index.js';
 import { makeGenerationQuota, makeMemorySessionStore, DEFAULT_QUOTA_LIMITS } from '../api/index.js';
 import type { CookieSecurity, GenerationPolicy, OAuthProvider, QuotaLimits, Subject } from '../api/index.js';
 // Imported DIRECTLY (not via api/index.js) so puppeteer stays out of the edge Worker bundle, which
@@ -79,6 +79,13 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
 
   const store = makeFileArtifactStore(join(config.dataDir, 'artifacts'));
   const catalog = makeFileCatalog(join(config.dataDir, 'catalog.json'));
+  // Preview thumbnails are derived by the async render pipeline, which today runs only on the Workers
+  // deploy target (Cloudflare Browser Rendering, render-dax). A Node deployment has no renderer, so its
+  // thumbnail store is an empty in-memory one: the /thumb route consistently returns "not yet" and every
+  // card shows an honest neutral slot. It is wired here (not omitted) so the content handler's seam is the
+  // SAME shape on every target — a Node-side renderer later swaps a durable store in behind it, with no
+  // change to the handler. [LAW:one-source-of-truth] [LAW:no-silent-failure]
+  const thumbnails = makeMemoryThumbnailStore();
   // Where a failed turn's evidence is preserved before its workdir is reclaimed (ppu.4). Durable, under
   // the data dir beside artifacts/catalog — NOT tmpdir, which the idle GC and reboots wipe — so a
   // timeout or failure can be diagnosed after the fact instead of reaped. The failure disposer below
@@ -95,6 +102,7 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
     registry,
     store,
     catalog,
+    thumbnails,
     reportStore,
     sessionStore,
     // tmux's failure disposer, composed here as preserve-then-reclaim: the failed turn's workdir is

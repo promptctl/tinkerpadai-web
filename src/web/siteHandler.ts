@@ -6,6 +6,7 @@ import { filterSummaries, parseCommonsQuery, tagFacets } from './commonsQuery.js
 import { COPYRIGHT_DOC, GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 import { buildAppCsp } from './appCsp.js';
+import { playgroundContentUrl, playgroundThumbnailUrl } from './contentUrl.js';
 
 // THE APP-ORIGIN SURFACE — the front door's one composed Web handler. It serves the trusted
 // app pages (creation page at `/`, the commons list, the player chrome) and delegates every
@@ -117,7 +118,7 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
     if (summary === undefined) {
       return absentNotice(target, id);
     }
-    const contentSrc = `${contentOrigin}/?id=${encodeURIComponent(summary.id)}`;
+    const contentSrc = playgroundContentUrl(contentOrigin, summary.id);
     return html(
       renderPlayer({
         id: summary.id,
@@ -192,7 +193,7 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         const query = parseCommonsQuery(url.searchParams);
         const facets = tagFacets(all);
         const results = filterSummaries(all, query);
-        return html(renderCommons({ results, facets, query }));
+        return html(renderCommons({ results, facets, query }, contentOrigin));
       }
       case 'GET /api/playgrounds':
         // The JSON projection of the commons — the SAME PlaygroundSummary list renderCommons
@@ -203,7 +204,19 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
         // this canonical insertion-ordered list — never baked into the endpoint, so the future
         // my-playgrounds page and discovery filters reuse the same seam. [LAW:one-source-of-truth]
         // [LAW:decomposition]
-        return json(await catalog.listPlaygrounds());
+        //
+        // Each summary is enriched with its thumbnailUrl, built HERE from the ONE URL formula the server
+        // card and the serve route also derive from (playgroundThumbnailUrl) — so the client teaser frames
+        // the exact URL the content origin answers, with no second copy of the formula living in the static
+        // page and no content-origin plumbing threaded into it. The thumbnailUrl is a presentation value
+        // for the card's <img>, kept out of PlaygroundSummary (which holds authoritative facts) and added
+        // only at this view boundary. [LAW:one-source-of-truth] [FRAMING:representation]
+        return json(
+          (await catalog.listPlaygrounds()).map((s) => ({
+            ...s,
+            thumbnailUrl: playgroundThumbnailUrl(contentOrigin, s.id, s.currentVersion),
+          })),
+        );
       case 'GET /play': {
         const id = url.searchParams.get('id');
         if (id === null || id === '')

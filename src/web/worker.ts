@@ -156,6 +156,11 @@ const handlerFor = (env: Env): Handler => {
     registry: new ProviderRegistry(),
     store: makeR2ArtifactStore(env.ARTIFACTS),
     catalog: makeD1Catalog(env.DB),
+    // The derived preview cache the async render pipeline populates (render-dax), read by the content
+    // handler's /thumb route. The SAME R2 bucket binding the queue/backfill write to (renderContextFor
+    // builds its own view of it for the pipeline), so the surface reads exactly the bytes the pipeline
+    // rendered. [LAW:one-source-of-truth]
+    thumbnails: makeR2ThumbnailStore(env.THUMBNAILS),
     // Reports persist durably in the same D1 database as the catalog and sessions — the edge can
     // collect moderation signal against the commons it serves even with generation disabled.
     reportStore: makeD1ReportStore(env.DB),

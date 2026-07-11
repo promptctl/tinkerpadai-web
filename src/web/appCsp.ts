@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { THEME_RESOLVER } from './frontDoorChrome.js';
-import { THEME_TOGGLE_SCRIPT } from './pageShell.js';
+import { CARD_PREVIEW_FALLBACK_SCRIPT, THEME_TOGGLE_SCRIPT } from './pageShell.js';
 import { PLAYER_SCRIPT } from './playgroundPages.js';
 
 // THE APP-ORIGIN CSP, derived — the script-src backstop for gap R1 of the sandbox threat model.
@@ -46,6 +46,7 @@ const inlineScriptBodies = (page: string): readonly string[] => [
   ...extractScriptBodies(page),
   ...extractScriptBodies(THEME_RESOLVER),
   THEME_TOGGLE_SCRIPT,
+  CARD_PREVIEW_FALLBACK_SCRIPT,
   PLAYER_SCRIPT,
 ];
 

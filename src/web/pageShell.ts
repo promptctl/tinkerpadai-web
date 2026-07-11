@@ -126,6 +126,20 @@ const SHELL_STYLES = `
     transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
   }
   .card:hover { border-color: var(--border-2); box-shadow: var(--shadow-btn); transform: translateY(-2px); }
+  /* The preview band (discovery-rye.3) — the rendered thumbnail, full-bleed above the padded card body.
+     Its own background is the neutral slot the honest "not yet rendered" state shows: a pending or failed
+     version's <img> 404s and this surface shows through, never a fabricated gradient. The negative margins
+     cancel the card padding so the image spans edge to edge and rounds only its top corners. */
+  .card-preview {
+    display: block;
+    margin: -1.1rem -1.2rem 0.9rem;
+    aspect-ratio: 16 / 10;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    overflow: hidden;
+  }
+  .card-preview-img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
   .card-title { font-weight: 600; font-size: 1rem; color: var(--text); line-height: 1.4; word-break: break-word; }
   .card:hover .card-title { color: var(--accent); }
   .card-meta { color: var(--muted); font-size: 0.8rem; margin-top: 0.55rem; }
@@ -182,6 +196,27 @@ export const THEME_TOGGLE_SCRIPT = `
   window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change', (e) => {
     if (!localStorage.getItem(PREF)) root.setAttribute('data-theme', e.matches ? 'dark' : 'light');
   });
+`;
+
+// The card-preview fallback — the server-rendered counterpart of the client teaser's onerror handler
+// (index.html). A card's preview <img> points at the content-origin thumbnail; a version that is pending
+// or failed 404s, and Chrome paints a broken-image glyph over the neutral slot even with alt="". The app
+// CSP forbids an inline onerror attribute (only hashed script bodies run), so the fallback lives HERE, in
+// one shared hashed script the shell already emits: remove any broken preview image so the neutral
+// .card-preview slot shows through — an HONEST "no preview yet", never broken-image chrome.
+// [FRAMING:representation] [LAW:no-silent-failure] [LAW:single-enforcer]
+//
+// It handles BOTH tenses explicitly rather than relying on load timing: images that ALREADY failed before
+// this deferred module ran are found by the complete-but-zero-width scan; images that fail AFTER are caught
+// by the capture-phase error listener (img error events do not bubble, so capture is required). A pending
+// version whose thumbnail lands later simply loads normally and is never touched. [LAW:no-ambient-temporal-coupling]
+export const CARD_PREVIEW_FALLBACK_SCRIPT = `
+  const dropBroken = (img) => { if (img.complete && img.naturalWidth === 0) img.remove(); };
+  document.querySelectorAll('.card-preview-img').forEach(dropBroken);
+  document.addEventListener('error', (event) => {
+    const target = event.target;
+    if (target instanceof HTMLImageElement && target.classList.contains('card-preview-img')) target.remove();
+  }, true);
 `;
 
 // The sticky site nav — logo home, the two read/build entry points, the theme toggle, and a real
@@ -260,6 +295,7 @@ ${head}
 <body>
 ${body}
 <script type="module">${THEME_TOGGLE_SCRIPT}</script>
+<script type="module">${CARD_PREVIEW_FALLBACK_SCRIPT}</script>
 </body>
 </html>
 `;

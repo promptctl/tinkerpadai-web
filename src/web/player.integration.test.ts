@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { makeMemoryArtifactStore, makeMemoryCatalog } from '../storage/index.js';
+import { makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryThumbnailStore } from '../storage/index.js';
 import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
 import { Subject } from '../identity/index.js';
 import { ProviderId, ProviderRegistry, SessionId, TurnId } from '../provider/index.js';
@@ -52,7 +52,7 @@ describe('commons + sandboxed player over two real origins', () => {
     const store = makeMemoryArtifactStore();
     const id = await seed(catalog, store);
 
-    const content = await serve({ handler: makeContentHandler({ catalog, store, appOrigin: APP_ORIGIN }), port: 0 });
+    const content = await serve({ handler: makeContentHandler({ catalog, store, thumbnails: makeMemoryThumbnailStore(), appOrigin: APP_ORIGIN }), port: 0 });
     servers.push(content);
 
     const apiHandler = async (): Promise<Response> => new Response('nope', { status: 404 });

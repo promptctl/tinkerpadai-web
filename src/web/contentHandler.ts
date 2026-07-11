@@ -1,4 +1,4 @@
-import type { ArtifactStore, Catalog } from '../storage/index.js';
+import type { ArtifactStore, Catalog, ThumbnailStore, VersionId } from '../storage/index.js';
 import { PlaygroundId, PlaygroundNotFoundError, currentVersionOf } from '../storage/index.js';
 import type { AppOrigin } from './originGuard.js';
 
@@ -51,6 +51,11 @@ const playgroundCsp = (appOrigin: AppOrigin): string =>
 export interface ContentHandlerDeps {
   readonly catalog: Catalog;
   readonly store: ArtifactStore;
+  // The derived-preview cache (render-dax.1), read by the /thumb route. It is the SIBLING of `store`:
+  // `store` holds the authoritative html this origin serves raw into the sandbox, `thumbnails` holds the
+  // derived PNG the commons card frames as an <img>. Both are addressed by the SAME current version, so
+  // a playground's preview and its live bytes always describe the same version. [LAW:one-source-of-truth]
+  readonly thumbnails: ThumbnailStore;
   // The app's origin — the ONE origin permitted to frame a served playground, scoped into the CSP's
   // frame-ancestors. The branded AppOrigin type carries the guarantee that this is a VALIDATED bare
   // origin (minted only through appOriginOf/AppOrigin), so an unvalidated string can never reach the
@@ -60,62 +65,91 @@ export interface ContentHandlerDeps {
 }
 
 export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request) => Promise<Response>) => {
-  const { catalog, store, appOrigin } = deps;
+  const { catalog, store, thumbnails, appOrigin } = deps;
   // The CSP is a value derived once from the app origin (fixed for this handler's life), not a
   // per-request branch. [LAW:dataflow-not-control-flow]
   const csp = playgroundCsp(appOrigin);
-  // Every response from the content origin — html and errors alike — carries the strict CSP
-  // and nosniff. There is no path out of this handler that serves anything permissively.
-  const sealed = (body: string, status: number, contentType: string): Response =>
+  // Every response from the content origin — html, PNG, and errors alike — carries the strict CSP
+  // and nosniff. There is no path out of this handler that serves anything permissively. `extra`
+  // carries the response-specific headers (a thumbnail's cache directives), MERGED over the seal but
+  // never replacing it, so the cross-cutting hardening can't be dropped by a caller. [LAW:single-enforcer]
+  const sealed = (body: string | Uint8Array, status: number, contentType: string, extra: Record<string, string> = {}): Response =>
     new Response(body, {
       status,
       headers: {
+        ...extra,
         'content-type': contentType,
         'content-security-policy': csp,
         'x-content-type-options': 'nosniff',
       },
     });
+
+  // The one place a request id becomes a VISIBLE playground — the shared front of both routes, so the
+  // takedown rule lives once. It resolves the id, enforces the listing gate, and returns the current
+  // version to key the read by: an unlisted playground STOPS being served (getPlayground still resolves
+  // it — existence is monotonic, the report/relist paths depend on that — so this is a visibility check
+  // HERE, at the one origin that serves derived-from-untrusted bytes, not a deletion). The two failure
+  // MEANINGS are carried as a discriminated result, not a thrown special case: a genuine unknown id and
+  // an unlisted takedown each map to their own sealed status at the callsite, and any OTHER fault (an
+  // unreadable catalog) propagates to the loud 500 below. [LAW:single-enforcer] [LAW:dataflow-not-control-flow]
+  type Resolved = { readonly kind: 'ok'; readonly version: VersionId } | { readonly kind: 'gone' } | { readonly kind: 'unknown' };
+  const resolveVisible = async (id: string): Promise<Resolved> => {
+    try {
+      const playground = await catalog.getPlayground(PlaygroundId(id));
+      // 410 Gone: the resource existed and is intentionally no longer available, distinct from a 404
+      // (never existed). Enforced identically for the html and the thumbnail, so a takedown that hides
+      // the page also hides its preview — one visibility model, no leak through the derived cache.
+      if (playground.listing === 'unlisted') return { kind: 'gone' };
+      return { kind: 'ok', version: currentVersionOf(playground.session) };
+    } catch (error) {
+      if (error instanceof PlaygroundNotFoundError) return { kind: 'unknown' };
+      throw error;
+    }
+  };
+
+  // The raw html route — live code served UNESCAPED (contained by sandbox + origin + CSP; escaping it
+  // would break the playground, the opposite mistake from escaping app chrome). A missing artifact for a
+  // catalogued version is the server being wrong, so store.get fails LOUD into the 500 below, never a 404.
+  // [FRAMING:representation] [LAW:no-silent-failure]
+  const servePlaygroundHtml = async (id: string): Promise<Response> => {
+    const resolved = await resolveVisible(id);
+    if (resolved.kind === 'gone') return sealed('this playground has been removed', 410, 'text/plain; charset=utf-8');
+    if (resolved.kind === 'unknown') return sealed(`playground not found: ${id}`, 404, 'text/plain; charset=utf-8');
+    const artifact = await store.get(resolved.version);
+    return sealed(artifact.html, 200, 'text/html; charset=utf-8');
+  };
+
+  // The derived-preview route (discovery-rye.3) — the current version's PNG for the commons card. Unlike
+  // the html store, an ABSENT thumbnail is not a fault but the honest "not yet rendered": the version is
+  // real and usable, its preview merely pending or failed. So it is a 404 the card turns into a neutral
+  // slot, never a fabricated image or a loud error. [FRAMING:representation] [LAW:no-silent-failure] A
+  // present thumbnail is served with a long, immutable cache: the `v` cache-buster in the card's URL
+  // (playgroundThumbnailUrl) advances with the version, so old bytes are never re-requested and the cache
+  // never needs invalidating. [LAW:no-ambient-temporal-coupling]
+  const servePlaygroundThumbnail = async (id: string): Promise<Response> => {
+    const resolved = await resolveVisible(id);
+    if (resolved.kind === 'gone') return sealed('this playground has been removed', 410, 'text/plain; charset=utf-8');
+    if (resolved.kind === 'unknown') return sealed(`playground not found: ${id}`, 404, 'text/plain; charset=utf-8');
+    const png = await thumbnails.get(resolved.version);
+    if (png === undefined) return sealed('thumbnail not rendered yet', 404, 'text/plain; charset=utf-8');
+    return sealed(png, 200, 'image/png', { 'cache-control': 'public, max-age=31536000, immutable' });
+  };
+
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    if (request.method !== 'GET' || url.pathname !== '/') {
+    if (request.method !== 'GET' || (url.pathname !== '/' && url.pathname !== '/thumb')) {
       return sealed('not found', 404, 'text/plain; charset=utf-8');
     }
     const id = url.searchParams.get('id');
     if (id === null || id === '') {
       return sealed('missing or empty query parameter: id', 400, 'text/plain; charset=utf-8');
     }
-
-    // Two failures with two MEANINGS, discriminated by the error TYPE — not by which call
-    // threw. A genuine unknown id (PlaygroundNotFoundError) is a 404. ANYTHING else — a
-    // store that can't produce the catalogued bytes, a catalog that can't be read, an
-    // invariant violation — is the server being wrong, surfaced as a loud 500. Collapsing
-    // the two would relabel "server is broken" as "not found", a [LAW:no-silent-failure]
-    // trap. The typed not-found is what lets one catch branch on the value.
-    // [LAW:types-are-the-program] [LAW:dataflow-not-control-flow]
+    // The handler stays TOTAL — a genuine read/invariant fault (unreadable catalog, missing artifact for a
+    // catalogued version) becomes a loud, still-sealed 500 here rather than propagating unsealed, so every
+    // response leaving this origin carries the strict CSP. [LAW:no-silent-failure] [LAW:single-enforcer]
     try {
-      const playground = await catalog.getPlayground(PlaygroundId(id));
-      // The takedown made concrete: an unlisted playground STOPS being served. getPlayground still
-      // resolves it (existence is monotonic — the report/relist paths depend on that), so the refusal
-      // is a visibility check HERE, at the one origin that serves raw html, not a deletion. Without
-      // it, unlisting would hide a playground from the commons yet leave its content reachable by
-      // direct content-origin URL — a takedown that doesn't take anything down. 410 Gone: the
-      // resource existed and is intentionally no longer available, distinct from a 404 (never
-      // existed). Still sealed under the strict CSP like every response here. [LAW:single-enforcer]
-      // [LAW:no-silent-failure]
-      if (playground.listing === 'unlisted') {
-        return sealed('this playground has been removed', 410, 'text/plain; charset=utf-8');
-      }
-      const artifact = await store.get(currentVersionOf(playground.session));
-      // The raw, UNESCAPED file: it is meant to be live code, contained by sandbox + origin
-      // + this CSP. Escaping it would break the playground; that is the opposite mistake
-      // from escaping app chrome. [FRAMING:representation]
-      return sealed(artifact.html, 200, 'text/html; charset=utf-8');
+      return url.pathname === '/thumb' ? await servePlaygroundThumbnail(id) : await servePlaygroundHtml(id);
     } catch (error) {
-      if (error instanceof PlaygroundNotFoundError) {
-        return sealed(`playground not found: ${error.message}`, 404, 'text/plain; charset=utf-8');
-      }
-      // A loud 500, still sealed under the strict CSP — the handler stays total (returns a
-      // Response for every input, never throws) so it behaves the same behind any runtime.
       const message = error instanceof Error ? error.message : String(error);
       return sealed(`failed to load playground: ${message}`, 500, 'text/plain; charset=utf-8');
     }

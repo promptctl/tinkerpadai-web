@@ -73,7 +73,7 @@ const main = async (): Promise<void> => {
   const content = await serve({
     // The app origin scoped into the content CSP's frame-ancestors — derived from the OAuth callback
     // URL, the canonical app-origin source, exactly as production does. [LAW:one-source-of-truth]
-    handler: makeContentHandler({ catalog: app.catalog, store: app.store, appOrigin: appOriginOf(oauthCallbackUrl) }),
+    handler: makeContentHandler({ catalog: app.catalog, store: app.store, thumbnails: app.thumbnails, appOrigin: appOriginOf(oauthCallbackUrl) }),
     port: contentPort,
   });
 

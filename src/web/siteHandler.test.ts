@@ -201,9 +201,10 @@ describe('makeSiteHandler', () => {
   });
 
   // The /api/playgrounds seam: the JSON projection of the commons the static homepage fetches to
-  // render its preview grid. It returns the SAME PlaygroundSummary[] the commons HTML is built
-  // from — the same source, so the two cannot disagree — in the catalog's insertion order, leaving
-  // "recent, top N" to the client view. [LAW:one-source-of-truth]
+  // render its preview grid. It returns each PlaygroundSummary the commons HTML is built from — the
+  // same source, so the two cannot disagree — in the catalog's insertion order, leaving "recent, top N"
+  // to the client view, and ENRICHED with the derived thumbnailUrl the client's <img> frames (built from
+  // the same URL formula the server card and serve route use). [LAW:one-source-of-truth]
   it('serves the commons summaries as JSON at GET /api/playgrounds, never touching the API', async () => {
     const catalog = makeMemoryCatalog();
     await seed(catalog, 'first playground');
@@ -219,6 +220,8 @@ describe('makeSiteHandler', () => {
       author: string;
       recipe: string[];
       tags: string[];
+      currentVersion: string;
+      thumbnailUrl: string;
     }[];
     // Insertion order preserved — recency is the client view's window, not the endpoint's policy.
     expect(summaries.map((s) => s.prompt)).toEqual(['first playground', 'second playground']);
@@ -229,6 +232,11 @@ describe('makeSiteHandler', () => {
     expect(summaries[1]?.recipe).toEqual(['second playground']);
     // Tags cross the same seam — the JSON projection the homepage grid also reads.
     expect(summaries[1]?.tags).toEqual([]);
+    // The enriched thumbnail URL — the content-origin /thumb the client teaser frames, carrying this
+    // playground's id and current version, so the client needs no content-origin plumbing of its own.
+    expect(summaries[1]?.thumbnailUrl).toBe(
+      `${CONTENT_ORIGIN}/thumb?id=${encodeURIComponent(id)}&v=${encodeURIComponent(summaries[1]?.currentVersion ?? '')}`,
+    );
     expect(delegated).toHaveLength(0);
   });
 

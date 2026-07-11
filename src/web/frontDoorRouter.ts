@@ -46,7 +46,7 @@ export const makeFrontDoorRouter = (
     reviewService: app.reviewService,
     isAdminRequest: app.isAdminRequest,
   });
-  const content = makeContentHandler({ catalog: app.catalog, store: app.store, appOrigin });
+  const content = makeContentHandler({ catalog: app.catalog, store: app.store, thumbnails: app.thumbnails, appOrigin });
   return (request: Request): Promise<Response> => {
     const host = new URL(request.url).host;
     return host === contentHost ? content(request) : site(request);

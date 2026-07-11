@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { makeMemoryArtifactStore, makeMemoryCatalog, VersionId } from '../storage/index.js';
-import type { ArtifactStore, Catalog, PlaygroundId } from '../storage/index.js';
+import { currentVersionOf, makeMemoryArtifactStore, makeMemoryCatalog, makeMemoryThumbnailStore, VersionId } from '../storage/index.js';
+import type { ArtifactStore, Catalog, PlaygroundId, ThumbnailStore } from '../storage/index.js';
 import { Subject } from '../identity/index.js';
 import { ProviderId, SessionId, TurnId } from '../provider/index.js';
 import { makeContentHandler } from './contentHandler.js';
@@ -34,10 +34,16 @@ const seed = async (
   return playground.id;
 };
 
-const setup = (): { handler: (request: Request) => Promise<Response>; catalog: Catalog; store: ArtifactStore } => {
+const setup = (): {
+  handler: (request: Request) => Promise<Response>;
+  catalog: Catalog;
+  store: ArtifactStore;
+  thumbnails: ThumbnailStore;
+} => {
   const catalog = makeMemoryCatalog();
   const store = makeMemoryArtifactStore();
-  return { handler: makeContentHandler({ catalog, store, appOrigin: APP_ORIGIN }), catalog, store };
+  const thumbnails = makeMemoryThumbnailStore();
+  return { handler: makeContentHandler({ catalog, store, thumbnails, appOrigin: APP_ORIGIN }), catalog, store, thumbnails };
 };
 
 describe('makeContentHandler — the sandbox content origin', () => {
@@ -130,7 +136,7 @@ describe('makeContentHandler — the sandbox content origin', () => {
         throw new Error('disk on fire');
       },
     };
-    const handler = makeContentHandler({ catalog, store: failingStore, appOrigin: APP_ORIGIN });
+    const handler = makeContentHandler({ catalog, store: failingStore, thumbnails: makeMemoryThumbnailStore(), appOrigin: APP_ORIGIN });
     const res = await handler(new Request(`http://content.local/?id=${encodeURIComponent(playground.id)}`));
     expect(res.status).toBe(500);
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
@@ -155,7 +161,12 @@ describe('makeContentHandler — the sandbox content origin', () => {
       },
       listPlaygrounds: async () => [],
     };
-    const handler = makeContentHandler({ catalog: brokenCatalog, store: makeMemoryArtifactStore(), appOrigin: APP_ORIGIN });
+    const handler = makeContentHandler({
+      catalog: brokenCatalog,
+      store: makeMemoryArtifactStore(),
+      thumbnails: makeMemoryThumbnailStore(),
+      appOrigin: APP_ORIGIN,
+    });
     const res = await handler(new Request('http://content.local/?id=anything'));
     expect(res.status).toBe(500);
   });
@@ -166,9 +177,73 @@ describe('makeContentHandler — the sandbox content origin', () => {
     expect(res.status).toBe(400);
   });
 
-  it('serves nothing but the playground route', async () => {
+  it('serves nothing but the playground and thumbnail routes', async () => {
     const { handler } = setup();
     expect((await handler(new Request('http://content.local/anything'))).status).toBe(404);
     expect((await handler(new Request('http://content.local/?id=x', { method: 'POST' }))).status).toBe(404);
+    expect((await handler(new Request('http://content.local/thumb?id=x', { method: 'POST' }))).status).toBe(404);
+  });
+});
+
+// The derived-preview route (discovery-rye.3): serve the current version's PNG for the commons card, with
+// the SAME visibility model as the html route (a takedown hides the preview too), and an honest "not yet"
+// for a version that has not been rendered — never a fabricated image, never a broken frame.
+// [LAW:verifiable-goals] [LAW:single-enforcer] [FRAMING:representation]
+describe('makeContentHandler — the /thumb preview route', () => {
+  // A tiny valid-enough PNG stand-in — the route serves whatever bytes the store holds verbatim; these
+  // assertions are about the SEAM (content-type, cache, visibility, absence), not PNG encoding.
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+
+  it('serves a stored thumbnail as an immutably-cacheable image/png', async () => {
+    const { handler, catalog, store, thumbnails } = setup();
+    const id = await seed(catalog, store, RAW_HTML);
+    const version = currentVersionOf((await catalog.getPlayground(id)).session);
+    await thumbnails.put(version, PNG);
+
+    const res = await handler(new Request(`http://content.local/thumb?id=${encodeURIComponent(id)}`));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    // Cached hard (long max-age) but NOT immutable: a version's thumbnail can be re-rendered to different
+    // bytes, so the URL is not truly content-stable — immutable would pin stale pixels for a year. The `v` in
+    // the card's URL refreshes the common case (a new version is a new URL).
+    const cache = res.headers.get('cache-control') ?? '';
+    expect(cache).toContain('max-age=');
+    expect(cache).not.toContain('immutable');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
+  });
+
+  it('returns an honest, revalidating 404 for a version with no thumbnail yet — never a fabricated image', async () => {
+    const { handler, catalog, store } = setup();
+    const id = await seed(catalog, store, RAW_HTML);
+    // No thumbnail stored: pending or failed render. The card turns this into a neutral slot.
+    const res = await handler(new Request(`http://content.local/thumb?id=${encodeURIComponent(id)}`));
+    expect(res.status).toBe(404);
+    // MUST NOT be heuristically cached: the URL is identical before and after the thumbnail lands (same
+    // version), so a cached 404 would pin the neutral slot even once the preview exists. no-cache forces a
+    // revalidation that picks up the newly-rendered PNG. [FRAMING:representation]
+    expect(res.headers.get('cache-control')).toBe('no-cache');
+    // Still sealed under the strict CSP like every response from this origin.
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+  });
+
+  it('hides an unlisted playground’s preview with a 410 — the takedown covers pixels too', async () => {
+    const { handler, catalog, store, thumbnails } = setup();
+    const id = await seed(catalog, store, RAW_HTML);
+    const version = currentVersionOf((await catalog.getPlayground(id)).session);
+    await thumbnails.put(version, PNG);
+    await catalog.setListing(id, 'unlisted');
+
+    const res = await handler(new Request(`http://content.local/thumb?id=${encodeURIComponent(id)}`));
+    // 410 Gone, NOT the stored PNG: a takedown that hid the page but leaked its preview would be a
+    // takedown that doesn't take anything down. [LAW:single-enforcer]
+    expect(res.status).toBe(410);
+    expect(res.headers.get('content-type')).not.toContain('image/png');
+  });
+
+  it('404s an unknown id and 400s a missing id, like the html route', async () => {
+    const { handler } = setup();
+    expect((await handler(new Request('http://content.local/thumb?id=nope'))).status).toBe(404);
+    expect((await handler(new Request('http://content.local/thumb'))).status).toBe(400);
   });
 });

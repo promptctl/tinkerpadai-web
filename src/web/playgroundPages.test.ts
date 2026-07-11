@@ -11,6 +11,10 @@ import { playgroundCard, renderCommons, renderNotice, renderPlayer } from './pla
 
 const XSS = '<script>alert(1)</script>';
 
+// The content origin the card frames its preview <img> from — a distinct host from the app, exactly as
+// production. The card builds thumbnail URLs against it via the one URL formula. [LAW:one-source-of-truth]
+const CONTENT_ORIGIN = 'https://content.tinkerpad.test';
+
 const summary = (over: Partial<PlaygroundSummary> = {}): PlaygroundSummary => ({
   id: PlaygroundId('abc'),
   prompt: 'a tiny counter',
@@ -23,12 +27,16 @@ const summary = (over: Partial<PlaygroundSummary> = {}): PlaygroundSummary => ({
   ...over,
 });
 
+// The reusable card, bound to the test content origin — the card cannot invent its origin (it is a
+// composition-root value), so every callsite supplies the same one.
+const card = (s: PlaygroundSummary): string => playgroundCard(s, CONTENT_ORIGIN);
+
 // renderCommons takes a view: the already-filtered results, the facets to filter by, and the active
 // query. These tests render a given result set directly (facets derived from it, empty query), so the
 // provenance/escaping contracts read the same as before the search UI landed; the search/filter
 // behaviour has its own describe block below.
 const commons = (results: readonly PlaygroundSummary[], query: CommonsQuery = EMPTY_QUERY): string =>
-  renderCommons({ results, facets: tagFacets(results), query });
+  renderCommons({ results, facets: tagFacets(results), query }, CONTENT_ORIGIN);
 
 describe('renderCommons', () => {
   it('escapes a hostile prompt into inert text', () => {
@@ -162,11 +170,14 @@ describe('renderCommons', () => {
   // chips a user needs to adjust. Called directly (not through the results-coupled helper) to prove
   // the renderer handles empty results alongside non-empty facets. [LAW:behavior-not-structure]
   it('renders the facet chips even when the filter matched no results', () => {
-    const html = renderCommons({
-      results: [],
-      facets: [{ tag: Tag('css'), count: 3 }],
-      query: { text: 'no-match', tags: [] },
-    });
+    const html = renderCommons(
+      {
+        results: [],
+        facets: [{ tag: Tag('css'), count: 3 }],
+        query: { text: 'no-match', tags: [] },
+      },
+      CONTENT_ORIGIN,
+    );
     // The over-filtered viewer sees BOTH the "no match" state AND the chips to broaden by. The css
     // chip carries its count and toggles css on while preserving the active search text.
     expect(html.toLowerCase()).toContain('no playgrounds match');
@@ -181,48 +192,73 @@ describe('renderCommons', () => {
 // travels with it: every outside value is escaped. [LAW:one-source-of-truth] [LAW:single-enforcer]
 describe('playgroundCard', () => {
   it('renders the prompt as a link to its player', () => {
-    const html = playgroundCard(summary({ id: PlaygroundId('xyz'), prompt: 'a tiny counter' }));
+    const html = card(summary({ id: PlaygroundId('xyz'), prompt: 'a tiny counter' }));
     expect(html).toContain('a tiny counter');
     expect(html).toContain(`/play?id=${encodeURIComponent('xyz')}`);
   });
 
   it('escapes a hostile prompt into inert text', () => {
-    const html = playgroundCard(summary({ prompt: XSS }));
+    const html = card(summary({ prompt: XSS }));
     expect(html).not.toContain(XSS);
     expect(html).toContain('&lt;script&gt;');
+  });
+
+  // The preview band (discovery-rye.3) — a real <img> pointing at the content-origin thumbnail, keyed
+  // off the CURRENT version so it refreshes when the playground iterates, in a neutral slot that is the
+  // honest empty state. NOT a fabricated gradient (the 2026-07-08 decision). [FRAMING:representation]
+  it('renders a preview image pointing at the content-origin thumbnail, keyed off the current version', () => {
+    const html = card(summary({ id: PlaygroundId('xyz'), currentVersion: 'v7' as never }));
+    expect(html).toContain('class="card-preview"');
+    expect(html).toContain('class="card-preview-img"');
+    // The <img> src is the content-origin /thumb URL carrying the id and the current version as the
+    // cache-buster — the same URL the serve route answers.
+    expect(html).toContain(`${CONTENT_ORIGIN}/thumb?id=${encodeURIComponent('xyz')}&amp;v=v7`);
+    // alt="" marks it decorative so a not-yet-rendered version shows the empty slot, not broken chrome.
+    expect(html).toContain('alt=""');
+    expect(html).toContain('loading="lazy"');
+    // The honest "no preview" is the neutral slot, never a fabricated gradient painted as the playground.
+    expect(html).not.toContain('linear-gradient');
+  });
+
+  // A hostile id must not break out of the <img> src attribute — it crosses the single enforcer like
+  // every other outside value. [LAW:single-enforcer]
+  it('carries a hostile id into the preview src as inert escaped data', () => {
+    const html = card(summary({ id: PlaygroundId('"><img src=x onerror=alert(1)>') }));
+    expect(html).not.toContain('onerror=alert(1)>');
+    expect(html).toContain('&amp;v=');
   });
 
   // The card's provenance contract, tested directly on the reusable unit (not only via
   // renderCommons) so a future direct consumer keeps the safety net. [LAW:behavior-not-structure]
   it('credits the author as a "by <author>" byline', () => {
-    expect(playgroundCard(summary({ author: 'grace' as never }))).toContain('by grace');
+    expect(card(summary({ author: 'grace' as never }))).toContain('by grace');
   });
 
   it('shows the provider and the pluralized iteration step count', () => {
-    expect(playgroundCard(summary({ providerId: 'claude' as never, recipe: ['describe'] }))).toContain('claude');
-    expect(playgroundCard(summary({ recipe: ['describe'] }))).toContain('1 step');
-    expect(playgroundCard(summary({ recipe: ['a', 'b', 'c'] }))).toContain('3 steps');
+    expect(card(summary({ providerId: 'claude' as never, recipe: ['describe'] }))).toContain('claude');
+    expect(card(summary({ recipe: ['describe'] }))).toContain('1 step');
+    expect(card(summary({ recipe: ['a', 'b', 'c'] }))).toContain('3 steps');
   });
 
   it('links a fork back to its browsable parent, and states the fork fact when the parent is gone', () => {
-    const linked = playgroundCard(
+    const linked = card(
       summary({ forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: 'the original' } } }),
     );
     expect(linked).toContain('Forked from');
     expect(linked).toContain('the original');
     expect(linked).toContain(`/play?id=${encodeURIComponent('parent')}`);
-    expect(playgroundCard(summary({ forkedFrom: { parent: null } }))).toContain(
+    expect(card(summary({ forkedFrom: { parent: null } }))).toContain(
       'Forked from a playground no longer in the commons',
     );
   });
 
   it('shows no attribution for a card that is not a fork', () => {
-    expect(playgroundCard(summary())).not.toContain('Forked from');
+    expect(card(summary())).not.toContain('Forked from');
   });
 
   // Topic tags render as a chip row on the card — the discoverability facet made visible.
   it('renders each topic tag as a chip', () => {
-    const html = playgroundCard(summary({ tags: [Tag('math'), Tag('css')] }));
+    const html = card(summary({ tags: [Tag('math'), Tag('css')] }));
     expect(html).toContain('class="tags"');
     expect(html).toContain('<span class="tag">math</span>');
     expect(html).toContain('<span class="tag">css</span>');
@@ -230,14 +266,14 @@ describe('playgroundCard', () => {
 
   // A tag-less playground (one that predates tagging) shows no chip row — a value, not a crash.
   it('renders no chip row when a playground has no tags', () => {
-    expect(playgroundCard(summary({ tags: [] }))).not.toContain('class="tags"');
+    expect(card(summary({ tags: [] }))).not.toContain('class="tags"');
   });
 
   it('escapes a hostile author and a hostile parent prompt rather than emitting markup', () => {
-    const badAuthor = playgroundCard(summary({ author: XSS as never }));
+    const badAuthor = card(summary({ author: XSS as never }));
     expect(badAuthor).not.toContain(XSS);
     expect(badAuthor).toContain('&lt;script&gt;');
-    const badParent = playgroundCard(
+    const badParent = card(
       summary({ forkedFrom: { parent: { id: PlaygroundId('parent'), prompt: XSS } } }),
     );
     expect(badParent).not.toContain(XSS);

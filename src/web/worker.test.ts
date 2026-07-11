@@ -14,10 +14,19 @@ import type { Env } from './worker.js';
 // running Worker that serves untrusted HTML same-origin with the app. [LAW:behavior-not-structure]
 // [LAW:no-silent-failure]
 
-// Inert bindings: the guard throws before either is dereferenced, so their bodies are never reached.
+// Inert bindings: the guard throws before either is dereferenced, so their bodies are never reached. The
+// render-pipeline bindings (render-dax.3) are inert here too — these tests exercise ONLY the fetch path,
+// which never touches the browser/thumbnail/status/queue bindings. [LAW:decomposition]
+const inertRenderBindings = {
+  BROWSER: {} as unknown as Env['BROWSER'],
+  THUMBNAILS: {} as unknown as R2Bucket,
+  RENDER_STATUS: {} as unknown as Env['RENDER_STATUS'],
+  RENDER_QUEUE: {} as unknown as Env['RENDER_QUEUE'],
+};
 const inertBindings = {
   ARTIFACTS: {} as unknown as R2Bucket,
   DB: {} as unknown as D1Database,
+  ...inertRenderBindings,
 };
 
 const collidingEnv = (host: string): Env => ({
@@ -101,6 +110,7 @@ describe('worker entry — content CSP scopes frame-ancestors to the derived app
     });
 
     const env: Env = {
+      ...inertRenderBindings,
       ARTIFACTS: bucket,
       DB: db,
       GITHUB_CLIENT_ID: 'client-id',

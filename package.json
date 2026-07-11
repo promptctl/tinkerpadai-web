@@ -10,6 +10,7 @@
     "build": "tsx scripts/gen-index.ts",
     "dev": "tsx watch src/web/main.dev.ts",
     "seed": "tsx scripts/seed.ts",
+    "migrate": "tsx scripts/migrate.ts",
     "start": "tsx src/web/main.ts"
   },
   "devDependencies": {

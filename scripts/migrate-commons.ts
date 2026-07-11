@@ -182,7 +182,10 @@ export const runMigration = async (
 
   let done = 0;
   for (const artifact of plan.artifacts) {
-    await run('wrangler', ['r2', 'object', 'put', `${config.r2Bucket}/${artifact.key}`, '--file', join(config.dataDir, 'artifacts', artifact.key), flag]);
+    // --force skips r2 object put's data-catalog validation prompt: spawnRunner ignores stdin, so a
+    // prompt would EOF-fail mid-upload and leave the catalog pointing at not-yet-uploaded artifacts.
+    // Non-interactive, matching the D1 command's --yes. [LAW:no-silent-failure]
+    await run('wrangler', ['r2', 'object', 'put', `${config.r2Bucket}/${artifact.key}`, '--file', join(config.dataDir, 'artifacts', artifact.key), flag, '--force']);
     done += 1;
     if (done % 20 === 0 || done === plan.artifacts.length) log(`  uploaded ${done}/${plan.artifacts.length} artifacts`);
   }

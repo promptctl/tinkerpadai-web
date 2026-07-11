@@ -6,72 +6,45 @@ exposure is a deliberate, reviewable event, not folklore. `tinkerpadai-launch-nk
 last step here is done and the site answers on its public host.
 
 **Status of the gate:** all nine dependency edges are CLOSED (sandbox audit, report+unlist,
-terms/privacy/DMCA, economics, commons seeded, Cloudflare foundation, app-origin headers). What
-remains is not code — it is account-bound provisioning only the operator can do, plus the two
-decisions below. See `design-docs/deploy-cloudflare.md` for the exact commands.
+terms/privacy/DMCA, economics, commons seeded, Cloudflare foundation, app-origin headers). The
+Cloudflare stores are provisioned and the commons is migrated to production; the hosts are decided
+(app `tinkerpad.ai`, content `content.tinkerpad.ai`). What remains is the one operator-only blocker —
+the GitHub OAuth app — and the final deploy. See `design-docs/deploy-cloudflare.md` for the commands.
 
 ---
 
-## The split: prepared vs. operator-held
+## The split: done vs. remaining
 
-**Prepared and verified in-repo (no account needed) — DONE:**
+**Done — code prepared in-repo AND the Cloudflare stores provisioned/populated on the account
+(brandon.fryslie.signup@gmail.com, where `tinkerpad.ai` is an active zone):**
 
 - The Worker runs the same app as Node; boots under `wrangler dev` with R2/D1, two origins enforced,
-  sessions in D1, cookies hardened (`cloudflare-8le.1`).
-- The sandbox boundary is audited sound; app-origin security headers (anti-framing, CSP, nosniff)
-  ship (`sandbox-bci.*`).
-- **The commons migration tool** (`pnpm migrate`) is built, unit-tested, and verified end-to-end
-  against local miniflare: the migrated catalog lists 116 playgrounds through the real D1 adapter and
-  the content origin serves each artifact byte-identical to the local copy through the real R2
-  adapter. The only change at launch is `--remote`.
+  sessions in D1, cookies hardened (`cloudflare-8le.1`). Sandbox boundary audited sound; app-origin
+  security headers ship (`sandbox-bci.*`).
+- **Stores provisioned:** R2 bucket `tinkerpad-artifacts` created; D1 db `tinkerpad`
+  (id `4c0c7651-3a48-4f41-b1d5-59f1ab2c7048`) created, schema applied `--remote`.
+- **Commons migrated to production** via `pnpm migrate --remote` — verified in prod: D1 catalog holds
+  119 playgrounds (116 listed), 123 artifacts in R2, byte-identical to local. The tool is idempotent
+  and safe to re-run.
+- **`wrangler.toml` is filled** with the real hosts (app `tinkerpad.ai`, content
+  `content.tinkerpad.ai`), the provisioned `database_id`, and the two custom-domain routes.
 
-**Operator-held — each step below touches the operator's Cloudflare account, GitHub, DNS, or a real
-secret. These are IRREVERSIBLE public-exposure actions and are the operator's to run.**
+**Remaining — the operator-held blocker plus the final public-exposure step:**
 
----
-
-## Decisions required before executing (see the questions raised alongside this runbook)
-
-1. **App host** — `tinkerpad.ai` (already confirmed in the legal/privacy pages and prior launch
-   notes). Not re-opened here.
-2. **Content host** — MUST be a different hostname from the app; this is the sandbox boundary, not a
-   preference. Recommended: `content.tinkerpad.ai` (a distinct origin is sufficient; the session
-   cookie is `__Host-`-prefixed with no `Domain`, so it is never sent to the content host regardless).
-   A wholly separate domain is also fine if the operator prefers stronger separation.
-3. **Admin subject(s)** — `TINKERPAD_ADMIN_SUBJECTS` must be set to the operator's `github:<numeric-id>`
-   for the moderation console (`/admin`) to be reachable; empty means no one can action takedowns.
-   Optional to set at first deploy, but required before the platform can honor a report/DMCA notice.
-
----
-
-## Sequence
-
-Run from a clean checkout with `wrangler` authenticated (`wrangler login`).
-
-1. **Provision stores** (`deploy-cloudflare.md` §One-time provisioning):
-   - `wrangler r2 bucket create tinkerpad-artifacts`
-   - `wrangler d1 create tinkerpad` → paste the printed `database_id` into `wrangler.toml`
-   - `wrangler d1 migrations apply tinkerpad --remote`
-
-2. **Create the GitHub OAuth app** (callback `https://tinkerpad.ai/session/callback`) and store the
-   credentials as Worker secrets:
+1. **GitHub OAuth app (BLOCKER, operator-only).** `src/web/worker.ts` requires GITHUB_CLIENT_ID/SECRET
+   or it 500s on every request, and GitHub has no API to create an OAuth app — it is created in the web
+   UI. Create one at <https://github.com/settings/developers> with Authorization callback URL
+   `https://tinkerpad.ai/session/callback`, then set the secrets:
    - `wrangler secret put GITHUB_CLIENT_ID`
    - `wrangler secret put GITHUB_CLIENT_SECRET`
-
-3. **Set config in `wrangler.toml`** to the real hosts (decisions 1–3):
-   - `database_id` (from step 1)
-   - `[vars] TINKERPAD_OAUTH_CALLBACK_URL = "https://tinkerpad.ai/session/callback"`
-   - `[vars] TINKERPAD_CONTENT_ORIGIN = "https://content.tinkerpad.ai"`
-   - `[vars] TINKERPAD_ADMIN_SUBJECTS = "github:<your-id>"`
-   - uncomment `routes` and bind BOTH hosts to the Worker
-
-4. **Migrate the commons** (`deploy-cloudflare.md` §Migrate the commons):
-   - `pnpm migrate` (dry-run, confirm the plan) then `pnpm migrate --remote`
-
-5. **Deploy:** `pnpm build && pnpm typecheck && pnpm test && wrangler deploy`
-
-6. **Point DNS:** both `tinkerpad.ai` and the content host as records resolving to the Worker
-   (custom domains in the Cloudflare dashboard, matching the `routes` block).
+2. **Admin subject (optional at launch, required to action takedowns).** Uncomment
+   `TINKERPAD_ADMIN_SUBJECTS = "github:<numeric-id>"` in `wrangler.toml [vars]` with the operator's
+   GitHub id. Empty = no admins (safe default), but reports/DMCA can't be actioned until set.
+3. **Deploy + go live (the irreversible public-exposure step):**
+   `pnpm build && pnpm typecheck && pnpm test && wrangler deploy`. Deploy creates the two custom
+   domains from the `routes` block, binding `tinkerpad.ai` and `content.tinkerpad.ai` to the Worker —
+   this is what makes the site publicly reachable. Do NOT deploy before step 1's secrets are set, or
+   the domains bind to a Worker that 500s.
 
 ---
 

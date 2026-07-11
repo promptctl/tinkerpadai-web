@@ -25,9 +25,10 @@ fallthrough = true
 binding = "ARTIFACTS"
 bucket_name = "tinkerpad-artifacts"
 
-# D1: the catalog (single-row document) and live sessions (one table). Create + capture the id with:
-#   wrangler d1 create tinkerpad   → paste the printed database_id below
-# Apply the schema with: wrangler d1 migrations apply tinkerpad
+# D1: the catalog (single-row document) and live sessions (one table). This is the PROVISIONED
+# database for the tinkerpad.ai launch (schema applied --remote, commons migrated in) — the id below is
+# real, not a placeholder. A fresh environment re-provisions with `wrangler d1 create tinkerpad` and
+# replaces the id; `wrangler d1 migrations apply tinkerpad --remote` applies the schema.
 [[d1_databases]]
 binding = "DB"
 database_name = "tinkerpad"
@@ -41,6 +42,10 @@ migrations_dir = "migrations"
 [vars]
 TINKERPAD_OAUTH_CALLBACK_URL = "https://tinkerpad.ai/session/callback"
 TINKERPAD_CONTENT_ORIGIN = "https://content.tinkerpad.ai"
+# The moderation admin allowlist — comma-separated subjects (github:<numeric-id>) allowed into /admin.
+# Absent/empty = no admins = the console is reachable by NO ONE (safe default), but takedowns can't be
+# actioned until it's set. Uncomment and set to the operator's subject before honoring reports/DMCA.
+# TINKERPAD_ADMIN_SUBJECTS = "github:0000000"
 
 # Routes bind the app AND the separate content host to this one Worker; fetch() splits them by host.
 # Both are custom domains on the tinkerpad.ai zone; the content host is a DISTINCT host — the sandbox

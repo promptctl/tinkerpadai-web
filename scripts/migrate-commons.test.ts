@@ -138,7 +138,7 @@ describe('runMigration (executor guards)', () => {
     expect(db.args).toContain('--yes');
     expect(db.args[3]).toBe('--file');
     // Then: one R2 put keyed bucket/<versionId>.html from the local file, same flag.
-    expect(r2.args).toEqual(['r2', 'object', 'put', `tinkerpad-artifacts/${version}.html`, '--file', artifactPath, '--remote']);
+    expect(r2.args).toEqual(['r2', 'object', 'put', `tinkerpad-artifacts/${version}.html`, '--file', artifactPath, '--remote', '--force']);
   });
 
   it('selects --local for the local sink', async () => {

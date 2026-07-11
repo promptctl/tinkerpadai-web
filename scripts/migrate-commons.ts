@@ -1,0 +1,181 @@
+import { access, mkdtemp, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { hydrateStoredDoc } from '../src/storage/index.js';
+import type { CatalogDoc, VersionId } from '../src/storage/index.js';
+
+// THE COMMONS MIGRATION — carries the locally-seeded commons into the edge stores (R2 + D1) at
+// launch. The seeded playgrounds live only in the local dev data dir (.tinkerpad-data/); production
+// starts EMPTY and the first edge deploy runs generation DISABLED (no provider), so the briefs
+// cannot be re-driven at the edge. The only path to a populated production commons is to MIGRATE the
+// local data, and this is the one tool that does it.
+//
+// It is faithful BY CONSTRUCTION rather than by a bespoke transform: the local and edge backends
+// share the storage SEAM (src/storage), so the on-disk representation and the edge representation are
+// the same document. The catalog is one JSON document (makeD1Catalog stores it as row id=1); every
+// artifact is one immutable html object keyed `<versionId>.html` (makeR2ArtifactStore). This tool
+// only moves those exact bytes to those exact keys — no reinterpretation that could drift from the
+// adapters. Fidelity is then VERIFIED end-to-end by reading a migrated playground back through the
+// real edge adapters under `wrangler dev` (see design-docs/deploy-cloudflare.md). [LAW:one-source-of-truth]
+// [LAW:single-enforcer] [LAW:verifiable-goals]
+
+// The R2 object key for a version's html. Mirrors makeR2ArtifactStore's private keyOf; the local
+// artifact file is already named `<versionId>.html`, so the file basename IS the R2 key. The end-to-end
+// readback through the real R2 adapter is the check that this convention still matches. [LAW:one-source-of-truth]
+const keyOf = (versionId: VersionId): string => `${versionId}.html`;
+
+export interface ArtifactRef {
+  readonly versionId: VersionId;
+  // The R2 object key AND the local file basename — identical by the shared key convention above.
+  readonly key: string;
+}
+
+// The exact edge writes the local commons implies: one catalog document and the distinct set of
+// artifact versions the catalog references. A pure value — no fs, no wrangler, no process — so the
+// transform is unit-testable in isolation and the effects live only in the executor. [LAW:effects-at-boundaries]
+export interface CommonsMigrationPlan {
+  // Compact JSON, byte-for-byte what makeD1Catalog.write(doc) would store in the `doc` column: the
+  // hydrated document re-serialized with JSON.stringify (no indentation), so a fresh edge read
+  // hydrate(parse(...)) yields the same catalog the local file yields. [LAW:one-source-of-truth]
+  readonly catalogDoc: string;
+  // Distinct versions referenced by any turn, in first-seen order. Only referenced versions are
+  // migrated — an on-disk file no turn points at is dead and would never be read back.
+  readonly artifacts: readonly ArtifactRef[];
+  readonly playgroundCount: number;
+}
+
+// Pure transform: local catalog JSON → the exact edge writes. hydrateStoredDoc applies the same
+// forward-compatible shape upgrade the edge read applies, so the re-serialized doc is canonical.
+export const planCommonsMigration = (catalogJson: string): CommonsMigrationPlan => {
+  const doc: CatalogDoc = hydrateStoredDoc(JSON.parse(catalogJson));
+  const seen = new Set<string>();
+  const artifacts: ArtifactRef[] = [];
+  for (const playground of doc.playgrounds) {
+    for (const turn of playground.session.turns) {
+      const versionId = turn.version;
+      if (seen.has(versionId)) continue;
+      seen.add(versionId);
+      artifacts.push({ versionId, key: keyOf(versionId) });
+    }
+  }
+  return { catalogDoc: JSON.stringify(doc), artifacts, playgroundCount: doc.playgrounds.length };
+};
+
+// A SQLite single-quoted string literal. Standard SQLite escapes ONLY the quote (doubled); backslashes
+// and newlines are literal inside the literal, so this is the complete escaping for a --file statement.
+// A NUL byte cannot survive the CLI's C-string argv/stdin, so its presence is a real corruption that
+// must fail loudly rather than silently truncate the catalog. [LAW:no-silent-failure]
+export const sqlStringLiteral = (value: string): string => {
+  if (value.includes('\0')) throw new Error('catalog document contains a NUL byte; refusing to build corrupt SQL');
+  return `'${value.replace(/'/g, "''")}'`;
+};
+
+// The one INSERT that writes the whole catalog document as the single row id=1, upserting so a re-run
+// replaces rather than duplicates — the migration is idempotent and safe to re-run to convergence.
+export const buildCatalogSql = (catalogDoc: string): string =>
+  `INSERT INTO catalog (id, doc) VALUES (1, ${sqlStringLiteral(catalogDoc)}) ON CONFLICT(id) DO UPDATE SET doc = excluded.doc;`;
+
+// WHERE the writes land — one axis with three values, not three code paths. 'dry-run' computes the
+// plan and touches nothing (the safe DEFAULT); 'local' writes to the miniflare persistence
+// `wrangler dev` reads (account-free verification); 'remote' writes to the real Cloudflare account
+// (the launch step). The value selects the wrangler flag; the plan is identical for all three.
+// [LAW:dataflow-not-control-flow] [LAW:no-mode-explosion]
+export type MigrationSink = 'dry-run' | 'local' | 'remote';
+
+export interface MigrationConfig {
+  readonly sink: MigrationSink;
+  readonly dataDir: string;
+  readonly d1Database: string;
+  readonly r2Bucket: string;
+}
+
+export class UsageError extends Error {}
+
+// The sink a flag names, or undefined if the flag is not a sink flag. A total function over strings
+// keeps the type honest — `a in record` cannot narrow `a` to a key — so the mapped result carries its
+// own optionality and no index access can be undefined-by-surprise. [LAW:types-are-the-program]
+const sinkOf = (flag: string): MigrationSink | undefined =>
+  flag === '--dry-run' ? 'dry-run' : flag === '--local' ? 'local' : flag === '--remote' ? 'remote' : undefined;
+
+// Parse argv into config. The sink flags are mutually exclusive; absent means the safe 'dry-run'
+// default. Unknown flags are rejected loudly rather than ignored (a typo'd --remotte must not
+// silently degrade to a no-op dry run right when the operator meant to publish). [LAW:no-silent-failure]
+export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): MigrationConfig => {
+  const args = argv.slice(2);
+  const sinks = args.map(sinkOf).filter((s): s is MigrationSink => s !== undefined);
+  if (sinks.length > 1) throw new UsageError(`choose at most one of --dry-run/--local/--remote, got: ${args.filter((a) => sinkOf(a) !== undefined).join(' ')}`);
+  const unknown = args.filter((a) => a.startsWith('--') && sinkOf(a) === undefined);
+  if (unknown.length > 0) throw new UsageError(`unknown flag(s): ${unknown.join(' ')}`);
+  const [only] = sinks;
+  return {
+    // Absence (no sink flag) is genuine optionality, defaulted here — not a guard placating the type.
+    sink: only ?? 'dry-run',
+    dataDir: env.TINKERPAD_DATA_DIR ?? '.tinkerpad-data',
+    d1Database: env.TINKERPAD_D1_DATABASE ?? 'tinkerpad',
+    r2Bucket: env.TINKERPAD_R2_BUCKET ?? 'tinkerpad-artifacts',
+  };
+};
+
+// Run a command to completion, inheriting stderr so wrangler's own diagnostics reach the operator.
+// A non-zero exit is a real failure that aborts the whole migration — never swallowed. [LAW:no-silent-failure]
+const run = (command: string, args: readonly string[]): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'] });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${command} ${args.join(' ')} exited ${code}`))));
+  });
+
+const fileExists = async (path: string): Promise<boolean> => {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// The wrangler flag that selects the persistence target. 'local' and 'remote' are real writes; there
+// is no wrangler flag for 'dry-run' because the executor never calls wrangler in that mode.
+const wranglerTargetFlag = (sink: 'local' | 'remote'): string => (sink === 'local' ? '--local' : '--remote');
+
+// THE EFFECT BOUNDARY: given the pure plan and a config, perform the writes. The catalog goes first as
+// one D1 upsert; then every referenced artifact is put to R2. Before any write, every referenced
+// artifact file must exist on disk — a missing file is a real gap that aborts the migration rather
+// than shipping a catalog whose /play would 404. [LAW:no-silent-failure]
+export const runMigration = async (
+  plan: CommonsMigrationPlan,
+  config: MigrationConfig,
+  log: (line: string) => void,
+): Promise<void> => {
+  const missing: string[] = [];
+  for (const artifact of plan.artifacts) {
+    if (!(await fileExists(join(config.dataDir, 'artifacts', artifact.key)))) missing.push(artifact.key);
+  }
+  if (missing.length > 0) {
+    throw new Error(`${missing.length} referenced artifact file(s) missing under ${config.dataDir}/artifacts: ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ' …' : ''}`);
+  }
+
+  log(`plan: ${plan.playgroundCount} playgrounds, ${plan.artifacts.length} artifact versions → D1 ${config.d1Database} + R2 ${config.r2Bucket}`);
+
+  if (config.sink === 'dry-run') {
+    log('dry-run: no writes performed. Re-run with --local (miniflare) or --remote (Cloudflare account).');
+    return;
+  }
+
+  const flag = wranglerTargetFlag(config.sink);
+
+  const sqlDir = await mkdtemp(join(tmpdir(), 'tinkerpad-migrate-'));
+  const sqlPath = join(sqlDir, 'catalog.sql');
+  await writeFile(sqlPath, buildCatalogSql(plan.catalogDoc), 'utf8');
+  log(`writing catalog document → D1 ${config.d1Database} (${flag})`);
+  await run('wrangler', ['d1', 'execute', config.d1Database, '--file', sqlPath, flag, '--yes']);
+
+  let done = 0;
+  for (const artifact of plan.artifacts) {
+    await run('wrangler', ['r2', 'object', 'put', `${config.r2Bucket}/${artifact.key}`, '--file', join(config.dataDir, 'artifacts', artifact.key), flag]);
+    done += 1;
+    if (done % 20 === 0 || done === plan.artifacts.length) log(`  uploaded ${done}/${plan.artifacts.length} artifacts`);
+  }
+  log(`done: catalog + ${plan.artifacts.length} artifacts written to ${config.sink}.`);
+};

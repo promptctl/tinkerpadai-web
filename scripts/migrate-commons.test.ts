@@ -1,0 +1,109 @@
+import { describe, expect, it } from 'vitest';
+import { hydrateStoredDoc } from '../src/storage/index.js';
+import { buildCatalogSql, planCommonsMigration, resolveConfig, sqlStringLiteral, UsageError } from './migrate-commons.js';
+
+// A minimal catalog document in the on-disk shape. Two playgrounds; the second reuses a version the
+// first already referenced, so dedup and referenced-only selection are both exercised.
+const sharedVersion = '11111111-1111-1111-1111-111111111111';
+const catalog = {
+  playgrounds: [
+    {
+      id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+      session: {
+        sessionId: 'session-a',
+        providerId: 'claude-code-tmux',
+        lineage: null,
+        author: "d'ev:local",
+        turns: [
+          { turnId: 'turn-a1', prompt: "it's a counter", version: sharedVersion },
+          { turnId: 'turn-a2', prompt: 'add reset', version: '22222222-2222-4222-2222-222222222222' },
+        ],
+        tags: [],
+      },
+      listing: 'listed',
+    },
+    {
+      id: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+      session: {
+        sessionId: 'session-b',
+        providerId: 'claude-code-tmux',
+        lineage: null,
+        author: 'someone',
+        turns: [{ turnId: 'turn-b1', prompt: 'reuse', version: sharedVersion }],
+        tags: [],
+      },
+      listing: 'unlisted',
+    },
+  ],
+};
+
+describe('planCommonsMigration', () => {
+  it('selects distinct referenced versions in first-seen order, keyed <versionId>.html', () => {
+    const plan = planCommonsMigration(JSON.stringify(catalog));
+    expect(plan.playgroundCount).toBe(2);
+    expect(plan.artifacts.map((a) => a.versionId)).toEqual([sharedVersion, '22222222-2222-4222-2222-222222222222']);
+    expect(plan.artifacts.every((a) => a.key === `${a.versionId}.html`)).toBe(true);
+  });
+
+  it('migrates unlisted playgrounds too — existence is monotonic, visibility is a separate filter', () => {
+    const plan = planCommonsMigration(JSON.stringify(catalog));
+    // Both playgrounds' versions are present even though one is unlisted.
+    expect(plan.artifacts).toHaveLength(2);
+  });
+
+  it('produces the catalog document byte-for-byte as makeD1Catalog.write would store it', () => {
+    const raw = JSON.stringify(catalog);
+    const plan = planCommonsMigration(raw);
+    // The compact re-serialization of the hydrated doc — exactly what the D1 adapter's write path emits.
+    expect(plan.catalogDoc).toBe(JSON.stringify(hydrateStoredDoc(JSON.parse(raw))));
+    // And it round-trips: a fresh edge read hydrate(parse(...)) recovers the same document.
+    expect(hydrateStoredDoc(JSON.parse(plan.catalogDoc))).toEqual(hydrateStoredDoc(JSON.parse(raw)));
+  });
+});
+
+describe('sqlStringLiteral', () => {
+  it('doubles single quotes and wraps in quotes', () => {
+    expect(sqlStringLiteral("it's a {\"json\": true}")).toBe("'it''s a {\"json\": true}'");
+  });
+
+  it('refuses a NUL byte rather than emitting a truncated literal', () => {
+    expect(() => sqlStringLiteral('bad\0doc')).toThrow(/NUL/);
+  });
+});
+
+describe('buildCatalogSql', () => {
+  it('is a single-row upsert so a re-run replaces rather than duplicates', () => {
+    const sql = buildCatalogSql('{"playgrounds":[]}');
+    expect(sql).toBe(`INSERT INTO catalog (id, doc) VALUES (1, '{"playgrounds":[]}') ON CONFLICT(id) DO UPDATE SET doc = excluded.doc;`);
+  });
+});
+
+describe('resolveConfig', () => {
+  const argv = (...flags: string[]): string[] => ['node', 'migrate.ts', ...flags];
+
+  it('defaults to the safe dry-run sink with no flags', () => {
+    expect(resolveConfig(argv(), {}).sink).toBe('dry-run');
+  });
+
+  it('reads the explicit sink flags', () => {
+    expect(resolveConfig(argv('--local'), {}).sink).toBe('local');
+    expect(resolveConfig(argv('--remote'), {}).sink).toBe('remote');
+  });
+
+  it('rejects two sinks rather than silently picking one', () => {
+    expect(() => resolveConfig(argv('--local', '--remote'), {})).toThrow(UsageError);
+  });
+
+  it('rejects an unknown flag rather than degrading to dry-run', () => {
+    expect(() => resolveConfig(argv('--remotte'), {})).toThrow(UsageError);
+  });
+
+  it('takes store names and data dir from the environment', () => {
+    const config = resolveConfig(argv('--remote'), {
+      TINKERPAD_DATA_DIR: '/data',
+      TINKERPAD_D1_DATABASE: 'prod-db',
+      TINKERPAD_R2_BUCKET: 'prod-bucket',
+    });
+    expect(config).toMatchObject({ dataDir: '/data', d1Database: 'prod-db', r2Bucket: 'prod-bucket' });
+  });
+});

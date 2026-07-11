@@ -1,7 +1,7 @@
 import type { R2Bucket } from '@cloudflare/workers-types';
 import type { Artifact } from '../provider/index.js';
 import type { ArtifactStore, BlobStore } from './artifactStore.js';
-import { makeArtifactStore } from './artifactStore.js';
+import { artifactObjectKey, makeArtifactStore } from './artifactStore.js';
 import type { VersionId } from './types.js';
 
 // The R2 backend for the artifact seam: one immutable html object per version in an R2 bucket, the
@@ -11,7 +11,7 @@ import type { VersionId } from './types.js';
 // the file adapter. The two backends differ only in where the bytes live; the invariant logic exists
 // once. [LAW:decomposition] [LAW:single-enforcer]
 export const makeR2ArtifactStore = (bucket: R2Bucket): ArtifactStore => {
-  const keyOf = (versionId: VersionId): string => `${versionId}.html`;
+  const keyOf = artifactObjectKey;
   const backend: BlobStore = {
     async write(versionId: VersionId, artifact: Artifact): Promise<void> {
       await bucket.put(keyOf(versionId), artifact.html);

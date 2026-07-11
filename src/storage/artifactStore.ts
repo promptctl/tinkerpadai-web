@@ -20,6 +20,12 @@ export interface ArtifactStore {
   get(versionId: VersionId): Promise<Artifact>;
 }
 
+// The object key for a version's stored bytes: one immutable html object named for its version. This
+// is the ONE owner of the `<versionId>.html` convention — both backends (r2/file) and any tool that
+// addresses stored artifacts by key (the commons migration) derive the key from here, so the format
+// has a single source and changing it changes every reader at once. [LAW:one-source-of-truth]
+export const artifactObjectKey = (versionId: VersionId): string => `${versionId}.html`;
+
 // The swap point beneath the seam: dumb keyed byte storage. This is the part that
 // varies across environments (local dir now; R2/KV later) — isolating it here is
 // what lets one ArtifactStore run everywhere by swapping the backend, never by

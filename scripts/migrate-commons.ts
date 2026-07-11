@@ -103,8 +103,11 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   const args = argv.slice(2);
   const sinks = args.map(sinkOf).filter((s): s is MigrationSink => s !== undefined);
   if (sinks.length > 1) throw new UsageError(`choose at most one of --dry-run/--local/--remote, got: ${args.filter((a) => sinkOf(a) !== undefined).join(' ')}`);
-  const unknown = args.filter((a) => a.startsWith('--') && sinkOf(a) === undefined);
-  if (unknown.length > 0) throw new UsageError(`unknown flag(s): ${unknown.join(' ')}`);
+  // Reject BOTH unknown --flags and bare positional args: the tool takes only sink flags, so anything
+  // else is a mistake (e.g. `migrate remote` instead of `--remote`) that must not silently degrade to
+  // a no-op dry run. [LAW:no-silent-failure]
+  const unexpected = args.filter((a) => sinkOf(a) === undefined);
+  if (unexpected.length > 0) throw new UsageError(`unexpected argument(s): ${unexpected.join(' ')} — accepts only --dry-run/--local/--remote`);
   const [only] = sinks;
   return {
     // Absence (no sink flag) is genuine optionality, defaulted here — not a guard placating the type.
@@ -173,26 +176,29 @@ export const runMigration = async (
 
   const flag = wranglerTargetFlag(config.sink);
 
+  // Artifacts FIRST, catalog LAST. The catalog is the index of what exists; publishing it only after
+  // every artifact it references is in R2 means a partial failure leaves the catalog untouched (danglers
+  // impossible) rather than pointing /play at objects not yet uploaded. On a re-run the artifact puts
+  // are idempotent overwrites and the catalog upsert converges. [LAW:no-silent-failure]
+  let done = 0;
+  for (const artifact of plan.artifacts) {
+    // --force skips r2 object put's data-catalog validation prompt: spawnRunner ignores stdin, so a
+    // prompt would EOF-fail mid-upload. Non-interactive, matching the D1 command's --yes. [LAW:no-silent-failure]
+    await run('wrangler', ['r2', 'object', 'put', `${config.r2Bucket}/${artifact.key}`, '--file', join(config.dataDir, 'artifacts', artifact.key), flag, '--force']);
+    done += 1;
+    if (done % 20 === 0 || done === plan.artifacts.length) log(`  uploaded ${done}/${plan.artifacts.length} artifacts`);
+  }
+
   // The SQL file is scratch — written, handed to wrangler, then removed on both success and failure so
   // repeated runs don't accumulate temp dirs (the tool is idempotent and meant to be re-run). [LAW:no-silent-failure]
   const sqlDir = await mkdtemp(join(tmpdir(), 'tinkerpad-migrate-'));
   try {
     const sqlPath = join(sqlDir, 'catalog.sql');
     await writeFile(sqlPath, buildCatalogSql(plan.catalogDoc), 'utf8');
-    log(`writing catalog document → D1 ${config.d1Database} (${flag})`);
+    log(`publishing catalog document → D1 ${config.d1Database} (${flag})`);
     await run('wrangler', ['d1', 'execute', config.d1Database, '--file', sqlPath, flag, '--yes']);
   } finally {
     await rm(sqlDir, { recursive: true, force: true });
   }
-
-  let done = 0;
-  for (const artifact of plan.artifacts) {
-    // --force skips r2 object put's data-catalog validation prompt: spawnRunner ignores stdin, so a
-    // prompt would EOF-fail mid-upload and leave the catalog pointing at not-yet-uploaded artifacts.
-    // Non-interactive, matching the D1 command's --yes. [LAW:no-silent-failure]
-    await run('wrangler', ['r2', 'object', 'put', `${config.r2Bucket}/${artifact.key}`, '--file', join(config.dataDir, 'artifacts', artifact.key), flag, '--force']);
-    done += 1;
-    if (done % 20 === 0 || done === plan.artifacts.length) log(`  uploaded ${done}/${plan.artifacts.length} artifacts`);
-  }
-  log(`done: catalog + ${plan.artifacts.length} artifacts written to ${config.sink}.`);
+  log(`done: ${plan.artifacts.length} artifacts + catalog written to ${config.sink}.`);
 };

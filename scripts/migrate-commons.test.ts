@@ -1,7 +1,7 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { hydrateStoredDoc } from '../src/storage/index.js';
 import type { CommandRunner, CommonsMigrationPlan, MigrationConfig } from './migrate-commons.js';
 import { buildCatalogSql, planCommonsMigration, resolveConfig, runMigration, sqlStringLiteral, UsageError } from './migrate-commons.js';
@@ -55,12 +55,13 @@ describe('planCommonsMigration', () => {
     expect(plan.artifacts).toHaveLength(2);
   });
 
-  it('produces the catalog document byte-for-byte as makeD1Catalog.write would store it', () => {
+  it('produces the catalog document the way the D1 adapter stores it: compact and faithful', () => {
     const raw = JSON.stringify(catalog);
     const plan = planCommonsMigration(raw);
-    // The compact re-serialization of the hydrated doc — exactly what the D1 adapter's write path emits.
-    expect(plan.catalogDoc).toBe(JSON.stringify(hydrateStoredDoc(JSON.parse(raw))));
-    // And it round-trips: a fresh edge read hydrate(parse(...)) recovers the same document.
+    // Compact, not pretty-printed — the D1 adapter serializes without indentation, unlike the file
+    // backend. JSON escapes any in-value newline as \n, so a literal newline means indentation leaked in.
+    expect(plan.catalogDoc).not.toContain('\n');
+    // Faithful: a fresh edge read hydrate(parse(...)) recovers the same document the source describes.
     expect(hydrateStoredDoc(JSON.parse(plan.catalogDoc))).toEqual(hydrateStoredDoc(JSON.parse(raw)));
   });
 });
@@ -95,9 +96,20 @@ describe('runMigration (executor guards)', () => {
     r2Bucket: 'tinkerpad-artifacts',
   });
 
+  // Track every temp data dir this suite creates and remove them after each test — no /tmp accumulation.
+  const tempDirs: string[] = [];
+  const tempDataDir = async (): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    tempDirs.push(dir);
+    return dir;
+  };
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
   it('dry-run performs no writes and returns after the plan (never invokes wrangler)', async () => {
     const version = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
-    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    const dataDir = await tempDataDir();
     await mkdir(join(dataDir, 'artifacts'), { recursive: true });
     await writeFile(join(dataDir, 'artifacts', `${version}.html`), '<!doctype html>', 'utf8');
     const lines: string[] = [];
@@ -108,16 +120,16 @@ describe('runMigration (executor guards)', () => {
 
   it('aborts loudly when a referenced artifact file is missing — before any wrangler write', async () => {
     const version = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
-    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    const dataDir = await tempDataDir();
     // No artifacts dir at all: the referenced file is missing, so the precondition must fail — with
-    // sink 'local' this proves it aborts BEFORE the wrangler d1 execute rather than shipping a
-    // catalog whose /play would 404.
+    // sink 'local' this proves it aborts BEFORE any wrangler write rather than shipping a catalog
+    // whose /play would 404.
     await expect(runMigration(planFor(version), configFor(dataDir, 'local'), () => {})).rejects.toThrow(/missing/);
   });
 
-  it('issues the exact wrangler commands: D1 catalog upsert then one R2 put per artifact, with the target flag', async () => {
+  it('issues the exact wrangler commands: every R2 put FIRST, then the D1 catalog upsert LAST, with the target flag', async () => {
     const version = 'cccccccc-cccc-4ccc-cccc-cccccccccccc';
-    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    const dataDir = await tempDataDir();
     const artifactPath = join(dataDir, 'artifacts', `${version}.html`);
     await mkdir(join(dataDir, 'artifacts'), { recursive: true });
     await writeFile(artifactPath, '<!doctype html>', 'utf8');
@@ -129,21 +141,21 @@ describe('runMigration (executor guards)', () => {
     await runMigration(planFor(version), configFor(dataDir, 'remote'), () => {}, record);
 
     expect(calls).toHaveLength(2);
-    const [db, r2] = calls;
-    if (db === undefined || r2 === undefined) throw new Error('expected exactly two wrangler calls');
-    // First: the whole catalog as one D1 upsert, with the remote flag and non-interactive --yes.
-    expect(db.command).toBe('wrangler');
+    const [r2, db] = calls;
+    if (r2 === undefined || db === undefined) throw new Error('expected exactly two wrangler calls');
+    // Artifacts first: one R2 put keyed bucket/<versionId>.html from the local file, non-interactive.
+    expect(r2.command).toBe('wrangler');
+    expect(r2.args).toEqual(['r2', 'object', 'put', `tinkerpad-artifacts/${version}.html`, '--file', artifactPath, '--remote', '--force']);
+    // Catalog last: the whole catalog as one D1 upsert, same flag, non-interactive --yes.
     expect(db.args.slice(0, 3)).toEqual(['d1', 'execute', 'tinkerpad']);
     expect(db.args).toContain('--remote');
     expect(db.args).toContain('--yes');
     expect(db.args[3]).toBe('--file');
-    // Then: one R2 put keyed bucket/<versionId>.html from the local file, same flag.
-    expect(r2.args).toEqual(['r2', 'object', 'put', `tinkerpad-artifacts/${version}.html`, '--file', artifactPath, '--remote', '--force']);
   });
 
   it('selects --local for the local sink', async () => {
     const version = 'dddddddd-dddd-4ddd-dddd-dddddddddddd';
-    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    const dataDir = await tempDataDir();
     await mkdir(join(dataDir, 'artifacts'), { recursive: true });
     await writeFile(join(dataDir, 'artifacts', `${version}.html`), '<!doctype html>', 'utf8');
     const flags = new Set<string>();
@@ -173,6 +185,10 @@ describe('resolveConfig', () => {
 
   it('rejects an unknown flag rather than degrading to dry-run', () => {
     expect(() => resolveConfig(argv('--remotte'), {})).toThrow(UsageError);
+  });
+
+  it('rejects a bare positional arg (e.g. `migrate remote`) rather than silently dry-running', () => {
+    expect(() => resolveConfig(argv('remote'), {})).toThrow(UsageError);
   });
 
   it('takes store names and data dir from the environment', () => {

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { artifactObjectKey, hydrateStoredDoc } from '../src/storage/index.js';
+import { isNotFound } from '../src/storage/fsErrors.js';
 import type { CatalogDoc, VersionId } from '../src/storage/index.js';
 
 // THE COMMONS MIGRATION — carries the locally-seeded commons into the edge stores (R2 + D1) at
@@ -128,12 +129,16 @@ export const spawnRunner: CommandRunner = (command, args) =>
     child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${command} ${args.join(' ')} exited ${code}`))));
   });
 
+// Absence is false; any OTHER access failure (EACCES, ELOOP, …) is a real IO fault that surfaces as
+// itself rather than being misreported as "missing". isNotFound is the single owner of "this fs error
+// means absent", shared with the file adapters. [LAW:no-silent-failure] [LAW:single-enforcer]
 const fileExists = async (path: string): Promise<boolean> => {
   try {
     await access(path);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
   }
 };
 

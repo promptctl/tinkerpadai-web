@@ -13,6 +13,12 @@ export { thumbnailObjectKey } from './thumbnailStore.js';
 export { makeMemoryThumbnailStore } from './memoryThumbnailStore.js';
 // makeR2ThumbnailStore is imported directly by the Worker composition root (like makeR2ArtifactStore),
 // never through this barrel — the R2 adapter belongs to the edge graph only.
+
+export type { RenderStatus, RenderState, RenderStatusStore } from './renderStatusStore.js';
+export { renderStateOf, renderStatusKey, parseRenderStatus } from './renderStatusStore.js';
+export { makeMemoryRenderStatusStore } from './memoryRenderStatusStore.js';
+// makeKvRenderStatusStore is imported directly by the Worker composition root (like the R2 adapters),
+// never through this barrel — the KV adapter belongs to the edge graph only.
 export { SelfContainmentError, findSelfContainmentViolation, MAX_ARTIFACT_BYTES } from './selfContainment.js';
 export type { SelfContainmentViolation, ResourceSink } from './selfContainment.js';
 

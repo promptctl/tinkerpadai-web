@@ -6,6 +6,7 @@ import { filterSummaries, parseCommonsQuery, tagFacets } from './commonsQuery.js
 import { COPYRIGHT_DOC, GROUND_RULES_DOC, PRIVACY_DOC, renderLegalDoc } from './legalPages.js';
 import { renderCommons, renderNotice, renderPlayer } from './playgroundPages.js';
 import { buildAppCsp } from './appCsp.js';
+import { playgroundContentUrl } from './contentUrl.js';
 
 // THE APP-ORIGIN SURFACE — the front door's one composed Web handler. It serves the trusted
 // app pages (creation page at `/`, the commons list, the player chrome) and delegates every
@@ -117,7 +118,7 @@ export const makeSiteHandler = (deps: SiteHandlerDeps): ((request: Request) => P
     if (summary === undefined) {
       return absentNotice(target, id);
     }
-    const contentSrc = `${contentOrigin}/?id=${encodeURIComponent(summary.id)}`;
+    const contentSrc = playgroundContentUrl(contentOrigin, summary.id);
     return html(
       renderPlayer({
         id: summary.id,

@@ -20,6 +20,20 @@ export type { GenerationPolicy } from './generationPolicy.js';
 // — never pulls puppeteer. [LAW:decomposition]
 export { FunctionalDefectError, passThroughValidator } from './artifactValidation.js';
 export type { ArtifactValidator, LoadErrors } from './artifactValidation.js';
+// The render pipeline's PURE core — it only imports the browserRenderer as a TYPE, so no puppeteer runtime
+// dep flows through this barrel. The concrete makeBrowserRenderer (which imports puppeteer) stays out of
+// here for the same reason the headless validator does, imported directly by the edge root. [LAW:decomposition]
+export { resolveRenderTarget, renderAttempt, runBackfill, parseRenderJob } from './renderPipeline.js';
+export type {
+  RenderJob,
+  RenderPipelineDeps,
+  RenderTarget,
+  ResolveResult,
+  AttemptResult,
+  Attempt,
+  BackfillDeps,
+  BackfillReport,
+} from './renderPipeline.js';
 export { makeReportService } from './reportService.js';
 export type { ReportService, ReportServiceDeps } from './reportService.js';
 export { makeReviewService } from './reviewService.js';

@@ -1,13 +1,20 @@
-import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
+import type { D1Database, KVNamespace, MessageBatch, Queue, R2Bucket, ScheduledController } from '@cloudflare/workers-types';
+import type { BrowserWorker } from '@cloudflare/puppeteer';
 import page from './index.html';
 import { makeApp, parseAdminSubjects } from '../app.js';
 import { ProviderRegistry } from '../provider/index.js';
 import { makeGenerationQuota, makeGitHubOAuthProvider, parseMaxGenerationAttempts, parseQuotaLimits, passThroughValidator } from '../api/index.js';
+import type { RenderJob, RenderPipelineDeps } from '../api/index.js';
+import { parseRenderJob, renderAttempt, runBackfill } from '../api/index.js';
+import { makeBrowserRenderer } from '../api/browserRenderer.js';
 import { makeD1SessionStore } from '../api/d1SessionStore.js';
 import { makeR2ArtifactStore } from '../storage/r2ArtifactStore.js';
+import { makeR2ThumbnailStore } from '../storage/r2ThumbnailStore.js';
+import { makeKvRenderStatusStore } from '../storage/kvRenderStatusStore.js';
 import { makeD1Catalog } from '../storage/d1Catalog.js';
 import { makeD1ReportStore } from '../storage/d1ReportStore.js';
 import { makeFrontDoorRouter } from './frontDoorRouter.js';
+import { playgroundContentUrl } from './contentUrl.js';
 import { appOriginOf, assertDistinctOriginHosts } from './originGuard.js';
 
 // The type of the assembled request handler, memoized per isolate below.
@@ -30,6 +37,21 @@ export interface Env {
   readonly ARTIFACTS: R2Bucket;
   // The D1 database backing BOTH the catalog (single-row document) and live sessions (one table).
   readonly DB: D1Database;
+  // THE RENDER PIPELINE'S BINDINGS (render-dax.3) — the async derivation of preview thumbnails. They are
+  // consumed ONLY by the queue/scheduled handlers below, never by fetch: a request is served without ever
+  // touching the renderer. [LAW:decomposition]
+  //   BROWSER: the Cloudflare Browser Rendering binding — the isolated headless-Chrome sandbox the driver
+  //     loads untrusted playground html in (a sibling to the player iframe, never this trusted isolate).
+  readonly BROWSER: BrowserWorker;
+  //   THUMBNAILS: the R2 bucket of derived PNG previews, DISTINCT from ARTIFACTS so the evictable cache is
+  //     kept physically apart from the immutable source of truth. [LAW:one-source-of-truth]
+  readonly THUMBNAILS: R2Bucket;
+  //   RENDER_STATUS: the KV namespace of per-version render status (pending/failed) — operational state of
+  //     the derivation, owned by the pipeline, never the catalog. [LAW:one-source-of-truth]
+  readonly RENDER_STATUS: KVNamespace;
+  //   RENDER_QUEUE: the Cloudflare Queue of render jobs. The scheduled backfill PRODUCES onto it; the queue
+  //     handler CONSUMES from it, one browser per batch. [LAW:no-ambient-temporal-coupling]
+  readonly RENDER_QUEUE: Queue<RenderJob>;
   // The GitHub OAuth app credentials. Secrets, never committed — set with `wrangler secret put`.
   readonly GITHUB_CLIENT_ID?: string;
   readonly GITHUB_CLIENT_SECRET?: string;
@@ -185,6 +207,90 @@ const handlerFor = (env: Env): Handler => {
   return handler;
 };
 
+// THE RENDER PIPELINE'S EDGE CONTEXT — the lean set of seams the queue/scheduled handlers need, built
+// straight from the bindings. Deliberately NOT the whole app graph (handlerFor): the pipeline needs only
+// the catalog (what exists), the thumbnail cache, the status store, and the content-URL formula — never
+// OAuth, sessions, or the API. It is cheap (stateless wrappers over stable bindings), so it is built per
+// invocation rather than memoized; the browser and queue bindings are passed through for the handlers to
+// own their lifecycle. `contentUrlOf` is the SAME formula the player frames (playgroundContentUrl), so a
+// thumbnail is shot from exactly the URL users run. [LAW:decomposition] [LAW:one-source-of-truth]
+const renderContextFor = (env: Env): {
+  readonly catalog: ReturnType<typeof makeD1Catalog>;
+  readonly thumbnails: ReturnType<typeof makeR2ThumbnailStore>;
+  readonly statuses: ReturnType<typeof makeKvRenderStatusStore>;
+  readonly pipeline: RenderPipelineDeps;
+} => {
+  const contentOrigin = required(env, 'TINKERPAD_CONTENT_ORIGIN');
+  const catalog = makeD1Catalog(env.DB);
+  const thumbnails = makeR2ThumbnailStore(env.THUMBNAILS);
+  const statuses = makeKvRenderStatusStore(env.RENDER_STATUS);
+  return {
+    catalog,
+    thumbnails,
+    statuses,
+    pipeline: { catalog, thumbnails, statuses, contentUrlOf: (id) => playgroundContentUrl(contentOrigin, id) },
+  };
+};
+
+// The code-owned retry bound: a render that fails on its 3rd delivery is recorded 'failed' and acked, so it
+// is surfaced, not retried forever nor silently dead-lettered. This is the SINGLE source of truth for the
+// bound — the queue's max_retries (wrangler.toml) is set to match as a backstop for an unexpected THROW,
+// but our handler acks at this bound so that backstop is never reached on a normal render failure.
+// [LAW:one-source-of-truth] [LAW:no-silent-failure]
+const MAX_RENDER_ATTEMPTS = 3;
+
+// Cloudflare Queues cap a sendBatch at 100 messages; the backfill of the whole commons chunks to fit.
+const QUEUE_BATCH_MAX = 100;
+
+// The queue PRODUCER adapter: hand render jobs to the queue in ≤100-message batches. An empty job list is a
+// no-op (the loop simply does not run), so the backfill need not branch on emptiness. [LAW:dataflow-not-control-flow]
+const enqueueRenderJobs = async (queue: Queue<RenderJob>, jobs: readonly RenderJob[]): Promise<void> => {
+  for (let i = 0; i < jobs.length; i += QUEUE_BATCH_MAX) {
+    await queue.sendBatch(jobs.slice(i, i + QUEUE_BATCH_MAX).map((body) => ({ body })));
+  }
+};
+
+// THE QUEUE CONSUMER — renders a batch of jobs on ONE browser (Browser Rendering rate-limits launches, so
+// the whole batch shares a single withSession; each render still gets a fresh isolated context). Per
+// message: parse at the trust boundary (a malformed body is a poison message, logged and acked, never
+// retried), then run one attempt and map its directive onto the queue's ack/retry. renderAttempt is total
+// and owns the failed-recording, so this shell is pure mechanics. [LAW:effects-at-boundaries] [LAW:decomposition]
+const consumeRenderBatch = async (env: Env, batch: MessageBatch<unknown>): Promise<void> => {
+  const { pipeline } = renderContextFor(env);
+  await makeBrowserRenderer(env.BROWSER).withSession(async (session) => {
+    for (const message of batch.messages) {
+      let job: RenderJob;
+      try {
+        job = parseRenderJob(message.body);
+      } catch (error) {
+        console.error(`tinkerpad render: dropping malformed queue message ${message.id}: ${error instanceof Error ? error.message : String(error)}`);
+        message.ack();
+        continue;
+      }
+      const result = await renderAttempt(session, pipeline, job, { number: message.attempts, max: MAX_RENDER_ATTEMPTS });
+      if (result.kind === 'retry') message.retry();
+      else message.ack();
+    }
+  });
+};
+
+// THE SCHEDULED BACKFILL — the idempotent, self-healing tick that populates the grid: it enqueues a render
+// job for every listed playground whose current version has no thumbnail yet, and converges to a no-op once
+// the commons is fully rendered. It also picks up any newly-published playground the (future, providers-u1h)
+// immediate publish hook has not yet covered. Producing (fast: a list + gets + sends) is separated from
+// consuming (slow: the actual renders) so no single invocation renders the whole commons inline and blows
+// its wall-clock budget. [LAW:no-ambient-temporal-coupling] [LAW:dataflow-not-control-flow]
+const runScheduledBackfill = async (env: Env): Promise<void> => {
+  const ctx = renderContextFor(env);
+  const report = await runBackfill({
+    catalog: ctx.catalog,
+    thumbnails: ctx.thumbnails,
+    statuses: ctx.statuses,
+    enqueue: (jobs) => enqueueRenderJobs(env.RENDER_QUEUE, jobs),
+  });
+  console.log(`tinkerpad render backfill: enqueued ${report.enqueued}, skipped ${report.skipped}`);
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     // THE EDGE ERROR BOUNDARY — the Worker's equivalent of the Node socket's try/catch in serve().
@@ -201,6 +307,32 @@ export default {
         status: 500,
         headers: { 'content-type': 'application/json' },
       });
+    }
+  },
+
+  // THE QUEUE CONSUMER EDGE — renders one batch of thumbnail jobs. Its own error boundary, distinct from
+  // fetch's: an infra failure that escapes consumeRenderBatch (a browser that will not launch) is logged
+  // LOUDLY and rethrown, so every message the batch did not explicitly ack is returned to the queue for a
+  // bounded retry rather than silently lost. Per-message render failures never reach here — renderAttempt
+  // is total and records them 'failed'. [LAW:no-silent-failure] [LAW:single-enforcer]
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    try {
+      await consumeRenderBatch(env, batch);
+    } catch (error) {
+      console.error(`tinkerpad render: queue batch failed, returning unacked messages for retry: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  },
+
+  // THE CRON EDGE — the scheduled backfill tick. Its own boundary: a failure is logged LOUDLY and rethrown
+  // so the invocation is recorded as failed in observability, never swallowed into a silently-skipped tick
+  // that leaves the grid unpopulated with no signal why. [LAW:no-silent-failure]
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    try {
+      await runScheduledBackfill(env);
+    } catch (error) {
+      console.error(`tinkerpad render: scheduled backfill failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
   },
 };

@@ -68,6 +68,20 @@ const SETTLE_MS = 600;
 // The screenshot is viewport-only (not fullPage) — a preview is the "above the fold" first impression.
 const VIEWPORT = { width: 1200, height: 900 } as const;
 
+// The TOTAL, fail-closed same-origin test for an intercepted request URL. The request handler's whole job
+// is to allow ONLY the main-frame navigation to the target's own origin and abort everything else, so the
+// decision must be a value that never throws: a URL the browser hands us that `new URL()` cannot parse is
+// not PROVABLY same-origin, and under deny-by-default that means "not allowed" (aborted), never an
+// exception escaping the listener that would leave the request hanging. Parse-failure maps to false, not
+// to a swallowed error that changes meaning. [LAW:dataflow-not-control-flow] [LAW:no-silent-failure]
+const sameOrigin = (url: string, origin: string): boolean => {
+  try {
+    return new URL(url).origin === origin;
+  } catch {
+    return false;
+  }
+};
+
 export const makeBrowserRenderer = (binding: BrowserWorker): BrowserRenderer => ({
   async withSession<T>(run: (session: RenderSession) => Promise<T>): Promise<T> {
     const browser = await puppeteer.launch(binding);
@@ -100,7 +114,7 @@ export const makeBrowserRenderer = (binding: BrowserWorker): BrowserRenderer => 
               const allow =
                 request.isNavigationRequest() &&
                 request.frame() === page.mainFrame() &&
-                new URL(request.url()).origin === targetOrigin;
+                sameOrigin(request.url(), targetOrigin);
               void (allow ? request.continue() : request.abort()).catch(() => undefined);
             });
 

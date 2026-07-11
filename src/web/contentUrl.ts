@@ -1,5 +1,13 @@
 import type { PlaygroundId, VersionId } from '../storage/index.js';
 
+// The ONE normalization of the content origin before a path is joined onto it — strip any trailing
+// slash so a configured `https://content.example/` cannot produce a `//?id=…` double-slash pathname the
+// content handler routes as 404. Both URL builders below concatenate a path onto the origin, so the strip
+// lives HERE, once, rather than being repeated in each builder — a single enforcer for "what a canonical
+// origin looks like", so the two builders can never disagree about it. [LAW:single-enforcer]
+// [FRAMING:representation]
+const originBase = (contentOrigin: string): string => contentOrigin.replace(/\/+$/, '');
+
 // THE ONE FORMULA for a playground's URL on the content origin — the secure, https, CSP-wrapped page that
 // serves its current version's raw html. It has TWO consumers that MUST agree: the player frames it as the
 // sandbox iframe src (siteHandler), and the render pipeline shoots it to derive the thumbnail
@@ -10,7 +18,7 @@ import type { PlaygroundId, VersionId } from '../storage/index.js';
 // It resolves by playground id to the CURRENT version (contentHandler serves currentVersionOf), so the
 // pipeline keying its thumbnail by that same current version renders exactly the bytes the URL serves.
 export const playgroundContentUrl = (contentOrigin: string, id: PlaygroundId): string =>
-  `${contentOrigin}/?id=${encodeURIComponent(id)}`;
+  `${originBase(contentOrigin)}/?id=${encodeURIComponent(id)}`;
 
 // THE ONE FORMULA for a playground's preview-thumbnail URL on the content origin — the derived PNG the
 // commons card frames as an <img>. Its TWO consumers MUST agree, exactly as with the content URL above:
@@ -25,4 +33,4 @@ export const playgroundContentUrl = (contentOrigin: string, id: PlaygroundId): s
 // card keys off PlaygroundSummary.currentVersion: not to select bytes (the route owns that), but to make
 // the derived cache self-refreshing without any invalidation logic. [LAW:no-ambient-temporal-coupling]
 export const playgroundThumbnailUrl = (contentOrigin: string, id: PlaygroundId, version: VersionId): string =>
-  `${contentOrigin}/thumb?id=${encodeURIComponent(id)}&v=${encodeURIComponent(version)}`;
+  `${originBase(contentOrigin)}/thumb?id=${encodeURIComponent(id)}&v=${encodeURIComponent(version)}`;

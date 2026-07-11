@@ -141,7 +141,13 @@ export const makeContentHandler = (deps: ContentHandlerDeps): ((request: Request
     if (resolved.kind === 'unknown') return sealed(`playground not found: ${id}`, 404, 'text/plain; charset=utf-8');
     const png = await thumbnails.get(resolved.version);
     if (png === undefined) return sealed('thumbnail not rendered yet', 404, 'text/plain; charset=utf-8');
-    return sealed(png, 200, 'image/png', { 'cache-control': 'public, max-age=31536000, immutable' });
+    // Cache aggressively but NOT `immutable`: a version's thumbnail is not truly immutable — the store allows
+    // a re-put and rendering is non-deterministic, so an operator or a better renderer can produce different
+    // bytes for the same version later. `immutable` would forbid revalidation even on reload and pin the old
+    // pixels for a year; a plain long max-age caches just as hard for the common (version-stable) case while
+    // letting a rare re-render propagate within a day or on reload. The version in the URL still refreshes the
+    // common case — a new version is a new URL. [FRAMING:representation] [LAW:one-source-of-truth]
+    return sealed(png, 200, 'image/png', { 'cache-control': 'public, max-age=86400' });
   };
 
   return async (request: Request): Promise<Response> => {

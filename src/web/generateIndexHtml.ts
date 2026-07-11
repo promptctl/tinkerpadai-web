@@ -1,4 +1,4 @@
-import { TOKENS_CSS, THEME_RESOLVER, FAVICON_LINK, CARD_FORMAT_JS } from './frontDoorChrome.js';
+import { TOKENS_CSS, THEME_RESOLVER, FAVICON_LINK, CARD_FORMAT_JS, PREVIEW_IMG_CSS } from './frontDoorChrome.js';
 
 // THE FRONT-DOOR GENERATOR — the pure transform that turns index.html.tmpl (the hand-authored
 // source, with markers where shared chrome belongs) into index.html (the shipped, self-contained
@@ -29,6 +29,7 @@ export const generateIndexHtml = (template: string): string => {
   out = spliceOnce(out, '<!--tp:theme-->', THEME_RESOLVER);
   out = spliceOnce(out, '/*tp:tokens*/', TOKENS_CSS);
   out = spliceOnce(out, '/*tp:formats*/', CARD_FORMAT_JS);
+  out = spliceOnce(out, '/*tp:preview-img*/', PREVIEW_IMG_CSS);
 
   // No marker may survive: a leftover means the template names a slot the generator does not fill, so
   // the page would ship with a literal `tp:` comment where chrome belongs. Fail instead. [LAW:no-silent-failure]

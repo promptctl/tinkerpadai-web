@@ -123,3 +123,11 @@ export const stepText = (count: number): string => `${count} step${count === 1 ?
 export const CARD_FORMAT_JS =
   'const bylineText = (author) => `by ${author}`;\n' +
   "      const stepText = (count) => `${count} step${count === 1 ? '' : 's'}`;";
+
+// The preview-<img> fill rule — how a rendered thumbnail fills its card slot, shared by BOTH card surfaces
+// (the server commons card's `.card-preview-img` in pageShell, the homepage teaser's `.pg-card-preview-img`
+// spliced into index.html) so a preview reads identically wherever a playground is carded. Only the
+// DECLARATIONS live here; each surface keeps its own selector and its own container slot (those genuinely
+// differ — an aspect-ratio band vs a fixed-height tile). Shared exactly the way TOKENS_CSS is, with the
+// drift test guarding the two forms. [LAW:one-source-of-truth]
+export const PREVIEW_IMG_CSS = 'width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block;';

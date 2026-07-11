@@ -203,9 +203,12 @@ describe('makeContentHandler — the /thumb preview route', () => {
     const res = await handler(new Request(`http://content.local/thumb?id=${encodeURIComponent(id)}`));
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('image/png');
-    // The `v` cache-buster in the card's URL makes each version's bytes safely immutable — the ONE response
-    // that opts out of the origin's default revalidate-before-use caching.
-    expect(res.headers.get('cache-control')).toContain('immutable');
+    // Cached hard (long max-age) but NOT immutable: a version's thumbnail can be re-rendered to different
+    // bytes, so the URL is not truly content-stable — immutable would pin stale pixels for a year. The `v` in
+    // the card's URL refreshes the common case (a new version is a new URL).
+    const cache = res.headers.get('cache-control') ?? '';
+    expect(cache).toContain('max-age=');
+    expect(cache).not.toContain('immutable');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG);
   });

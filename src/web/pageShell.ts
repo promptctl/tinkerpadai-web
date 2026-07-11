@@ -1,5 +1,5 @@
 import { escapeHtml } from './escapeHtml.js';
-import { TOKENS_CSS, THEME_RESOLVER, FAVICON_LINK } from './frontDoorChrome.js';
+import { TOKENS_CSS, THEME_RESOLVER, FAVICON_LINK, PREVIEW_IMG_CSS } from './frontDoorChrome.js';
 
 // THE SHARED SERVER-RENDERED PAGE SHELL. Every app-origin page the server builds as a STRING
 // (the commons, the notice/error pages, the player) is wrapped here, so the reset and the site
@@ -139,7 +139,7 @@ const SHELL_STYLES = `
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     overflow: hidden;
   }
-  .card-preview-img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
+  .card-preview-img { ${PREVIEW_IMG_CSS} }
   .card-title { font-weight: 600; font-size: 1rem; color: var(--text); line-height: 1.4; word-break: break-word; }
   .card:hover .card-title { color: var(--accent); }
   .card-meta { color: var(--muted); font-size: 0.8rem; margin-top: 0.55rem; }

@@ -337,6 +337,20 @@ describe('runBackfill', () => {
     expect(report).toEqual({ enqueued: 0, skipped: 0 });
     expect(enqueued).toEqual([]);
   });
+
+  it('propagates an enqueue failure — the tick fails loudly for the scheduled boundary to surface', async () => {
+    const catalog = makeMemoryCatalog();
+    await catalog.createPlayground(newPlayground());
+    // The backfill must NOT swallow an enqueue fault: the scheduled() edge boundary logs and rethrows it for
+    // observability, so a broken queue is a visible failed tick, never a silently-skipped one. [LAW:no-silent-failure]
+    const d: BackfillDeps = {
+      catalog,
+      thumbnails: makeMemoryThumbnailStore(),
+      statuses: makeMemoryRenderStatusStore(),
+      enqueue: async () => { throw new Error('queue unavailable'); },
+    };
+    await expect(runBackfill(d)).rejects.toThrow('queue unavailable');
+  });
 });
 
 // The edge glue that maps the pure directive onto the queue's ack/retry, lifted out of worker.ts so it is

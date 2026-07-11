@@ -172,26 +172,48 @@ export interface BackfillReport {
 // renderAttempt already guards against. A genuinely-fixable failure is re-rendered by an operator clearing
 // its status, not by the backfill grinding on it. [LAW:no-silent-failure] [LAW:one-source-of-truth]
 // [LAW:dataflow-not-control-flow]
+// The most reads this backfill keeps in flight at once. Each summary costs TWO store reads (thumbnail +
+// status), so this caps concurrent subrequests at 2×, well under a Worker's per-request subrequest limit
+// even as the commons grows into the thousands — the fan-out is bounded, not proportional to the dataset.
+const BACKFILL_READ_CONCURRENCY = 50;
+
+// Map an async fn over items with at most `limit` running concurrently — bounded parallelism, so a job that
+// scales with the commons gets intra-chunk speed without an unbounded fan-out. [LAW:dataflow-not-control-flow]
+const mapBounded = async <T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> => {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += limit) {
+    results.push(...(await Promise.all(items.slice(i, i + limit).map(fn))));
+  }
+  return results;
+};
+
 export const runBackfill = async (deps: BackfillDeps): Promise<BackfillReport> => {
   const summaries = await deps.catalog.listPlaygrounds();
-  // Resolve every version's render state in ONE bounded round of concurrency — each summary's two authorities
-  // (thumbnail presence, operational status) read in parallel — rather than 2N sequential R2/KV round trips
-  // that would stretch the cron tick linearly as the commons grows. [LAW:dataflow-not-control-flow]
-  const states = await Promise.all(
-    summaries.map(async (summary) => {
-      const [thumbnail, status] = await Promise.all([
-        deps.thumbnails.get(summary.currentVersion),
-        deps.statuses.get(summary.currentVersion),
-      ]);
-      return { summary, state: renderStateOf(thumbnail !== undefined, status) };
-    }),
-  );
+  // Resolve every version's render state with BOUNDED concurrency — each summary's two authorities
+  // (thumbnail presence, operational status) read in parallel, but only a capped number of summaries in
+  // flight at once — rather than 2N sequential round trips (linear tick) or an unbounded 2N fan-out (past the
+  // Worker subrequest limit at scale). [LAW:dataflow-not-control-flow]
+  const states = await mapBounded(summaries, BACKFILL_READ_CONCURRENCY, async (summary) => {
+    const [thumbnail, status] = await Promise.all([
+      deps.thumbnails.get(summary.currentVersion),
+      deps.statuses.get(summary.currentVersion),
+    ]);
+    return { summary, state: renderStateOf(thumbnail !== undefined, status) };
+  });
   // Only a 'pending' version is a gap to fill; 'rendered' and 'failed' are both skipped (see the comment
   // above — this is what makes 'failed' terminal). [LAW:one-source-of-truth]
   const missing = states.filter((entry) => entry.state === 'pending').map((entry) => entry.summary);
-  await Promise.all(missing.map((summary) => deps.statuses.set(summary.currentVersion, 'pending')));
+
+  // ENQUEUE FIRST, then mark pending. The two writes cannot be atomic, so order them to fail safe: an
+  // interruption after the enqueue leaves a job in the queue with no status — which renders correctly
+  // (resolveRenderTarget needs no status, and renderStateOf defaults a missing status to 'pending', so the
+  // card is unaffected) — rather than a status with no job, which would show an awaiting slot with nothing
+  // coming until the next tick. The load-bearing op goes first; the status is the cosmetic follow-up, and a
+  // set that lands after the render already cleared it leaves a stale 'pending' the thumbnail blob shadows.
+  // [LAW:no-ambient-temporal-coupling]
   const jobs = missing.map((summary): RenderJob => ({ playgroundId: summary.id }));
   await deps.enqueue(jobs);
+  await Promise.all(missing.map((summary) => deps.statuses.set(summary.currentVersion, 'pending')));
   return { enqueued: jobs.length, skipped: summaries.length - missing.length };
 };
 

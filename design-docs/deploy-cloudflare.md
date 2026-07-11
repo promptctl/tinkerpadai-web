@@ -39,6 +39,32 @@ wrangler secret put GITHUB_CLIENT_SECRET
 - `[vars] TINKERPAD_CONTENT_ORIGIN` — `https://<content-host>` (a different host from the app).
 - `routes` — bind both `<app-host>` and `<content-host>` to this Worker (uncomment the block).
 
+## Migrate the commons
+
+Production starts EMPTY and the first deploy runs generation DISABLED, so the briefs cannot be
+re-driven at the edge. The seeded commons (the local `.tinkerpad-data/`) is carried into the edge
+stores by a one-shot migration — this is the ONLY path to a populated production commons. It needs
+only steps 1–3 above (R2 bucket + D1 created and migrated); it writes R2/D1 directly via `wrangler`,
+independent of the Worker deploy, so it can run before or after `wrangler deploy`.
+
+```sh
+# Dry-run first — prints the plan (playgrounds + artifact versions), writes nothing:
+pnpm migrate
+# Then write to the real account:
+pnpm migrate --remote
+```
+
+The migration is faithful by construction (it moves the exact catalog document into D1 row `id=1`
+and each `<versionId>.html` artifact into R2, the same representations the edge adapters read) and
+**idempotent** — the catalog is a single-row upsert and R2 puts are keyed by immutable version, so a
+re-run converges to the same state and is safe to repeat after an interruption. The whole path is
+verified end-to-end account-free with `--local` + `wrangler dev` (the app lists the migrated commons;
+the content origin serves each artifact byte-identical to the local copy). To seed from a different
+machine's data, point `TINKERPAD_DATA_DIR` at the exported dir; `TINKERPAD_D1_DATABASE` /
+`TINKERPAD_R2_BUCKET` override the store names. Reversal of a botched run: `wrangler d1 execute
+tinkerpad --remote --command "DELETE FROM catalog WHERE id = 1;"` (the unreferenced R2 objects are
+harmless and overwritten by the next run).
+
 ## Deploy
 
 ```sh

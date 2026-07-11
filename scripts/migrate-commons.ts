@@ -114,9 +114,14 @@ export const resolveConfig = (argv: readonly string[], env: NodeJS.ProcessEnv): 
   };
 };
 
-// Run a command to completion, inheriting stderr so wrangler's own diagnostics reach the operator.
-// A non-zero exit is a real failure that aborts the whole migration — never swallowed. [LAW:no-silent-failure]
-const run = (command: string, args: readonly string[]): Promise<void> =>
+// The seam by which the executor reaches the outside world: run a command to completion. Injecting it
+// (rather than calling spawn inline) lets a test assert the EXACT wrangler commands the migration
+// issues without spawning anything, and keeps the write path's command contract pinned. [LAW:effects-at-boundaries]
+export type CommandRunner = (command: string, args: readonly string[]) => Promise<void>;
+
+// The real runner: spawn the command, inheriting stderr so wrangler's own diagnostics reach the
+// operator. A non-zero exit is a real failure that aborts the whole migration — never swallowed. [LAW:no-silent-failure]
+export const spawnRunner: CommandRunner = (command, args) =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'inherit', 'inherit'] });
     child.on('error', reject);
@@ -144,6 +149,7 @@ export const runMigration = async (
   plan: CommonsMigrationPlan,
   config: MigrationConfig,
   log: (line: string) => void,
+  run: CommandRunner = spawnRunner,
 ): Promise<void> => {
   const missing: string[] = [];
   for (const artifact of plan.artifacts) {

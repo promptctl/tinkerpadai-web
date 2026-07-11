@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { hydrateStoredDoc } from '../src/storage/index.js';
-import type { CommonsMigrationPlan, MigrationConfig } from './migrate-commons.js';
+import type { CommandRunner, CommonsMigrationPlan, MigrationConfig } from './migrate-commons.js';
 import { buildCatalogSql, planCommonsMigration, resolveConfig, runMigration, sqlStringLiteral, UsageError } from './migrate-commons.js';
 
 // A minimal catalog document in the on-disk shape. Two playgrounds; the second reuses a version the
@@ -113,6 +113,45 @@ describe('runMigration (executor guards)', () => {
     // sink 'local' this proves it aborts BEFORE the wrangler d1 execute rather than shipping a
     // catalog whose /play would 404.
     await expect(runMigration(planFor(version), configFor(dataDir, 'local'), () => {})).rejects.toThrow(/missing/);
+  });
+
+  it('issues the exact wrangler commands: D1 catalog upsert then one R2 put per artifact, with the target flag', async () => {
+    const version = 'cccccccc-cccc-4ccc-cccc-cccccccccccc';
+    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    const artifactPath = join(dataDir, 'artifacts', `${version}.html`);
+    await mkdir(join(dataDir, 'artifacts'), { recursive: true });
+    await writeFile(artifactPath, '<!doctype html>', 'utf8');
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const record: CommandRunner = async (command, args) => {
+      calls.push({ command, args });
+    };
+
+    await runMigration(planFor(version), configFor(dataDir, 'remote'), () => {}, record);
+
+    expect(calls).toHaveLength(2);
+    const [db, r2] = calls;
+    if (db === undefined || r2 === undefined) throw new Error('expected exactly two wrangler calls');
+    // First: the whole catalog as one D1 upsert, with the remote flag and non-interactive --yes.
+    expect(db.command).toBe('wrangler');
+    expect(db.args.slice(0, 3)).toEqual(['d1', 'execute', 'tinkerpad']);
+    expect(db.args).toContain('--remote');
+    expect(db.args).toContain('--yes');
+    expect(db.args[3]).toBe('--file');
+    // Then: one R2 put keyed bucket/<versionId>.html from the local file, same flag.
+    expect(r2.args).toEqual(['r2', 'object', 'put', `tinkerpad-artifacts/${version}.html`, '--file', artifactPath, '--remote']);
+  });
+
+  it('selects --local for the local sink', async () => {
+    const version = 'dddddddd-dddd-4ddd-dddd-dddddddddddd';
+    const dataDir = await mkdtemp(join(tmpdir(), 'migrate-test-'));
+    await mkdir(join(dataDir, 'artifacts'), { recursive: true });
+    await writeFile(join(dataDir, 'artifacts', `${version}.html`), '<!doctype html>', 'utf8');
+    const flags = new Set<string>();
+    const record: CommandRunner = async (_command, args) => {
+      for (const f of ['--local', '--remote']) if (args.includes(f)) flags.add(f);
+    };
+    await runMigration(planFor(version), configFor(dataDir, 'local'), () => {}, record);
+    expect([...flags]).toEqual(['--local']);
   });
 });
 

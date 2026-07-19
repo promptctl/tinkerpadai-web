@@ -9,6 +9,12 @@ export { ProviderRegistry, capabilitiesOf } from './registry.js';
 // and registers it; everything else sees only a Provider. [LAW:effects-at-boundaries]
 export { makeTmuxProvider } from './tmuxProvider.js';
 export type { TmuxProviderConfig } from './tmuxProvider.js';
+
+// The mock provider (providers-u1h.3): a REAL provider serving canned conversation data, the
+// deterministic instrument the epic wires its edge seams against without a metered upstream.
+export { makeMockProvider, parseMockProviderEnabled } from './mockProvider.js';
+export type { MockConversation, MockProviderConfig, ScriptedOutcome, ScriptedTurn } from './mockProvider.js';
+export { defaultMockConversation } from './mockConversation.js';
 export {
   makeTmuxDriver,
   cleanupTurn,

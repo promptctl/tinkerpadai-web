@@ -5,10 +5,12 @@ import {
   ProviderRegistry,
   cleanupTurn,
   diagnosticsDirOf,
+  makeMockProvider,
   makeTmuxDriver,
   makeTmuxProvider,
   makeWorkdirDiagnostics,
 } from '../provider/index.js';
+import type { MockConversation } from '../provider/index.js';
 import { makeFileArtifactStore, makeFileCatalog, makeFileReportStore, makeMemoryThumbnailStore } from '../storage/index.js';
 import { makeGenerationQuota, makeMemorySessionStore, DEFAULT_QUOTA_LIMITS } from '../api/index.js';
 import type { CookieSecurity, GenerationPolicy, OAuthProvider, QuotaLimits, Subject } from '../api/index.js';
@@ -64,6 +66,12 @@ export interface NodeAppConfig {
   readonly browserExecutablePath: string;
   readonly providerId?: string;
   readonly providerLabel?: string;
+  // When present, ALSO register the mock provider serving this canned conversation, alongside the
+  // real tmux one. main.dev.ts passes it (behind TINKERPAD_MOCK_PROVIDER) so the whole create →
+  // refine → remix loop can be driven in a browser deterministically, WITHOUT the local Claude CLI
+  // the tmux provider needs — closing the "drive the loop without external dependencies" gap the dev
+  // entry exists for. main.ts (production Node) never passes it. [LAW:decomposition]
+  readonly mockConversation?: MockConversation;
 }
 
 export const makeNodeApp = (config: NodeAppConfig): App => {
@@ -76,6 +84,13 @@ export const makeNodeApp = (config: NodeAppConfig): App => {
       driver: makeTmuxDriver({ timeoutMs: config.generationPolicy.timeoutMs }),
     }),
   );
+  // The optional mock, registered from config as a VALUE (an empty list or the one provider) so
+  // there is no branch on "is the mock on" — the same dataflow shape the edge root uses.
+  // [LAW:dataflow-not-control-flow]
+  const mockProviders = config.mockConversation === undefined
+    ? []
+    : [makeMockProvider({ id: 'mock', label: 'Mock (canned data)', conversation: config.mockConversation })];
+  for (const provider of mockProviders) registry.register(provider);
 
   const store = makeFileArtifactStore(join(config.dataDir, 'artifacts'));
   const catalog = makeFileCatalog(join(config.dataDir, 'catalog.json'));

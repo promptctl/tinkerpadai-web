@@ -2,7 +2,8 @@ import type { D1Database, KVNamespace, MessageBatch, Queue, R2Bucket, ScheduledC
 import type { BrowserWorker } from '@cloudflare/puppeteer';
 import page from './index.html';
 import { makeApp, parseAdminSubjects } from '../app.js';
-import { ProviderRegistry } from '../provider/index.js';
+import { ProviderRegistry, defaultMockConversation, makeMockProvider, parseMockProviderEnabled } from '../provider/index.js';
+import type { Provider } from '../provider/index.js';
 import { makeGenerationQuota, makeGitHubOAuthProvider, parseMaxGenerationAttempts, parseQuotaLimits, passThroughValidator } from '../api/index.js';
 import type { RenderJob, RenderPipelineDeps } from '../api/index.js';
 import { runBackfill, runRenderBatch } from '../api/index.js';
@@ -80,6 +81,14 @@ export interface Env {
   // the whole Worker on an invalid inert deadline — would be disproportionate. It arrives with the edge
   // driver. [LAW:decomposition]
   readonly TINKERPAD_MAX_GENERATION_ATTEMPTS?: string;
+  // The seam-wiring switch for public edge generation (providers-u1h.3). Absent/'false' keeps the
+  // registry empty — the production default, no generation UI. Set to 'true' (a [vars] entry) to
+  // register the MOCK provider, which admits turns and serves canned conversation data, so the edge
+  // seams that are inert with an empty registry (real ArtifactValidator, durable quota, catalog
+  // normalization, render enqueue) can be wired and verified against a deterministic driver WITHOUT a
+  // metered upstream. It is superseded — not extended — by the real Claude API driver (providers-u1h.1);
+  // the switch is removed then. [LAW:no-mode-explosion] [LAW:dataflow-not-control-flow]
+  readonly TINKERPAD_MOCK_PROVIDER?: string;
 }
 
 // A real user's session at the edge, durably in D1 so it survives Worker cold starts. 7 days — long
@@ -119,6 +128,20 @@ const required = (env: Env, name: RequiredEnvKey): string => {
   return value;
 };
 
+// The providers to register at the edge, derived from config as a VALUE: an empty list (the
+// production default — no generation UI) or the single mock. Uniform registration below reads this
+// list; there is no branch on "is the mock on" past this point. [LAW:dataflow-not-control-flow]
+const edgeProviders = (env: Env): readonly Provider[] =>
+  parseMockProviderEnabled(env.TINKERPAD_MOCK_PROVIDER)
+    ? [makeMockProvider({ id: 'mock', label: 'Mock (canned data)', conversation: defaultMockConversation })]
+    : [];
+
+const registryOf = (providers: readonly Provider[]): ProviderRegistry => {
+  const registry = new ProviderRegistry();
+  for (const provider of providers) registry.register(provider);
+  return registry;
+};
+
 // The request handler, built ONCE per isolate and reused — memoized on the `env` it was built from.
 // An isolate's `env` is fixed for its whole life, and the app is a pure function of `env` (the R2/D1
 // adapters are stateless wrappers over stable bindings; the router's parsed content host and handler
@@ -150,10 +173,11 @@ const handlerFor = (env: Env): Handler => {
   assertDistinctOriginHosts(oauthCallbackUrl, contentOrigin);
 
   const app = makeApp({
-    // Generation is disabled at the first public deploy — an empty registry the front door reads as
-    // "no generation UI". Public generation turns on later with the credits ledger + API driver
-    // (tinkerpadai-providers-u1h). [LAW:dataflow-not-control-flow]
-    registry: new ProviderRegistry(),
+    // The generation registry: empty by default (the front door reads that as "no generation UI"),
+    // or the mock provider when TINKERPAD_MOCK_PROVIDER is on — the seam-wiring turn-on for public
+    // edge generation (providers-u1h.3). The real Claude API driver supersedes the mock here
+    // (providers-u1h.1). [LAW:dataflow-not-control-flow]
+    registry: registryOf(edgeProviders(env)),
     store: makeR2ArtifactStore(env.ARTIFACTS),
     catalog: makeD1Catalog(env.DB),
     // The derived preview cache the async render pipeline populates (render-dax), read by the content

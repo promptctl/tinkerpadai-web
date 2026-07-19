@@ -3,7 +3,7 @@ import { makeNodeApp } from './nodeApp.js';
 import { DEFAULT_GENERATION_POLICY, Subject, startTurnRetentionSweeper } from '../api/index.js';
 import type { OAuthProvider } from '../api/index.js';
 import { resolveBrowserExecutablePath } from '../api/headlessArtifactValidator.js';
-import { diagnosticsDirOf, startDiagnosticsRetentionSweeper, startWorkdirJanitor } from '../provider/index.js';
+import { defaultMockConversation, diagnosticsDirOf, parseMockProviderEnabled, startDiagnosticsRetentionSweeper, startWorkdirJanitor } from '../provider/index.js';
 import { generateIndexHtml } from './generateIndexHtml.js';
 import { makeSiteHandler } from './siteHandler.js';
 import { makeContentHandler } from './contentHandler.js';
@@ -68,6 +68,10 @@ const main = async (): Promise<void> => {
     // The dev loop drives real generation, so it runs the real functional gate too — the same headless
     // Chrome production uses. TINKERPAD_CHROME_PATH overrides; otherwise a known install is probed.
     browserExecutablePath: resolveBrowserExecutablePath(process.env),
+    // With TINKERPAD_MOCK_PROVIDER=true, also register the mock so the loop can be driven in a browser
+    // with NO local Claude CLI — deterministic, secret-free. The same switch turns it on at the edge.
+    // The key is OMITTED when off (not set to undefined) to satisfy exactOptionalPropertyTypes.
+    ...(parseMockProviderEnabled(process.env.TINKERPAD_MOCK_PROVIDER) ? { mockConversation: defaultMockConversation } : {}),
   });
 
   const content = await serve({
